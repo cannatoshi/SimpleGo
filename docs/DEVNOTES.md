@@ -6,18 +6,22 @@
 
 ## Current Status (20. Januar 2026)
 
-### Version: v0.1.7-alpha
+### Version: v0.1.8-alpha
 
-### ✅ Full Message Lifecycle Complete!
+### 🔑 NVS Key Persistence Complete!
+
+Keys and Queue-IDs now survive reboots!
 
 ```
-NEW → IDS (queue created)
-SUB → OK (subscribed)
-SEND → MSG (echo back) + OK
-MSG → Decrypt → ACK → OK (message confirmed & deleted)
-```
+First Start:
+I (6769) SMP:   🎉🎉🎉 QUEUE CREATED! 🎉🎉🎉
+I (6809) SMP:       NVS: Keys saved!
 
-**Complete SMP message handling operational!** 🎉
+After Reboot:
+I (6289) SMP:       NVS: Keys loaded!
+I (6289) SMP:   [4-6] Skipping NEW - using saved queue!
+I (6659) SMP:   ✅ SUBSCRIBED! Ready to receive messages.
+```
 
 ---
 
@@ -37,123 +41,144 @@ MSG → Decrypt → ACK → OK (message confirmed & deleted)
 - ✅ MSG receive with parsing
 - ✅ X25519 DH Shared Secret
 - ✅ XSalsa20-Poly1305 Decryption
-- ✅ **ACK command with OK response** ← v0.1.7
-- ✅ **Full message lifecycle!** ← v0.1.7
+- ✅ ACK command with OK response
+- ✅ **NVS Key Persistence** ← v0.1.8
+- ✅ **Queue Reconnect after Reboot** ← v0.1.8
 
 ---
 
-## Today's Addition: ACK Command (v0.1.7)
+## Today's Addition: NVS Persistence (v0.1.8)
 
-### ACK Format (from Protocol.hs)
+### New Functions
 
-```haskell
-ACK :: MsgId -> Command Recipient
-ACK msgId -> e (ACK_, ' ', msgId)
+```c
+bool have_saved_keys()      // Check if keys exist in NVS
+bool load_keys_from_nvs()   // Load all keys from NVS
+void save_keys_to_nvs()     // Save after IDS response
+void clear_saved_keys()     // Delete all keys (reset)
 ```
 
-### Implementation
+### Persisted Data (NVS Namespace: "simplego")
+
+| Key | Size | Description |
+|-----|------|-------------|
+| rcv_auth_sk | 64 bytes | Ed25519 Secret Key |
+| rcv_auth_pk | 32 bytes | Ed25519 Public Key |
+| rcv_dh_sk | 32 bytes | X25519 Secret Key |
+| rcv_dh_pk | 32 bytes | X25519 Public Key |
+| rcv_id | 24 bytes | Recipient ID |
+| rcv_id_len | 1 byte | Recipient ID length |
+| snd_id | 24 bytes | Sender ID |
+| snd_id_len | 1 byte | Sender ID length |
+| srv_dh_pk | 32 bytes | Server DH Key |
+| have_srv_dh | 1 byte | Flag if server DH exists |
+
+### New Flow
+
+```
+Start
+  │
+  ▼
+TLS + ServerHello + ClientHello
+  │
+  ▼
+load_keys_from_nvs()
+  │
+  ├── Keys found? ──► [4-6] Skip NEW ──► SUB directly
+  │
+  └── No keys? ──► NEW ──► IDS ──► save_keys_to_nvs() ──► SUB
+```
+
+### Implementation Notes
+
+```c
+// NVS Namespace
+#define NVS_NAMESPACE "simplego"
+
+// Check for saved keys
+bool have_saved_keys() {
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        return false;
+    }
+    
+    size_t len = 0;
+    esp_err_t err = nvs_get_blob(handle, "rcv_auth_sk", NULL, &len);
+    nvs_close(handle);
+    
+    return (err == ESP_OK && len == crypto_sign_SECRETKEYBYTES);
+}
+
+// Load all keys
+bool load_keys_from_nvs() {
+    nvs_handle_t handle;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
+        return false;
+    }
+    
+    size_t len;
+    
+    // Load Ed25519 keys
+    len = crypto_sign_SECRETKEYBYTES;
+    nvs_get_blob(handle, "rcv_auth_sk", rcv_auth_secret, &len);
+    len = crypto_sign_PUBLICKEYBYTES;
+    nvs_get_blob(handle, "rcv_auth_pk", rcv_auth_public, &len);
+    
+    // Load X25519 keys
+    len = 32;
+    nvs_get_blob(handle, "rcv_dh_sk", rcv_dh_secret, &len);
+    nvs_get_blob(handle, "rcv_dh_pk", rcv_dh_public, &len);
+    
+    // Load queue IDs
+    len = 24;
+    nvs_get_blob(handle, "rcv_id", recipient_id, &len);
+    nvs_get_u8(handle, "rcv_id_len", &recipient_id_len);
+    
+    // ... etc
+    
+    nvs_close(handle);
+    return true;
+}
+```
+
+---
+
+## Bonus: ESP-IDF Monitor Commands
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+]` | Exit monitor |
+| `Ctrl+T, R` | Reboot device |
+| `Ctrl+T, H` | Help menu |
+| `Ctrl+T, P` | Pause output |
+
+Sehr nützlich für Reboot-Tests! 🔄
+
+---
+
+## Previous Additions
+
+### v0.1.7 - ACK Command
 
 ```c
 // ACK is a Recipient command (like SUB)
 // EntityId = recipientId (NOT senderId!)
-// Requires signature with rcv_auth_secret
-
-uint8_t ack_body[64];
-int ap = 0;
-
-// CorrId
-ack_body[ap++] = 1;
-ack_body[ap++] = '4';
-
-// EntityId = recipientId (NICHT senderId!)
-ack_body[ap++] = recipient_id_len;
-memcpy(&ack_body[ap], recipient_id, recipient_id_len);
-ap += recipient_id_len;
-
-// Command: "ACK " + msgId
-ack_body[ap++] = 'A';
-ack_body[ap++] = 'C';
-ack_body[ap++] = 'K';
-ack_body[ap++] = ' ';
-
-// msgId with length prefix
-ack_body[ap++] = msgIdLen;
-memcpy(&ack_body[ap], msg_id, msgIdLen);
-ap += msgIdLen;
-
-// Signature covers: [0x20][sessionId] + ack_body
+ack_body = [corrId] + [recipientId] + "ACK " + [msgIdLen][msgId]
+signature = sign([0x20][sessionId] + ack_body)
 ```
 
-### Server Response
+### v0.1.6 - E2E Decryption
 
-- `OK` = Message acknowledged and deleted from queue
-- `ERR NO_MSG` = Message not found (already ACK'd or expired)
-
----
-
-## SMP Version Analysis
-
-### Why v6?
-
-v6 has **everything** needed for a complete messenger:
-- ✅ Queue management (NEW, SUB, DEL)
-- ✅ Message sending (SEND)
-- ✅ Message receiving (MSG)
-- ✅ Acknowledgment (ACK)
-- ✅ E2E encryption (X25519 + XSalsa20-Poly1305)
-
-### What v7+ adds (not critical):
-
-- `implySessId` — sessionId not sent (optimization)
-- `authEncryptCmds` — Command encryption (extra security)
-- Batch commands — Performance optimization
-
-### Upgrade Path
-
-```
-v6 (now) ────────────────► v17 (future)
-          skip v7-v16
-```
-
-From Haskell source:
-```haskell
-authCmdsSMPVersion = VersionSMP 7
-implySessId = v >= authCmdsSMPVersion
--- v6: sessionId sent in transmission, NOT in signature
--- v7+: sessionId NOT sent, IS in signature
-```
-
----
-
-## Previous Discoveries (v0.1.6)
-
-### MSG Encryption Schema
-
-From Haskell `Server.hs:2024`:
-```haskell
-encrypt body = RcvMessage msgId' . EncRcvMsgBody $ 
-  C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
-```
-
-### Decryption Steps
-
-**1. Compute DH Shared Secret:**
 ```c
-uint8_t shared[crypto_box_BEFORENMBYTES];  // 32 bytes
+// DH Shared Secret
 crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
-```
 
-**2. Nonce = msgId (24 bytes, zero-padded):**
-```c
-uint8_t nonce[24];
-memset(nonce, 0, 24);  // Pad with zeros
-memcpy(nonce, msg_id, msgIdLen < 24 ? msgIdLen : 24);
-```
+// Nonce = msgId (24 bytes, zero-padded)
+uint8_t nonce[24] = {0};
+memcpy(nonce, msg_id, msgIdLen);
 
-**3. Decrypt with NaCl crypto_box:**
-```c
-int result = crypto_box_open_easy_afternm(
-    plaintext, ciphertext, ciphertext_len, nonce, shared);
+// Decrypt
+crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
 ```
 
 ---
@@ -162,19 +187,19 @@ int result = crypto_box_open_easy_afternm(
 
 ### Immediate
 
-1. ~~ACK Command~~ ✅ DONE (v0.1.7)
-2. **Key Persistence** — NVS Storage for rcvAuthKey, rcvDhKey
-3. **Queue Reconnect** — SUB after reboot with stored keys
+1. ~~NVS Key Persistence~~ ✅ DONE (v0.1.8)
+2. **T-Embed UI** — Display + Rotary Encoder
+3. **DEL Command** — Delete queue on reset
 
 ### Short-term
 
-4. **DEL Command** — Delete queue when done
-5. **Multiple Queues** — Handle multiple contacts
-6. **Error Recovery** — Reconnect on connection loss
+4. **Multiple Queues** — Handle multiple contacts
+5. **Error Recovery** — Reconnect on connection loss
+6. **Config Storage** — WiFi credentials in NVS
 
 ### Medium-term
 
-7. **T-Deck UI** — LCD + Keyboard integration
+7. **T-Deck UI** — LCD + Physical Keyboard
 8. **Double Ratchet** — Curve448 for Agent-level E2E
 
 ---
@@ -185,10 +210,10 @@ int result = crypto_box_open_easy_afternm(
 
 | Issue | Solution | Date |
 |-------|----------|------|
-| ACK command | EntityId = recipientId, not senderId | 20.01.2026 |
+| Keys lost on reboot | NVS persistence | 20.01.2026 |
+| ACK command | EntityId = recipientId | 20.01.2026 |
 | MSG decryption | X25519 DH + XSalsa20-Poly1305 | 20.01.2026 |
 | Nonce format | msgId zero-padded to 24 bytes | 20.01.2026 |
-| srv_dh_public | Extract from IDS, skip SPKI header | 20.01.2026 |
 | MsgFlags binary | Use ASCII 'T'/'F' | 20.01.2026 |
 | ERR AUTH | Switch to libsodium | 19.01.2026 |
 | Wrong keyHash | Use CA cert (2nd in chain) | 18.01.2026 |
@@ -197,40 +222,15 @@ int result = crypto_box_open_easy_afternm(
 
 | Issue | Status | Notes |
 |-------|--------|-------|
-| Key persistence | TODO | NVS storage |
-| Queue reconnect | TODO | After reboot |
-| Double Ratchet | TODO | Curve448 needed |
-| Connection keepalive | TODO | Prevent timeouts |
-
----
-
-## Haskell Source References
-
-| File | Line | Discovery |
-|------|------|-----------|
-| `Protocol.hs` | - | `ACK msgId -> e (ACK_, ' ', msgId)` |
-| `Server.hs` | 2024 | `C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId')` |
-| `Crypto.hs` | 1372-1381 | `cbNonce` paddet auf 24 Bytes mit 0x00 |
-| `Transport.hs` | - | `authCmdsSMPVersion = VersionSMP 7` |
-
-### Useful grep Commands
-
-```bash
-# Find ACK handling
-grep -rn "ACK_\|pattern ACK" src/Simplex/Messaging/Protocol.hs
-
-# Find version differences
-grep -rn "implySessId\|authCmdsSMPVersion" src/Simplex/Messaging/
-
-# Find encryption
-grep -rn "cbEncrypt\|cbDecrypt" src/Simplex/Messaging/Crypto.hs
-```
+| DEL command | TODO | For queue cleanup |
+| Multiple queues | TODO | Contact management |
+| Connection recovery | TODO | Auto-reconnect |
 
 ---
 
 ## 🏆 Achievement Unlocked
 
-**"First Native ESP32 SimpleX E2E Client — Full Lifecycle!"**
+**"First Native ESP32 SimpleX E2E Client — Persistent!"**
 
 - ✅ Queue Management (NEW, SUB)
 - ✅ SMP Protocol v6
@@ -238,7 +238,8 @@ grep -rn "cbEncrypt\|cbDecrypt" src/Simplex/Messaging/Crypto.hs
 - ✅ X25519 Key Exchange
 - ✅ NaCl crypto_box Encryption
 - ✅ Full Message Round-Trip
-- ✅ **ACK Command — Messages Confirmed & Deleted!**
+- ✅ ACK Command
+- ✅ **NVS Key Persistence — Survives Reboots!**
 
 ---
 
@@ -246,27 +247,22 @@ grep -rn "cbEncrypt\|cbDecrypt" src/Simplex/Messaging/Crypto.hs
 
 ### 20. Januar 2026 (Heute)
 
+**v0.1.8-alpha - NVS KEY PERSISTENCE! 🔑**
+- NVS storage for all keys and queue IDs
+- Queue reconnect after reboot (skip NEW, go to SUB)
+- Key management functions: have_saved_keys(), load/save/clear
+- ESP-IDF Monitor reboot shortcut: Ctrl+T, R
+
 **v0.1.7-alpha - ACK COMMAND COMPLETE! 🎯**
 - ACK command implementation
 - EntityId = recipientId (NOT senderId!)
 - OK response handling
-- Full message lifecycle: NEW→SUB→SEND→MSG→ACK→OK
-- SMP version analysis (v6 vs v7-v17)
+- Full message lifecycle
 
 **v0.1.6-alpha - E2E ENCRYPTION WORKING! 🏆**
 - X25519 DH shared secret computation
-- XSalsa20-Poly1305 decryption via libsodium
-- Server DH key extraction from IDS response
-- Nonce = msgId (zero-padded to 24 bytes)
-- Full round-trip: SEND → MSG → Decrypt → "Hello from ESP32!"
-
-**v0.1.5-alpha**
-- SEND command implementation
-- MSG receive with parsing
-- Message receive loop
-
-**v0.1.4-alpha**
-- SUB command working
+- XSalsa20-Poly1305 decryption
+- Full round-trip: SEND → MSG → Decrypt
 
 ### 19. Januar 2026
 

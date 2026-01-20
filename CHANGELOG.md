@@ -10,10 +10,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
-- Key persistence in NVS
-- Queue reconnect after reboot
+- T-Embed UI (Display + Encoder)
 - DEL command implementation
+- Multiple queue support
 - Double Ratchet (Curve448)
+
+---
+
+## [0.1.8-alpha] - 2026-01-20
+
+### 🔑 NVS Key Persistence!
+
+Keys and Queue-IDs now survive reboots! On restart, the existing queue is reused instead of creating a new one.
+
+### Added
+- **NVS Storage** — Keys persist across reboots
+- **Queue Reconnect** — SUB directly on restart, skip NEW
+- **Key Management Functions** — `have_saved_keys()`, `load_keys_from_nvs()`, `save_keys_to_nvs()`, `clear_saved_keys()`
+
+### Technical Details
+
+**Persisted Data (NVS Namespace: "simplego"):**
+
+| Key | Size | Description |
+|-----|------|-------------|
+| rcv_auth_sk | 64 bytes | Ed25519 Secret Key |
+| rcv_auth_pk | 32 bytes | Ed25519 Public Key |
+| rcv_dh_sk | 32 bytes | X25519 Secret Key |
+| rcv_dh_pk | 32 bytes | X25519 Public Key |
+| rcv_id + rcv_id_len | 24+1 bytes | Recipient ID |
+| snd_id + snd_id_len | 24+1 bytes | Sender ID |
+| srv_dh_pk + have_srv_dh | 32+1 bytes | Server DH Key |
+
+**New Flow:**
+```
+Start
+  │
+  ▼
+TLS + ServerHello + ClientHello
+  │
+  ▼
+load_keys_from_nvs()
+  │
+  ├── Keys found? ──► Skip NEW ──► SUB directly
+  │
+  └── No keys? ──► NEW ──► IDS ──► save_keys_to_nvs() ──► SUB
+```
+
+### Proof - Reboot Log
+
+**First Start (NEW + Save):**
+```
+I (6769) SMP:   🎉🎉🎉 QUEUE CREATED! 🎉🎉🎉
+I (6779) SMP:   📥 RecipientId (24 bytes): cb1ab7dfa04183e65fe52aeb7fa7118162b3c76e543284c3
+I (6809) SMP:       NVS: Keys saved!
+```
+
+**After Reboot (Load + Skip NEW):**
+```
+I (6289) SMP:       NVS: Keys loaded!
+I (6289) SMP:       rcvAuthKey: e92b3e5b...
+I (6289) SMP:       recipientId (24 bytes): cb1ab7df...
+I (6289) SMP:   [4-6] Skipping NEW - using saved queue!
+I (6299) SMP:   [7/7] Sending SUB command...
+I (6659) SMP:   ✅ SUBSCRIBED! Ready to receive messages.
+```
 
 ---
 
@@ -43,25 +104,12 @@ Signature covers:
 
 ### Protocol Note: SMP Versions
 
-Researched SMP version differences (v6 vs v7-v17):
-
 | Version | Feature | Impact |
 |---------|---------|--------|
 | **v6** | Base protocol | ✅ What we use |
 | **v7+** | `implySessId` | sessionId not sent, included in signature |
 | **v7+** | `authEncryptCmds` | Commands encrypted with X25519 DH |
 | **v17** | Latest features | Batch commands, optimizations |
-
-**Decision:** Stay with v6 for now - it has everything needed for a full messenger.
-Upgrade path: v6 → v17 directly (skip intermediate versions).
-
-From Haskell source:
-```haskell
-authCmdsSMPVersion = VersionSMP 7
-implySessId = v >= authCmdsSMPVersion
--- v6: sessionId sent in transmission, NOT in signature
--- v7+: sessionId NOT sent, IS in signature
-```
 
 ---
 
@@ -92,21 +140,6 @@ memcpy(nonce, msg_id, msgIdLen);
 crypto_box_open_easy_afternm(plain, cipher, cipher_len, nonce, shared);
 ```
 
-### Protocol Discovery (from Server.hs:2024)
-```haskell
-encrypt body = RcvMessage msgId' . EncRcvMsgBody $ 
-  C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
-```
-
-### Proof of Success
-```
-I (7789) SMP:       📬 Got our MSG back!
-      MsgId: 354c3cd4a96d8510f1ac5965378e0f18edd2a73c662e1dff
-I (7799) SMP:       Encrypted: 16122 bytes
-I (7859) SMP:   🔓 DECRYPTED (16106 bytes):
-      ......io..F Hello from ESP32!###############
-```
-
 ---
 
 ## [0.1.5-alpha] - 2026-01-20
@@ -126,19 +159,6 @@ SEND command working, MSG receive implemented, complete message loop operational
 - **Space after msgFlags** — Required separator before msgBody
 - **Unsecured queue auth** — authLen = 0 for queues without SKEY
 
-### Technical Discoveries
-```
-SEND Format (from Haskell Protocol.hs:1697):
-  e (SEND_, ' ', flags, ' ', Tail msg)
-
-MsgFlags Encoding (from Encoding.hs):
-  True  = "T" (ASCII 0x54)
-  False = "F" (ASCII 0x46)
-
-Unsecured Queue (from Server.hs:1241):
-  Queue without SKEY accepts SEND with authLen = 0
-```
-
 ---
 
 ## [0.1.4-alpha] - 2026-01-20
@@ -147,18 +167,6 @@ Unsecured Queue (from Server.hs:1241):
 - **SUB command implementation** — Subscribe to created queues
 - SUB response parsing with transport format handling
 - Queue subscription confirmation
-
-### Technical Details
-```
-SUB Response Transport Format:
-  [01]           = txCount
-  [00 3f]        = txLen (63 bytes)
-  [00]           = authLen (no signature)
-  [20][32 bytes] = sessionId
-  [01][corrId]   = corrId
-  [18][24 bytes] = entityId (recipientId)
-  [O][K]         = "OK" at position 64
-```
 
 ---
 
@@ -175,15 +183,6 @@ SUB Response Transport Format:
 ### Fixed
 - **CRITICAL: Switched from Monocypher to libsodium** — Monocypher Ed25519 signatures incompatible with SimpleX servers
 
-### Technical Discovery
-```
-Ed25519 Library Incompatibility:
-  - Monocypher and libsodium produce DIFFERENT signatures
-  - Same input, same keys, different output!
-  - SimpleX servers use crypton (libsodium-compatible)
-  - Solution: Use ESP-IDF's libsodium component
-```
-
 ---
 
 ## [0.1.2-alpha] - 2026-01-18
@@ -198,15 +197,6 @@ Ed25519 Library Incompatibility:
 ### Fixed
 - **CRITICAL: keyHash must use CA certificate (2nd in chain)**, not server certificate
 
-### Technical Discovery
-```
-Certificate Chain in ServerHello:
-  [0] Server certificate (online cert)
-  [1] CA certificate ← Use THIS for keyHash!
-
-keyHash = SHA256(full DER of CA certificate)
-```
-
 ---
 
 ## [0.1.1-alpha] - 2026-01-17
@@ -218,15 +208,6 @@ keyHash = SHA256(full DER of CA certificate)
 - ALPN negotiation for "smp/1"
 - Cipher suite restriction to TLS 1.3 only
 - SNI support
-
-### Configuration
-```
-TLS Settings:
-  - Version: TLS 1.3 only
-  - Cipher: TLS_CHACHA20_POLY1305_SHA256
-  - ALPN: "smp/1"
-  - SNI: enabled
-```
 
 ---
 
@@ -240,19 +221,14 @@ TLS Settings:
 - Basic TCP socket connection
 - Initial mbedTLS integration
 
-### Technical Stack
-- ESP-IDF 5.5.2
-- ESP32-S3 target
-- mbedTLS for TLS
-- FreeRTOS for task management
-
 ---
 
 ## Version History Summary
 
 | Version | Date | Milestone |
 |---------|------|-----------|
-| **v0.1.7-alpha** | **2026-01-20** | **🎯 ACK Command + Full Lifecycle!** |
+| **v0.1.8-alpha** | **2026-01-20** | **🔑 NVS Key Persistence!** |
+| v0.1.7-alpha | 2026-01-20 | 🎯 ACK Command |
 | v0.1.6-alpha | 2026-01-20 | 🏆 E2E Decryption! |
 | v0.1.5-alpha | 2026-01-20 | SEND + MSG receive |
 | v0.1.4-alpha | 2026-01-20 | SUB command |
@@ -265,15 +241,16 @@ TLS Settings:
 
 ## 🏆 Achievement Unlocked
 
-**"First Native ESP32 SimpleX E2E Client"**
+**"First Native ESP32 SimpleX E2E Client — Persistent!"**
 
-- ✅ Queue Management (NEW, SUB, DEL)
+- ✅ Queue Management (NEW, SUB)
 - ✅ SMP Protocol v6
 - ✅ Ed25519 Signing
 - ✅ X25519 Key Exchange
 - ✅ NaCl crypto_box Encryption
 - ✅ Full Message Round-Trip
-- ✅ **ACK Command — Complete Lifecycle!**
+- ✅ ACK Command
+- ✅ **NVS Key Persistence — Survives Reboots!**
 
 ---
 

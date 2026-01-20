@@ -5,23 +5,27 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-green.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
 [![Framework: ESP-IDF 5.5](https://img.shields.io/badge/Framework-ESP--IDF%205.5-red.svg)](https://docs.espressif.com/projects/esp-idf/)
-[![Version: v0.1.7-alpha](https://img.shields.io/badge/Version-v0.1.7--alpha-orange.svg)]()
-[![Status: Full Lifecycle](https://img.shields.io/badge/Status-Full%20Lifecycle-brightgreen.svg)]()
+[![Version: v0.1.8-alpha](https://img.shields.io/badge/Version-v0.1.8--alpha-orange.svg)]()
+[![Status: Persistent](https://img.shields.io/badge/Status-Persistent-brightgreen.svg)]()
 
 ---
 
-## 🏆 Achievement: Full Message Lifecycle Complete!
+## 🔑 NEW: Keys Survive Reboots!
 
-**As of v0.1.7-alpha (January 20, 2026)**, SimpleGo has achieved complete SMP message handling:
+**As of v0.1.8-alpha (January 20, 2026)**, SimpleGo now persists keys and queue IDs in NVS:
 
 ```
-NEW → IDS (queue created)
-SUB → OK (subscribed)  
-SEND → MSG (echo back) + OK
-MSG → Decrypt → ACK → OK (message confirmed & deleted)
+First Start:
+I (6769) SMP:   🎉🎉🎉 QUEUE CREATED! 🎉🎉🎉
+I (6809) SMP:       NVS: Keys saved!
+
+After Reboot:
+I (6289) SMP:       NVS: Keys loaded!
+I (6289) SMP:   [4-6] Skipping NEW - using saved queue!
+I (6659) SMP:   ✅ SUBSCRIBED! Ready to receive messages.
 ```
 
-**Full round-trip with E2E encryption and acknowledgment!** 🎉
+**No more losing your queue on power cycle!** 🎉
 
 ---
 
@@ -51,7 +55,8 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 | SEND Command | ✅ Complete | Message transmission |
 | MSG Receive | ✅ Complete | Message parsing |
 | E2E Decryption | ✅ Complete | X25519 DH + XSalsa20-Poly1305 |
-| **ACK Command** | ✅ **Complete** | **Message acknowledgment** |
+| ACK Command | ✅ Complete | Message acknowledgment |
+| **NVS Persistence** | ✅ **Complete** | **Keys survive reboots!** |
 | DEL Command | 📋 Planned | Queue deletion |
 
 ### Cryptography
@@ -71,11 +76,53 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 | Component | Technology | Notes |
 |-----------|------------|-------|
 | **MCU** | ESP32-S3 | Dual-core 240MHz, 8MB PSRAM |
-| **Target Hardware** | LilyGo T-Deck | 2.8" LCD, Physical Keyboard, LoRa |
+| **Target Hardware** | LilyGo T-Deck / T-Embed | Display + Input |
 | **Framework** | ESP-IDF 5.5.2 | Official Espressif IoT Development Framework |
 | **TLS** | mbedTLS 3.x | TLS 1.3, ChaCha20-Poly1305 |
 | **Cryptography** | libsodium | Ed25519, X25519, crypto_box |
+| **Storage** | NVS | Non-volatile key persistence |
 | **Protocol** | SMP v6 | SimpleX Messaging Protocol |
+
+---
+
+## 🔑 NVS Key Persistence (v0.1.8)
+
+### Persisted Data
+
+| Key | Size | Description |
+|-----|------|-------------|
+| rcv_auth_sk | 64 bytes | Ed25519 Secret Key |
+| rcv_auth_pk | 32 bytes | Ed25519 Public Key |
+| rcv_dh_sk | 32 bytes | X25519 Secret Key |
+| rcv_dh_pk | 32 bytes | X25519 Public Key |
+| rcv_id | 24 bytes | Recipient ID |
+| snd_id | 24 bytes | Sender ID |
+| srv_dh_pk | 32 bytes | Server DH Key |
+
+### New Flow
+
+```
+Start
+  │
+  ▼
+TLS + Handshake
+  │
+  ▼
+load_keys_from_nvs()
+  │
+  ├── Keys found? ──► Skip NEW ──► SUB directly
+  │
+  └── No keys? ──► NEW ──► save_keys_to_nvs() ──► SUB
+```
+
+### API Functions
+
+```c
+bool have_saved_keys()      // Check if keys exist in NVS
+bool load_keys_from_nvs()   // Load all keys from NVS
+void save_keys_to_nvs()     // Save after IDS response
+void clear_saved_keys()     // Delete all keys (reset)
+```
 
 ---
 
@@ -85,7 +132,7 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 
 ```c
 // 1. Compute DH Shared Secret (X25519)
-uint8_t shared[crypto_box_BEFORENMBYTES];  // 32 bytes
+uint8_t shared[crypto_box_BEFORENMBYTES];
 crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
 
 // 2. Nonce = msgId (24 bytes, zero-padded)
@@ -94,15 +141,6 @@ memcpy(nonce, msg_id, msgIdLen);
 
 // 3. Decrypt with NaCl crypto_box (XSalsa20-Poly1305)
 crypto_box_open_easy_afternm(plaintext, ciphertext, cipher_len, nonce, shared);
-```
-
-### ACK Command (v0.1.7)
-
-```c
-// ACK is a Recipient command (like SUB)
-// EntityId = recipientId (NOT senderId!)
-ack_body = [corrId] + [recipientId] + "ACK " + [msgIdLen][msgId]
-signature = sign([0x20][sessionId] + ack_body)
 ```
 
 ---
@@ -140,7 +178,7 @@ SimpleGo/
 
 - **Windows**: ESP-IDF 5.5.2 with PowerShell integration
 - **Linux/macOS**: ESP-IDF 5.5.2 via install script
-- **Hardware**: ESP32-S3 board (T-Deck recommended) or any ESP32-S3 DevKit
+- **Hardware**: ESP32-S3 board (T-Deck or T-Embed recommended)
 
 ### Build & Flash
 
@@ -154,6 +192,14 @@ cd ~/esp/simplex_client
 idf.py build flash monitor -p /dev/ttyUSB0
 ```
 
+### Useful Monitor Commands
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+]` | Exit monitor |
+| `Ctrl+T, R` | Reboot device |
+| `Ctrl+T, H` | Help |
+
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed setup instructions.
 
 ---
@@ -164,7 +210,8 @@ See [ROADMAP.md](ROADMAP.md) for detailed plans.
 
 **Phase 1: Protocol Foundation** ✅ Complete  
 **Phase 2: Full Messaging** ✅ Complete  
-**Phase 3: E2E Encryption** ✅ **Complete!**  
+**Phase 3: E2E Encryption** ✅ Complete  
+**Phase 3.5: Persistence** ✅ **Complete!**  
 **Phase 4: User Interface** 📋 Planned  
 **Phase 5: Advanced Features** 📋 Future  
 
@@ -210,7 +257,7 @@ See [LICENSE](LICENSE) for full terms.
 
 - **[SimpleX Chat](https://simplex.chat/)** — Protocol design and inspiration
 - **[Espressif](https://www.espressif.com/)** — ESP32 platform and ESP-IDF
-- **[LilyGo](https://lilygo.cc/)** — T-Deck hardware
+- **[LilyGo](https://lilygo.cc/)** — T-Deck / T-Embed hardware
 - **[libsodium](https://libsodium.org/)** — Cryptographic primitives
 
 ---
@@ -219,7 +266,8 @@ See [LICENSE](LICENSE) for full terms.
 
 | Version | Date | Milestone |
 |---------|------|-----------|
-| **v0.1.7-alpha** | **2026-01-20** | **🎯 ACK Command + Full Lifecycle!** |
+| **v0.1.8-alpha** | **2026-01-20** | **🔑 NVS Key Persistence!** |
+| v0.1.7-alpha | 2026-01-20 | 🎯 ACK Command |
 | v0.1.6-alpha | 2026-01-20 | 🏆 E2E Decryption! |
 | v0.1.5-alpha | 2026-01-20 | SEND + MSG receive |
 | v0.1.4-alpha | 2026-01-20 | SUB command |
@@ -231,7 +279,7 @@ See [LICENSE](LICENSE) for full terms.
 ---
 
 <p align="center">
-  <strong>🏆 First Native ESP32 SimpleX E2E Client 🏆</strong><br>
+  <strong>🏆 First Native ESP32 SimpleX E2E Client — Now Persistent! 🏆</strong><br>
   <em>Privacy is not a privilege, it's a right.</em>
 </p>
 

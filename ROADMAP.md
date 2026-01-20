@@ -15,6 +15,7 @@ SimpleGo development follows a phased approach, building from protocol fundament
 │  Phase 1: Protocol Foundation     ████████████████████ 100% ✅      │
 │  Phase 2: Full Messaging          ████████████████████ 100% ✅      │
 │  Phase 3: E2E Encryption          ████████████████████ 100% ✅      │
+│  Phase 3.5: Persistence           ████████████████████ 100% ✅      │
 │  Phase 4: User Interface          ░░░░░░░░░░░░░░░░░░░░   0% 📋      │
 │  Phase 5: Advanced Features       ░░░░░░░░░░░░░░░░░░░░   0% 📋      │
 └─────────────────────────────────────────────────────────────────────┘
@@ -42,20 +43,6 @@ SimpleGo development follows a phased approach, building from protocol fundament
 | NEW Command | ✅ | Queue creation with IDS response |
 | SUB Command | ✅ | Queue subscription |
 
-### Key Achievements
-
-- First working native SMP client outside Haskell
-- Full TLS 1.3 compliance with SimpleX servers
-- Correct cryptographic signature generation
-- Protocol-compliant message framing
-
-### Critical Discoveries
-
-1. **keyHash Calculation**: Must use CA certificate (2nd in chain), not server certificate
-2. **Ed25519 Compatibility**: Monocypher incompatible with SimpleX; must use libsodium
-3. **Block Format**: Commands require different format than handshake messages
-4. **SubMode Parameter**: Required for SMP v6 NEW command
-
 ---
 
 ## Phase 2: Full Messaging ✅ COMPLETE
@@ -72,35 +59,6 @@ SimpleGo development follows a phased approach, building from protocol fundament
 | Message Reception | ✅ | Receive MSG from subscribed queues |
 | ACK Command | ✅ | Acknowledge message delivery |
 | OK Response Handling | ✅ | Command confirmations |
-| Error Handling | ✅ | Basic error recovery |
-| Connection Keepalive | 📋 | Prevent timeout disconnects |
-| Multiple Queues | 📋 | Manage multiple conversations |
-
-### Technical Details
-
-#### SEND Command Structure
-```
-SEND [msgFlags] [msgBody]
-  - msgFlags: 'T' or 'F' (ASCII, not binary!)
-  - msgBody: encrypted message content
-```
-
-#### ACK Command Structure (v0.1.7)
-```
-ACK [msgId]
-  - EntityId: recipientId (NOT senderId!)
-  - Requires signature with rcv_auth_secret
-  - Server responds with OK
-```
-
-### Success Criteria ✅
-
-- [x] Send plaintext message to queue
-- [x] Receive message from subscribed queue
-- [x] Acknowledge received messages
-- [x] Handle OK responses
-- [ ] Handle connection drops gracefully (partial)
-- [ ] Maintain persistent session (partial)
 
 ---
 
@@ -120,74 +78,83 @@ ACK [msgId]
 | Server DH Key | ✅ | Extract from IDS response |
 | Full Round-Trip | ✅ | SEND→MSG→Decrypt→ACK |
 
-### Technical Implementation
+---
 
-```c
-// DH Shared Secret
-crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
+## Phase 3.5: Persistence ✅ COMPLETE
 
-// Nonce = msgId (24 bytes, zero-padded)
-uint8_t nonce[24] = {0};
-memcpy(nonce, msg_id, msgIdLen);
+**Goal**: Keys and queue IDs survive reboots
 
-// Decrypt
-crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
+**Status**: ✅ Complete (January 20, 2026)
+
+### Deliverables
+
+| Task | Status | Description |
+|------|--------|-------------|
+| NVS Storage | ✅ | Non-volatile key persistence |
+| Queue Reconnect | ✅ | SUB directly after reboot |
+| Key Management | ✅ | have/load/save/clear functions |
+
+### Persisted Data
+
+| Key | Size | Description |
+|-----|------|-------------|
+| rcv_auth_sk | 64 bytes | Ed25519 Secret Key |
+| rcv_auth_pk | 32 bytes | Ed25519 Public Key |
+| rcv_dh_sk | 32 bytes | X25519 Secret Key |
+| rcv_dh_pk | 32 bytes | X25519 Public Key |
+| rcv_id | 24 bytes | Recipient ID |
+| snd_id | 24 bytes | Sender ID |
+| srv_dh_pk | 32 bytes | Server DH Key |
+
+### New Flow
+
 ```
-
-### Future: Double Ratchet (Phase 5)
-
-The current implementation uses transport-level encryption. Full Agent-level E2E with Double Ratchet (Curve448) is planned for Phase 5.
+Start
+  │
+  ▼
+TLS + Handshake
+  │
+  ▼
+load_keys_from_nvs()
+  │
+  ├── Keys found? ──► Skip NEW ──► SUB directly
+  │
+  └── No keys? ──► NEW ──► save_keys_to_nvs() ──► SUB
+```
 
 ---
 
 ## Phase 4: User Interface 📋 PLANNED
 
-**Goal**: Complete messaging UI for T-Deck hardware
+**Goal**: Complete messaging UI for T-Embed/T-Deck hardware
 
 **Status**: Not started
 
-**Target**: Q2 2026
+**Target**: Q1-Q2 2026
 
 ### Deliverables
 
 | Task | Status | Priority | Description |
 |------|--------|----------|-------------|
-| Display Driver | 📋 | Critical | ST7789 LCD initialization |
+| Display Driver | 📋 | Critical | ST7789/ST7735 LCD initialization |
 | LVGL Integration | 📋 | Critical | Graphics library setup |
+| Rotary Encoder | 📋 | High | T-Embed input handling |
 | Main Screen | 📋 | High | Connection status, message count |
-| Conversation List | 📋 | High | Contact/queue list view |
-| Message View | 📋 | High | Chat bubble interface |
-| Compose Screen | 📋 | High | Text input with keyboard |
-| Keyboard Driver | 📋 | High | Physical keyboard input |
+| Message View | 📋 | High | Chat interface |
+| Keyboard Support | 📋 | Medium | T-Deck physical keyboard |
 | Settings Menu | 📋 | Medium | WiFi, server config |
-| Status Bar | 📋 | Medium | Signal, battery, time |
 
-### T-Deck Hardware Specs
+### Target Hardware
 
-```
-Display:
-  - 2.8" IPS LCD (320x240)
-  - ST7789 controller
-  - SPI interface
+**T-Embed (Primary):**
+- 1.9" LCD (170x320)
+- Rotary Encoder
+- Compact form factor
 
-Keyboard:
-  - Physical QWERTY
-  - I2C interface
-  - Backlight control
-
-Additional:
-  - Trackball navigation
-  - Speaker/microphone
-  - LoRa module (SX1262)
-  - GPS module (optional)
-```
-
-### UI Design Principles
-
-1. **SimpleX-Style Interface**: Familiar to SimpleX users
-2. **High Contrast**: Readable in various lighting
-3. **Minimal Animations**: Performance over polish
-4. **Keyboard-First**: Optimized for physical input
+**T-Deck (Secondary):**
+- 2.8" LCD (320x240)
+- Physical QWERTY keyboard
+- LoRa module
 
 ---
 
@@ -201,58 +168,15 @@ Additional:
 
 ### Feature Set
 
-#### 5.1 Key Persistence & Queue Recovery
-```
-- NVS storage for keys
-- Queue reconnect after reboot
-- Contact management
-```
-
-#### 5.2 Double Ratchet (Agent-Level E2E)
-```
-- X3DH key agreement
-- Curve448 support
-- Forward secrecy per message
-```
-
-#### 5.3 Group Messaging
-```
-- Group queue management
-- Member key distribution
-- Group admin functions
-```
-
-#### 5.4 File Transfer
-```
-- XFTP protocol integration
-- Chunked file transfer
-- Progress indication
-```
-
-#### 5.5 Connectivity Options
-```
-- 4G/LTE modem support (SIM7600)
-- WiFi mesh networking
-- LoRa peer-to-peer (local)
-```
-
-#### 5.6 Tor Integration
-```
-- Optional Tor proxy
-- .onion SMP servers
-- Enhanced metadata protection
-```
-
-### Prioritization Matrix
-
-| Feature | Impact | Effort | Priority |
-|---------|--------|--------|----------|
-| Key Persistence | High | Low | **Immediate** |
-| Double Ratchet | High | High | Medium |
-| Group Messaging | High | High | Medium |
-| File Transfer | Medium | Medium | Medium |
-| 4G Connectivity | High | Medium | High |
-| Tor Support | Medium | High | Low |
+| Feature | Priority | Description |
+|---------|----------|-------------|
+| DEL Command | High | Delete queues |
+| Multiple Queues | High | Contact management |
+| Double Ratchet | Medium | Agent-level E2E (Curve448) |
+| WiFi Config | Medium | Credentials in NVS |
+| Connection Recovery | Medium | Auto-reconnect |
+| Group Messaging | Low | Group queues |
+| File Transfer | Low | XFTP integration |
 
 ---
 
@@ -260,17 +184,18 @@ Additional:
 
 ```
 2026 Q1
-├── January   ✅ Phase 1-3 Complete!
+├── January   ✅ Phase 1-3.5 Complete!
 │             ├── Protocol Foundation
 │             ├── Full Messaging (SEND, MSG, ACK)
-│             └── E2E Encryption
-├── February  📋 Key Persistence + Queue Recovery
-└── March     📋 Phase 4 Start (UI Development)
+│             ├── E2E Encryption
+│             └── NVS Persistence
+├── February  📋 Phase 4 Start (T-Embed UI)
+└── March     📋 Phase 4 Continue
 
 2026 Q2
 ├── April     📋 Phase 4 Continue
-├── May       📋 Phase 4 Continue
-└── June      📋 Phase 4 Complete + Beta Release
+├── May       📋 Phase 4 Complete
+└── June      📋 Beta Release
 
 2026 Q3-Q4
 ├── July+     📋 Phase 5 (Advanced Features)
@@ -279,56 +204,25 @@ Additional:
 
 ---
 
-## SMP Protocol Version Strategy
+## Current Priorities
 
-### Current: v6
+### Immediate (Next)
 
-v6 has **everything** needed for a complete messenger:
-- ✅ Queue management (NEW, SUB, DEL)
-- ✅ Message sending (SEND)
-- ✅ Message receiving (MSG)
-- ✅ Acknowledgment (ACK)
-- ✅ E2E encryption (X25519 + XSalsa20-Poly1305)
+1. **T-Embed UI** — Display + Rotary Encoder
+2. **DEL Command** — Queue cleanup
+3. **WiFi Config** — Store credentials in NVS
 
-### What v7+ adds (not critical for MVP):
-- `implySessId` — sessionId not sent in transmission (optimization)
-- `authEncryptCmds` — Commands encrypted with X25519 DH (extra security)
-- Batch commands — Performance optimization
+### Short-term
 
-### Upgrade Path
-```
-v6 (now) ────────────────► v17 (future)
-          skip v7-v16
-```
-
-When stable, upgrade directly to latest version for optimizations.
-
----
-
-## Contributing to Roadmap
-
-### How to Propose Features
-
-1. **Open an Issue**: Describe the feature and use case
-2. **Discussion**: Community feedback and prioritization
-3. **RFC (if major)**: Formal proposal for significant changes
-4. **Implementation**: PR with tests and documentation
-
-### Current Priorities
-
-Looking for contributors in these areas:
-
-1. **Key Persistence (NVS)** — Immediate need
-2. **LVGL UI Development** — Embedded graphics experience
-3. **Double Ratchet Port** — Cryptography expertise needed
-4. **Documentation** — Protocol analysis and guides
+4. Multiple Queues
+5. Connection Recovery
+6. T-Deck Keyboard Support
 
 ---
 
 ## References
 
 - [SimpleX Messaging Protocol](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md)
-- [Double Ratchet Algorithm](https://signal.org/docs/specifications/doubleratchet/)
-- [X3DH Key Agreement](https://signal.org/docs/specifications/x3dh/)
-- [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/)
+- [ESP-IDF NVS Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/storage/nvs_flash.html)
 - [LVGL Documentation](https://docs.lvgl.io/)
+- [LilyGo T-Embed](https://github.com/Xinyuan-LilyGO/T-Embed)
