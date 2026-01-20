@@ -9,12 +9,11 @@
 1. [Prerequisites](#prerequisites)
 2. [Environment Setup](#environment-setup)
 3. [Hardware Setup](#hardware-setup)
-4. [Library Installation](#library-installation)
-5. [Building & Flashing](#building--flashing)
-6. [Architecture Overview](#architecture-overview)
-7. [Development Workflow](#development-workflow)
-8. [Debugging](#debugging)
-9. [Testing](#testing)
+4. [Building & Flashing](#building--flashing)
+5. [Architecture Overview](#architecture-overview)
+6. [Development Workflow](#development-workflow)
+7. [Debugging](#debugging)
+8. [Testing](#testing)
 
 ---
 
@@ -35,45 +34,34 @@
 | **ESP-IDF** | 5.5.2+ | Official Espressif framework |
 | **Python** | 3.8+ | Required by ESP-IDF |
 | **Git** | Any recent | Version control |
-| **VS Code** | Optional | Recommended IDE |
 
 ---
 
 ## Environment Setup
 
-### ESP-IDF Installation (Recommended)
+### ESP-IDF Installation
 
 #### Windows
 
 1. **Download ESP-IDF Installer**
    - https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/windows-setup.html
-   - Run `esp-idf-tools-setup-x.x.exe`
 
-2. **Select Components**
-   - ESP-IDF v5.5.2
-   - All chip targets (or at least ESP32-S3)
-   - Python installation
-
-3. **Launch Environment**
+2. **Launch Environment**
    ```powershell
    # Use ESP-IDF PowerShell from Start Menu
-   # Or run:
    C:\Espressif\idf_cmd_init.ps1
    ```
 
 #### Linux / macOS
 
 ```bash
-# Clone ESP-IDF
 mkdir -p ~/esp
 cd ~/esp
 git clone -b v5.5.2 --recursive https://github.com/espressif/esp-idf.git
-
-# Install tools
 cd esp-idf
 ./install.sh esp32s3
 
-# Set up environment (add to .bashrc/.zshrc)
+# Add to .bashrc/.zshrc
 . ~/esp/esp-idf/export.sh
 ```
 
@@ -84,172 +72,52 @@ idf.py --version
 # Should show: ESP-IDF v5.5.2
 ```
 
-### Arduino IDE (Alternative - Legacy)
-
-> **Note**: ESP-IDF is recommended for SimpleGo. Arduino setup documented for reference.
-
-1. Download Arduino IDE 2.x from [arduino.cc](https://www.arduino.cc/en/software)
-2. Install for your platform (Windows/Mac/Linux)
-
-#### ESP32 Board Support (Manual Installation)
-
-The Arduino Board Manager often times out downloading large ESP32 packages. Manual installation is more reliable:
-
-**Windows (PowerShell):**
-```powershell
-# Create hardware directory
-mkdir "$env:USERPROFILE\Documents\Arduino\hardware"
-
-# Clone Heltec ESP32 framework
-cd "$env:USERPROFILE\Documents\Arduino\hardware"
-git clone https://github.com/Heltec-Aaron-Lee/WiFi_Kit_series.git
-
-# Restructure for Arduino
-mkdir heltec
-move WiFi_Kit_series heltec\esp32
-
-# Install toolchain
-cd "$env:USERPROFILE\Documents\Arduino\hardware\heltec\esp32\tools"
-.\get.exe
-```
-
-**Linux/Mac (Bash):**
-```bash
-# Create hardware directory
-mkdir -p ~/Arduino/hardware/heltec
-
-# Clone and setup
-cd ~/Arduino/hardware/heltec
-git clone https://github.com/Heltec-Aaron-Lee/WiFi_Kit_series.git esp32
-
-# Install toolchain
-cd ~/Arduino/hardware/heltec/esp32/tools
-python3 get.py
-```
-
 ---
 
 ## Hardware Setup
 
-### Heltec WiFi LoRa 32 V2 (Development Board)
+### LilyGo T-Deck (Target)
 
 | Component | Specification |
 |-----------|---------------|
-| MCU | ESP32-D0WDQ6 Dual Core @ 240MHz |
-| Flash | 4MB |
-| SRAM | 520KB |
-| Display | 0.96" OLED 128x64 (SSD1306) |
-| LoRa | SX1276 (433/868/915MHz) |
-| WiFi | 802.11 b/g/n 2.4GHz |
-| USB | CP2102 USB-Serial |
-
-**Pin Configuration:**
-- OLED SDA: GPIO 4
-- OLED SCL: GPIO 15
-- OLED RST: GPIO 16
-- LED: GPIO 25
-- LoRa NSS: GPIO 18
-- LoRa RST: GPIO 14
-- LoRa DIO0: GPIO 26
-
-### LilyGo T-Deck (Target Hardware)
-
-| Component | Specification |
-|-----------|---------------|
-| MCU | ESP32-S3FN16R8 Dual Core @ 240MHz |
+| MCU | ESP32-S3FN16R8 @ 240MHz |
 | Flash | 16MB |
 | PSRAM | 8MB |
 | Display | 2.8" IPS LCD 320x240 (ST7789) |
-| Keyboard | Integrated (ESP32-C3 controller) |
-| Trackball | Yes |
-| Touch | Capacitive |
-| LoRa | Optional SX1262 |
+| Keyboard | Physical QWERTY (I2C) |
 
-### LilyGo T-Embed (Target Hardware)
+### LilyGo T-Embed (Target)
 
 | Component | Specification |
 |-----------|---------------|
-| MCU | ESP32-S3 Dual Core @ 240MHz |
-| Flash | 16MB |
-| PSRAM | 8MB |
+| MCU | ESP32-S3 @ 240MHz |
 | Display | 1.9" LCD 170x320 (ST7789) |
 | Input | Rotary Encoder with button |
-| Form Factor | Compact |
-
-### USB Driver (CP2102)
-
-Download from Silicon Labs: https://www.silabs.com/documents/public/software/CP210x_Windows_Drivers.zip
-
----
-
-## Library Installation
-
-### ESP-IDF Dependencies
-
-Managed via `idf_component.yml`:
-
-```yaml
-dependencies:
-  espressif/libsodium: "^1.0.20"
-```
-
-Automatically downloaded on first build.
-
-### Arduino Libraries (if using Arduino)
-
-#### 1. Heltec ESP32 Library
-```bash
-cd ~/Arduino/libraries  # or Documents\Arduino\libraries on Windows
-git clone https://github.com/HelTecAutomation/Heltec_ESP32.git
-```
-
-#### 2. Adafruit GFX (Dependency)
-
-Install via Arduino Library Manager:
-- Sketch → Include Library → Manage Libraries
-- Search "Adafruit GFX" → Install
 
 ---
 
 ## Building & Flashing
 
-### ESP-IDF (Recommended)
-
-#### Set Target
+### Set Target
 
 ```bash
 idf.py set-target esp32s3
 ```
 
-#### Build
+### Build
 
 ```bash
 idf.py build
 ```
 
-#### Flash
+### Flash & Monitor
 
 ```bash
-# Windows (check COM port in Device Manager)
-idf.py flash -p COM5
+# Windows
+idf.py build flash monitor -p COM5
 
 # Linux
-idf.py flash -p /dev/ttyUSB0
-
-# macOS
-idf.py flash -p /dev/cu.usbserial-*
-```
-
-#### Monitor
-
-```bash
-idf.py monitor -p COM5  # or /dev/ttyUSB0
-```
-
-#### All-in-One
-
-```bash
-idf.py build flash monitor -p COM5
+idf.py build flash monitor -p /dev/ttyUSB0
 ```
 
 ### Monitor Shortcuts
@@ -259,77 +127,63 @@ idf.py build flash monitor -p COM5
 | `Ctrl+]` | Exit monitor |
 | `Ctrl+T, R` | Reboot device |
 | `Ctrl+T, H` | Help menu |
-| `Ctrl+T, P` | Pause output |
-
-### Arduino IDE (Alternative)
-
-1. **Board:** "WiFi LoRa 32(V2)" (under Heltec ESP32 Series)
-2. **Upload Speed:** 921600
-3. **Flash Frequency:** 80MHz
-4. **Port:** Select your COM port
-
-#### Upload Issues
-
-If upload fails, enter bootloader mode manually:
-1. Hold **PRG/BOOT** button
-2. Press **RST** button once
-3. Release **PRG/BOOT**
-4. Upload again
 
 ---
 
 ## Architecture Overview
 
-### Crypto Stack
+### System Stack
 
 ```
 ┌─────────────────────────────────────────┐
 │           Application Layer             │
 ├─────────────────────────────────────────┤
-│  libsodium (ESP-IDF Component)          │
-│  ├── Ed25519 - Digital Signatures       │
-│  ├── X25519 - ECDH Key Exchange         │
-│  └── XSalsa20-Poly1305 - crypto_box     │
+│  Contact Management (v0.1.10+)          │
+│  ├── contacts_db_t (10 slots)           │
+│  ├── add/remove/list_contacts()         │
+│  ├── Message Routing (by recipientId)   │
+│  └── NVS Blob Persistence               │
 ├─────────────────────────────────────────┤
-│  mbedTLS (Built into ESP-IDF)           │
-│  ├── SHA-256/512 - Hashing              │
-│  ├── TLS 1.3 - Transport Security       │
-│  └── ChaCha20-Poly1305 - TLS Cipher     │
+│  Crypto Stack                           │
+│  ├── Ed25519 (libsodium)                │
+│  ├── X25519 (libsodium)                 │
+│  ├── crypto_box (XSalsa20-Poly1305)     │
+│  └── SHA-256 (mbedTLS HW)               │
 ├─────────────────────────────────────────┤
-│  ESP32 Hardware                         │
-│  ├── Hardware RNG (esp_random)          │
-│  ├── SHA Hardware Acceleration          │
-│  └── AES Hardware Acceleration          │
-└─────────────────────────────────────────┘
-```
-
-### Network Stack
-
-```
-┌─────────────────────────────────────────┐
-│         SMP Protocol Layer              │
+│  SMP Protocol Layer                     │
 │  ├── NEW, SUB, SEND, MSG, ACK, DEL      │
 │  ├── 16KB Block Framing                 │
-│  ├── Command Serialization              │
-│  └── Queue Management                   │
+│  └── Multi-Contact over one TLS         │
 ├─────────────────────────────────────────┤
-│         TLS 1.3 Layer                   │
-│  └── mbedTLS (ChaCha20-Poly1305)        │
-├─────────────────────────────────────────┤
-│         TCP/IP Layer                    │
-│  └── ESP32 WiFi Stack                   │
+│  Network Stack                          │
+│  ├── TLS 1.3 (mbedTLS)                  │
+│  ├── WiFi (ESP32)                       │
+│  └── TCP/IP                             │
 └─────────────────────────────────────────┘
 ```
 
-### SimpleX Protocol Requirements
+### Data Structures (v0.1.10)
 
-| Primitive | SimpleX Usage | Our Implementation |
-|-----------|---------------|-------------------|
-| Ed25519 | Command signatures | ✅ libsodium |
-| X25519 | SMP key exchange | ✅ libsodium |
-| XSalsa20-Poly1305 | SMP encryption | ✅ libsodium |
-| SHA-256 | keyHash | ✅ mbedTLS |
-| X448 | Double Ratchet DH | 📋 Planned |
+```c
+#define MAX_CONTACTS 10
+
+typedef struct {
+    char name[32];
+    uint8_t rcv_auth_secret[64];  // Ed25519
+    uint8_t rcv_auth_public[32];
+    uint8_t rcv_dh_secret[32];    // X25519
+    uint8_t rcv_dh_public[32];
+    uint8_t recipient_id[24];
+    uint8_t sender_id[24];
+    uint8_t srv_dh_public[32];
+    uint8_t active;
+} contact_t;
+
+typedef struct {
+    uint8_t num_contacts;
+    contact_t contacts[MAX_CONTACTS];
+} contacts_db_t;
+```
 
 ---
 
@@ -341,15 +195,15 @@ If upload fails, enter bootloader mode manually:
 SimpleGo/
 ├── main/
 │   ├── main.c              # Main application
-│   ├── CMakeLists.txt      # Component config
+│   ├── CMakeLists.txt
 │   └── idf_component.yml   # Dependencies (libsodium)
 ├── docs/
 │   ├── DEVELOPMENT.md      # This file
 │   ├── PROTOCOL.md         # SMP protocol details
 │   ├── TECHNICAL.md        # Implementation notes
 │   └── DEVNOTES.md         # Session notes
-├── CMakeLists.txt          # Project config
-├── sdkconfig.defaults      # Default settings
+├── CMakeLists.txt
+├── sdkconfig.defaults
 ├── CHANGELOG.md
 ├── README.md
 └── ROADMAP.md
@@ -362,15 +216,6 @@ Edit `main/main.c`:
 ```c
 #define WIFI_SSID "YourNetworkName"
 #define WIFI_PASS "YourPassword"
-```
-
-### Configure SMP Server (Optional)
-
-Default server is `smp3.simplexonflux.com`. To change:
-
-```c
-#define SMP_HOST "your-server.com"
-#define SMP_PORT "5223"
 ```
 
 ### Typical Development Cycle
@@ -390,28 +235,15 @@ idf.py fullclean
 idf.py build
 ```
 
-### Menuconfig (SDK Settings)
-
-```bash
-idf.py menuconfig
-```
-
-Important settings:
-- **Component config → mbedTLS** → Enable TLS 1.3
-- **Component config → ESP-TLS** → Certificate bundle
-- **Partition Table** → Custom (if needed)
-
 ---
 
 ## Debugging
 
 ### Log Levels
 
-In `main.c`:
 ```c
-esp_log_level_set("*", ESP_LOG_INFO);        // Default
-esp_log_level_set("SMP", ESP_LOG_DEBUG);     // Verbose SMP
-esp_log_level_set("mbedtls", ESP_LOG_WARN);  // Quiet TLS
+esp_log_level_set("*", ESP_LOG_INFO);
+esp_log_level_set("SMP", ESP_LOG_DEBUG);
 ```
 
 ### Common Issues
@@ -421,26 +253,33 @@ esp_log_level_set("mbedtls", ESP_LOG_WARN);  // Quiet TLS
 ```
 E (1234) esp-tls-mbedtls: mbedtls_ssl_handshake returned -0x7780
 ```
-
-**Fix**: Check WiFi connection, server hostname, or certificate issues.
+**Fix**: Check WiFi, server hostname, TLS 1.3 config.
 
 #### ERR BLOCK
 
 ```
 Server response: ERR BLOCK
 ```
+**Fix**: Check block format — commands need transmission headers.
 
-**Fix**: Check block format. Commands need transmission headers.
+#### ERR CMD SYNTAX
+
+```
+Server response: ERR CMD SYNTAX
+```
+**Fix**: Check command format:
+- NEW: Missing subMode? Add 'S'
+- SEND: Binary flags? Use ASCII 'T'/'F'
+- SEND: Missing space? Format is `SEND ' ' flags ' ' body`
 
 #### ERR AUTH
 
 ```
 Server response: ERR AUTH
 ```
-
-**Fix**: 
+**Fix**:
 - Using libsodium (not Monocypher)?
-- Correct entityId for command?
+- Correct entityId? (ACK/DEL use recipientId!)
 - Signature includes `[0x20][sessionId]` prefix?
 
 #### ERR NO_QUEUE
@@ -448,25 +287,18 @@ Server response: ERR AUTH
 ```
 Server response: ERR NO_QUEUE
 ```
+**Fix**: Queue doesn't exist. Clear NVS and create new queue.
 
-**Fix**: Queue doesn't exist. Either:
-- No keys saved in NVS → need NEW command
-- Server restarted → queue lost
-- Queue was DEL'd
-- Call `clear_saved_keys()` and restart to create new queue
+#### E2E Decryption Fails
 
-#### DNS Resolution Fails
+**Fix**: Use `crypto_box_beforenm()`, NOT raw `crypto_scalarmult()`!
 
-ESP32 DNS can be unreliable. Use direct IP addresses:
 ```c
-IPAddress smpServer(172, 236, 211, 32);  // smp11.simplex.im
-```
+// ❌ WRONG
+crypto_scalarmult(shared, secret, public);
 
-#### Port 5223 Blocked
-
-Some networks block non-standard ports. Use port 443:
-```c
-const int smpPort = 443;  // Works on most networks
+// ✅ CORRECT (HSalsa20 key derivation)
+crypto_box_beforenm(shared, public, secret);
 ```
 
 ### Hex Dump Helper
@@ -486,78 +318,63 @@ void hex_dump(const char *label, const uint8_t *data, size_t len) {
 
 ## Testing
 
-### Manual Testing
+### Basic Connection Test
 
-1. **Build & Flash** — `idf.py build flash monitor`
-2. **Watch for** — "QUEUE CREATED!" or "Keys loaded!"
-3. **Send test message** — Use SimpleX mobile app to scan QR/link
-4. **Check** — Message received and decrypted
+1. Build & Flash
+2. Watch for "TLS OK! ALPN: smp/1"
+3. Watch for "Subscriptions complete"
 
-### Reboot Test (NVS Persistence)
+### Multi-Contact Test (v0.1.10+)
 
-1. Start fresh (no keys saved)
-2. Watch for "QUEUE CREATED!" and "NVS: Keys saved!"
-3. Press `Ctrl+T, R` to reboot
-4. Watch for "NVS: Keys loaded!" and "Skipping NEW"
-5. Should go directly to SUB
+1. Start fresh (no contacts)
+2. `add_contact("Test")` → Watch for "QUEUE CREATED!"
+3. `add_contact("Test2")` → Second queue
+4. Reboot (`Ctrl+T, R`)
+5. Watch for "Loaded 2 contacts"
+6. Watch for "Subscriptions complete: 2/2"
 
-### DEL Test (Queue Deletion)
+### Self-Test (E2E Round-Trip)
 
-1. Have an active queue (subscribed)
-2. Call `delete_queue()` function
-3. Watch for "Queue deleted from server!" and "NVS cleared!"
-4. Reboot — should go to NEW (no saved keys)
+The self-test sends a message to your own queue and verifies decryption:
 
-### Reset Keys
-
-To clear saved keys and start fresh:
-
-```c
-// In main.c, temporarily add at start:
-clear_saved_keys();
+```
+🧪 SELF-TEST: Sending to [0] Test...
+📤 SEND command sent!
+💬 MESSAGE for [Test]!
+🔓 DECRYPTED: Hello from ESP32!
+✅ ACK OK
 ```
 
-Or via NVS erase:
+If decryption fails, check:
+- `crypto_box_beforenm()` vs `crypto_scalarmult()`
+- Server DH key stored correctly from IDS response
+- Nonce = msgId (zero-padded to 24 bytes)
 
+### NVS Tests
+
+**Save Test:**
+1. Add contacts
+2. Watch for "NVS: Saved contacts_db"
+3. Reboot
+4. Watch for "NVS: Loaded X contacts"
+
+**Clear Test:**
+```c
+// Temporarily add at start of main():
+nvs_flash_erase();
+```
+
+Or:
 ```bash
 idf.py erase-flash
-idf.py flash monitor
 ```
 
 ### Test Servers
 
-| Server | Location | Notes |
-|--------|----------|-------|
-| smp3.simplexonflux.com | EU | Default, reliable |
-| smp1.simplexonflux.com | US | Alternative |
-| smp4.simplexonflux.com | EU | Untested |
-| Your own | Local | Run simplexmq server |
-
----
-
-## Git Workflow
-
-### Commit Style
-
-```bash
-git commit -m "type(scope): description"
-```
-
-Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
-
-Examples:
-```bash
-git commit -m "feat(smp): implement DEL command"
-git commit -m "fix(nvs): clear keys after DEL"
-git commit -m "docs(protocol): add DEL command reference"
-```
-
-### Tagging Releases
-
-```bash
-git tag -a v0.1.9-alpha -m "DEL Command + Full SMP Client"
-git push origin main --tags
-```
+| Server | Location |
+|--------|----------|
+| smp3.simplexonflux.com | EU (default) |
+| smp1.simplexonflux.com | US |
 
 ---
 
@@ -578,65 +395,42 @@ idf.py fullclean
 
 # Erase all flash (including NVS!)
 idf.py erase-flash
-
-# Just erase NVS partition
-parttool.py --port COM5 erase_partition --partition-name nvs
 ```
 
 ---
 
-## VS Code Setup (Optional)
+## Git Workflow
 
-### Extensions
+### Commit Style
 
-- ESP-IDF Extension (official)
-- C/C++ Extension (Microsoft)
-
-### settings.json
-
-```json
-{
-    "idf.espIdfPath": "C:/Espressif/frameworks/esp-idf-v5.5.2",
-    "idf.toolsPath": "C:/Espressif",
-    "idf.port": "COM5"
-}
+```bash
+git commit -m "type(scope): description"
 ```
 
----
+Types: `feat`, `fix`, `docs`, `refactor`, `test`
 
-## Troubleshooting
+Examples:
+```bash
+git commit -m "feat(contacts): add multi-contact support"
+git commit -m "fix(crypto): use crypto_box_beforenm for E2E"
+```
 
-### Board Not Recognized
+### Tagging Releases
 
-1. Check USB cable (data cable, not charge-only)
-2. Install CP2102 driver
-3. Try different USB port
-
-### Upload Timeout
-
-1. Enter bootloader mode (PRG + RST)
-2. Reduce upload speed to 115200
-3. Check if another program uses the port
-
-### Library Not Found
-
-1. Restart Arduino IDE after installing libraries
-2. Check library is in correct path
-3. Verify library.properties exists
+```bash
+git tag -a v0.1.10-alpha -m "Multi-Contact + E2E"
+git push origin main --tags
+```
 
 ---
 
 ## Resources
 
 - [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/)
-- [ESP-IDF API Reference](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/)
-- [mbedTLS Documentation](https://mbed-tls.readthedocs.io/)
 - [libsodium Documentation](https://doc.libsodium.org/)
 - [SimpleX Protocol Spec](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md)
-- [Monocypher Documentation](https://monocypher.org/manual/)
-- [Heltec ESP32 Docs](https://docs.heltec.org/en/node/esp32/)
 - [LVGL Documentation](https://docs.lvgl.io/)
 
 ---
 
-*Last updated: January 20, 2026 — v0.1.9-alpha*
+*Last updated: January 20, 2026 — v0.1.10-alpha*

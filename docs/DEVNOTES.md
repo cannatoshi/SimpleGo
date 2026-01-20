@@ -6,62 +6,88 @@
 
 ## Current Status (January 20, 2026)
 
-### Version: v0.1.9-alpha
+### Version: v0.1.10-alpha
 
-### 🏆 Full Single-Queue SMP Client Complete!
+### 🏆 Multi-Contact + E2E Encryption Working!
 
-All base SMP commands implemented:
-
-| Command | Function | Status |
-|---------|----------|--------|
-| NEW | Create queue | ✅ |
-| SUB | Subscribe | ✅ |
-| SEND | Send message | ✅ |
-| MSG | Receive + decrypt | ✅ |
-| ACK | Acknowledge | ✅ |
-| DEL | Delete queue | ✅ |
+Multiple contacts over ONE TLS connection with full E2E decryption!
 
 **Latest Output:**
 ```
 I (5765) SMP: ========================================
-I (5765) SMP:   SimpleGo v0.1.9 - Full SMP Client
+I (5765) SMP:   SimpleGo v0.1.10 - Multi-Contact E2E
 I (5765) SMP:   Part of Sentinel Secure Messenger Suite
 I (5765) SMP: ========================================
 I (6088) SMP: [1/7] Establishing TCP + TLS connection...
 I (6288) SMP:       TLS OK! ALPN: smp/1
-I (6288) SMP: [2/7] Waiting for ServerHello...
-I (6488) SMP:       Server versions: 6-8
-I (6488) SMP: [3/7] Sending ClientHello...
-I (6598) SMP: [4/7] Loading keys from NVS...
-I (6598) SMP:       NVS: Keys loaded!
-I (6598) SMP: [5-6] Skipping NEW - using saved queue!
-I (6608) SMP: [7/7] Sending SUB command...
-I (6858) SMP:   ✅ SUBSCRIBED! Ready to receive messages.
+I (6488) SMP: [2/7] Waiting for ServerHello...
+I (6598) SMP: [3/7] Sending ClientHello...
+I (6708) SMP: [4/7] Loading contacts from NVS...
+I (6708) SMP:       Loaded 2 contacts
+I (6718) SMP: [5/7] Subscribing all contacts...
+I (6958) SMP:       📡 Subscriptions complete: 2/2
+I (6968) SMP: 🧪 SELF-TEST: Sending to [0] Test...
+I (7108) SMP:       📤 SEND command sent!
+I (7348) SMP:       💬 MESSAGE for [Test]!
+I (7358) SMP:       🔓 DECRYPTED: Hello from ESP32!
+I (7368) SMP:       ✅ ACK OK
 ```
 
 ---
 
 ## Working Features
 
-- ✅ TLS 1.3 connection with ChaCha20-Poly1305
-- ✅ ALPN negotiation "smp/1"
-- ✅ SMP handshake (ServerHello/ClientHello)
-- ✅ Certificate chain parsing
-- ✅ keyHash computation from CA certificate
-- ✅ Ed25519 key generation (libsodium)
-- ✅ X25519 key generation
-- ✅ SPKI key encoding
-- ✅ NEW command with IDS response
-- ✅ SUB command with OK response
-- ✅ SEND command with message transmission
-- ✅ MSG receive with parsing
-- ✅ X25519 DH Shared Secret
-- ✅ XSalsa20-Poly1305 Decryption
-- ✅ ACK command with OK response
-- ✅ NVS Key Persistence
-- ✅ Queue Reconnect after Reboot
-- ✅ **DEL command** ← v0.1.9
-- ✅ **NVS Auto-Clear after DEL** ← v0.1.9
+- ✅ Multi-Contact Database (10 slots)
+- ✅ NVS Persistence (contacts_db as blob)
+- ✅ Batch SUB (all contacts, one connection)
+- ✅ Message Routing (by recipientId)
+- ✅ E2E Decryption (crypto_box)
+- ✅ Self-Test (SEND → MSG → DECRYPT → ACK)
+- ✅ All SMP Commands (NEW, SUB, SEND, MSG, ACK, DEL)
+- ✅ TLS 1.3 + ALPN "smp/1"
+- ✅ Ed25519 + X25519 + XSalsa20-Poly1305
+
+---
+
+## Data Structures (v0.1.10)
+
+```c
+#define MAX_CONTACTS 10
+
+typedef struct {
+    char name[32];
+    uint8_t rcv_auth_secret[64];  // Ed25519 secret
+    uint8_t rcv_auth_public[32];  // Ed25519 public
+    uint8_t rcv_dh_secret[32];    // X25519 secret
+    uint8_t rcv_dh_public[32];    // X25519 public
+    uint8_t recipient_id[24];
+    uint8_t recipient_id_len;
+    uint8_t sender_id[24];
+    uint8_t sender_id_len;
+    uint8_t srv_dh_public[32];
+    uint8_t have_srv_dh;
+    uint8_t active;
+} contact_t;
+
+typedef struct {
+    uint8_t num_contacts;
+    contact_t contacts[MAX_CONTACTS];
+} contacts_db_t;
+```
+
+---
+
+## Key Functions (v0.1.10)
+
+| Function | Description |
+|----------|-------------|
+| `add_contact(name)` | NEW → IDS → save to NVS |
+| `remove_contact(idx)` | DEL → remove from NVS |
+| `list_contacts()` | Show all active contacts |
+| `subscribe_all_contacts()` | SUB for each contact |
+| `find_contact_by_recipient_id()` | MSG routing |
+| `decrypt_message(contact, cipher, plain)` | E2E decryption |
+| `self_test_send()` | Full round-trip test |
 
 ---
 
@@ -73,7 +99,7 @@ cd C:\Espressif\projects\simplex_client
 idf.py build flash monitor -p COM5
 ```
 
-**WSL (for Haskell source analysis):**
+**WSL (Haskell source analysis):**
 ```bash
 cd ~/simplexmq
 grep -r "pattern" src --include="*.hs"
@@ -81,134 +107,138 @@ grep -r "pattern" src --include="*.hs"
 
 ---
 
-## Key Technical References
+## Key Discoveries (v0.1.10)
 
-### Haskell Source Files
+### E2E Decryption Fix
 
-| File | Purpose | Key Functions |
-|------|---------|---------------|
-| Protocol.hs | Command definitions | NEW, SUB, SEND, ACK, DEL patterns |
-| Transport.hs | Block framing | tPutBlock, tGetBlock |
-| Client.hs | Client logic | createSMPQueue |
-| Crypto.hs | Signatures | signSMP, verifySMP |
-| Encoding.hs | Binary encoding | smpEncode, smpDecode |
+```c
+// WRONG: Raw X25519 output is NOT a valid crypto_box key!
+crypto_scalarmult(shared, secret, public);
+crypto_secretbox_open_easy(plain, cipher, len, nonce, shared);
 
-### Useful grep Commands
-
-```bash
-# Find signature encoding
-grep -r "signSMP\|smpEncode" --include="*.hs"
-
-# Find command structure
-grep -r "pattern NEW\|pattern SUB\|pattern DEL" --include="*.hs"
-
-# Find transmission format
-grep -r "tEncodeAuth" --include="*.hs"
-
-# Find error types
-grep -r "ErrorType\|ERR" --include="*.hs"
-
-# Find DEL command
-grep -r "DEL\|pattern DEL_" --include="*.hs"
+// CORRECT: crypto_box_beforenm does HSalsa20 key derivation
+crypto_box_beforenm(shared, public, secret);
+crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
 ```
 
+**Why?** `crypto_box` uses HSalsa20 to derive the encryption key from the X25519 shared secret. Raw `crypto_scalarmult` skips this step!
+
+### SEND Command Format
+
+```
+SEND ' ' flags ' ' msgBody
+     ↑    ↑     ↑
+    0x20 ASCII 0x20
+
+flags = 'T' (notification) or 'F' (no notification)
+NOT binary 0x00/0x01!
+```
+
+**Haskell Source:**
+```haskell
+-- Protocol.hs line 1697
+SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
+```
+
+### Server-Side Encryption
+
+The **server** encrypts messages for the recipient — the sending client does NOT encrypt:
+
+```haskell
+-- Server.hs line 2024
+C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId')
+```
+
+So when we SEND plaintext, the server encrypts it using the recipient's DH key.
+
 ---
 
-## Test Servers
+## Haskell Source References
 
-| Server | Host | Port | Status |
-|--------|------|------|--------|
-| SimpleX Flux 3 | smp3.simplexonflux.com | 5223 | ✅ Working |
-| SimpleX Flux 4 | smp4.simplexonflux.com | 5223 | Untested |
-| SimpleX Official | smp.simplex.im | 5223 | Untested |
-
----
-
-## ESP-IDF Monitor Commands
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+]` | Exit monitor |
-| `Ctrl+T, R` | Reboot device |
-| `Ctrl+T, H` | Help menu |
-| `Ctrl+T, P` | Pause output |
-
-Sehr nützlich für Reboot-Tests! 🔄
+| File | Line | Discovery |
+|------|------|-----------|
+| Protocol.hs | 1697 | SEND format: `SEND_, ' ', flags, ' ', Tail msg` |
+| Protocol.hs | 563 | MsgFlags: `notification :: Bool` |
+| Server.hs | 2024 | Server encrypts with `rcvDhSecret` |
+| Crypto.hs | 1372 | `cbNonce` pads msgId to 24 bytes |
 
 ---
 
 ## Session Updates
 
+### v0.1.10-alpha - Multi-Contact + E2E (Today!)
+
+**Major Changes:**
+- Multi-contact database with NVS persistence
+- Batch subscribe for all contacts
+- E2E decryption working (crypto_box fix!)
+- Self-test proves full round-trip
+
+**Critical Fix:**
+```c
+// HSalsa20 key derivation is essential!
+crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
+```
+
 ### v0.1.9-alpha - DEL Command
 
-**New Function:**
-```c
-static void delete_queue(mbedtls_ssl_context *ssl, uint8_t *block,
-                         const uint8_t *session_id,
-                         const uint8_t *recipient_id, uint8_t recipient_id_len,
-                         const uint8_t *rcv_auth_secret);
-```
-
-**DEL Command Format:**
-```
-[sigLen=64][signature]
-[sessLen=32][sessionId]
-[corrIdLen][corrId]
-[entityIdLen][recipientId]    ← Recipient Command (like SUB, ACK)
-"DEL"                         ← No parameters!
-```
-
-**From Haskell Source:**
-```haskell
-DEL :: Command Recipient    -- Recipient Command
-DEL -> e DEL_               -- Format: just "DEL", no params
-```
-
-**What Happens:**
-1. DEL command sent to server
-2. Server deletes queue + all messages
-3. Server responds with `OK`
-4. Local NVS keys automatically cleared
-
-**Proof - Log Output:**
-```
-I (187810) SMP:   🗑️ Deleting queue...
-I (187930) SMP:   DEL sent!
-I (188170) SMP:   ✅ Queue deleted from server!
-I (188190) SMP:       NVS: Keys cleared!
-I (188190) SMP:   ✅ NVS cleared!
-```
+- Queue deletion from server
+- NVS auto-clear after DEL
 
 ### v0.1.8-alpha - NVS Persistence
 
-```c
-bool have_saved_keys()      // Check if keys exist
-bool load_keys_from_nvs()   // Load all keys
-void save_keys_to_nvs()     // Save after IDS
-void clear_saved_keys()     // Delete all (reset)
-```
+- Keys survive reboots
+- Skip NEW on restart → go to SUB
 
 ### v0.1.7-alpha - ACK Command
 
-```c
-// ACK is a Recipient command (like SUB)
-// EntityId = recipientId (NOT senderId!)
-ack_body = [corrId] + [recipientId] + "ACK " + [msgIdLen][msgId]
-signature = sign([0x20][sessionId] + ack_body)
+- EntityId = recipientId (not senderId!)
+- Full message lifecycle complete
+
+### v0.1.6-alpha - E2E (Single Queue)
+
+- First working E2E decryption
+- X25519 DH + XSalsa20-Poly1305
+
+---
+
+## Full E2E Flow (Proven!)
+
 ```
-
-### v0.1.6-alpha - E2E Decryption
-
-```c
-// DH Shared Secret
-crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
-
-// Nonce = msgId (24 bytes, zero-padded)
-uint8_t nonce[24] = {0};
-memcpy(nonce, msg_id, msgIdLen);
-
-// Decrypt
-crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
+┌──────────┐                              ┌──────────┐
+│  Client  │                              │  Server  │
+└────┬─────┘                              └────┬─────┘
+     │                                         │
+     │  NEW (rcvAuthKey, rcvDhKey)            │
+     │────────────────────────────────────────>│
+     │                                         │
+     │  IDS (recipientId, senderId, srvDhKey) │
+     │<────────────────────────────────────────│
+     │                                         │
+     │  SUB (recipientId)                      │
+     │────────────────────────────────────────>│
+     │                                         │
+     │  OK                                     │
+     │<────────────────────────────────────────│
+     │                                         │
+     │  SEND ' ' 'F' ' ' "Hello!"             │
+     │────────────────────────────────────────>│
+     │                                         │
+     │  (Server encrypts with rcvDhSecret)    │
+     │                                         │
+     │  MSG [msgId][ts][flags][encrypted]     │
+     │<────────────────────────────────────────│
+     │                                         │
+     │  Client decrypts with:                 │
+     │  crypto_box_beforenm(shared, srvDh, rcvDh)
+     │  crypto_box_open_easy_afternm(...)     │
+     │                                         │
+     │  ACK (msgId)                            │
+     │────────────────────────────────────────>│
+     │                                         │
+     │  OK                                     │
+     │<────────────────────────────────────────│
+     │                                         │
 ```
 
 ---
@@ -217,121 +247,53 @@ crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
 
 ### Immediate
 
-1. **Multiple Queues** — Handle multiple contacts
-2. **T-Embed UI** — Display + Rotary Encoder
-3. **Contact Management** — Save/load contacts
+1. **T-Embed UI** — Display + Rotary Encoder
+2. **Contact Naming** — Better UX for management
+3. **Connection Recovery** — Auto-reconnect
 
 ### Short-term
 
-4. WiFi Config in NVS
-5. Connection Recovery
-6. T-Deck Keyboard Support
+4. **Multiple Servers** — Contact on different SMP servers
+5. **Bidirectional** — Two queues per contact
 
 ### Medium-term
 
-7. Double Ratchet (Curve448)
-8. Group Messaging
+6. **Double Ratchet** — Full Agent-level E2E
+7. **Group Messaging**
 
 ---
 
 ## Known Issues
 
-### Resolved
+### Resolved (v0.1.10)
 
-| Issue | Solution | Date |
-|-------|----------|------|
-| DEL command | Recipient Command, no params | 20.01.2026 |
-| Keys lost on reboot | NVS persistence | 20.01.2026 |
-| ACK command | EntityId = recipientId | 20.01.2026 |
-| MSG decryption | X25519 DH + XSalsa20-Poly1305 | 20.01.2026 |
-| Nonce format | msgId zero-padded to 24 bytes | 20.01.2026 |
-| MsgFlags binary | Use ASCII 'T'/'F' | 20.01.2026 |
-| ERR AUTH | Switch to libsodium | 19.01.2026 |
-| Wrong keyHash | Use CA cert (2nd in chain) | 18.01.2026 |
-| ERR BLOCK | Use command block format | 19.01.2026 |
-| ERR CMD SYNTAX | Add subMode parameter | 19.01.2026 |
+| Issue | Solution |
+|-------|----------|
+| E2E decryption fails | Use `crypto_box_beforenm()` not `crypto_scalarmult()` |
+| SEND syntax error | ASCII 'T'/'F', two spaces |
+| Wrong encryption key | HSalsa20 key derivation required |
 
 ### Open
 
 | Issue | Status | Notes |
 |-------|--------|-------|
-| Multiple queues | TODO | Contact management |
-| Connection recovery | TODO | Auto-reconnect |
+| Multi-server | TODO | All contacts on same server |
+| Bidirectional chat | TODO | Need two queues per contact |
 | T-Embed UI | TODO | Display integration |
-| Certificate verification | TODO | Currently VERIFY_NONE |
 
 ---
 
 ## 🏆 Achievement Unlocked
 
-**"First Complete Native ESP32 SimpleX SMP Client"**
+**"First Native ESP32 Multi-Contact SimpleX Client with E2E Encryption"**
 
-- ✅ Queue Management (NEW, SUB, DEL)
-- ✅ Message Lifecycle (SEND, MSG, ACK)
-- ✅ SMP Protocol v6
-- ✅ Ed25519 Signing
-- ✅ X25519 Key Exchange
-- ✅ NaCl crypto_box Encryption
-- ✅ NVS Key Persistence
-- ✅ **Full Single-Queue SMP Client!**
+- ✅ Multiple Queues (10 contacts, one connection)
+- ✅ Contact Management (Add/Remove/List)
+- ✅ Full Message Lifecycle (NEW→SUB→SEND→MSG→DECRYPT→ACK)
+- ✅ XSalsa20-Poly1305 E2E Encryption
+- ✅ Ed25519 Signing + X25519 Key Exchange
+- ✅ NVS Persistent Storage
 
 ---
 
-## Session Log
-
-### January 20, 2026 (Today)
-
-**v0.1.9-alpha - DEL COMMAND + FULL SMP CLIENT! 🗑️**
-- DEL command implementation
-- Server-side queue deletion
-- Auto NVS clear after DEL
-- All base SMP commands complete!
-
-**v0.1.8-alpha - NVS KEY PERSISTENCE! 🔑**
-- NVS storage for all keys and queue IDs
-- Queue reconnect after reboot (skip NEW, go to SUB)
-- Key management functions: have_saved_keys(), load/save/clear
-- ESP-IDF Monitor reboot shortcut: Ctrl+T, R
-
-**v0.1.7-alpha - ACK COMMAND COMPLETE! 🎯**
-- ACK command implementation
-- EntityId = recipientId (NOT senderId!)
-- OK response handling
-- Full message lifecycle
-
-**v0.1.6-alpha - E2E ENCRYPTION WORKING! 🏆**
-- X25519 DH shared secret computation
-- XSalsa20-Poly1305 decryption
-- Full round-trip: SEND → MSG → Decrypt
-
-**v0.1.5-alpha - SEND + MSG! 📨**
-- SEND command implementation
-- MSG receive parsing
-- MsgFlags must be ASCII!
-
-### January 19, 2026
-
-- NEW command working (v0.4.0)
-- libsodium fix for Ed25519
-- PING test (v0.3.3)
-- Block format differentiation
-
-### January 18, 2026
-
-- Handshake complete (v0.3.0)
-- keyHash from CA certificate
-- Ed25519 signature generation
-
-### January 17, 2026
-
-- TLS 1.3 working (v0.2.0)
-- ALPN negotiation
-
-### January 16, 2026
-
-- Initial structure (v0.1.0)
-- WiFi + TCP connection
-
----
-
-*Last updated: January 20, 2026*
+*Last updated: January 20, 2026 — v0.1.10-alpha*

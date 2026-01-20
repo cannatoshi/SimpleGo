@@ -6,7 +6,7 @@
 
 ## Overview
 
-SimpleGo development follows a phased approach, building from protocol fundamentals to a complete standalone messaging device. Each phase has clear deliverables and success criteria.
+SimpleGo development follows a phased approach, building from protocol fundamentals to a complete standalone messaging device.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -16,7 +16,7 @@ SimpleGo development follows a phased approach, building from protocol fundament
 │  Phase 2: Full Messaging          ████████████████████ 100% ✅      │
 │  Phase 3: E2E Encryption          ████████████████████ 100% ✅      │
 │  Phase 3.5: Persistence           ████████████████████ 100% ✅      │
-│  Phase 3.6: Queue Management      ████████████████████ 100% ✅      │
+│  Phase 3.6: Multi-Contact         ████████████████████ 100% ✅      │
 │  Phase 4: User Interface          ░░░░░░░░░░░░░░░░░░░░   0% 📋      │
 │  Phase 5: Advanced Features       ░░░░░░░░░░░░░░░░░░░░   0% 📋      │
 └─────────────────────────────────────────────────────────────────────┘
@@ -24,18 +24,19 @@ SimpleGo development follows a phased approach, building from protocol fundament
 
 ---
 
-## 🏆 MILESTONE: Full Single-Queue SMP Client Complete!
+## 🏆 MILESTONE: Multi-Contact + E2E Complete!
 
-As of v0.1.9-alpha, all base SMP commands are implemented:
+As of v0.1.10-alpha, full multi-contact support with E2E encryption:
 
-| Command | Function | Status |
-|---------|----------|--------|
-| NEW | Create queue | ✅ |
-| SUB | Subscribe to queue | ✅ |
-| SEND | Send message | ✅ |
-| MSG | Receive + decrypt | ✅ |
-| ACK | Acknowledge message | ✅ |
-| DEL | Delete queue | ✅ |
+| Feature | Status |
+|---------|--------|
+| Multiple Contacts (10 slots) | ✅ |
+| One TLS Connection | ✅ |
+| NVS Persistence | ✅ |
+| Batch Subscribe | ✅ |
+| Message Routing | ✅ |
+| E2E Decryption | ✅ |
+| Self-Test | ✅ |
 
 ---
 
@@ -43,35 +44,18 @@ As of v0.1.9-alpha, all base SMP commands are implemented:
 
 **Goal**: Establish reliable SMP server communication
 
-**Status**: ✅ Complete (January 2026)
-
 ### Deliverables
 
-| Task | Status | Description |
-|------|--------|-------------|
-| WiFi Connectivity | ✅ | ESP32 WiFi station mode |
-| TCP Socket Layer | ✅ | Connection management, timeouts |
-| TLS 1.3 | ✅ | ChaCha20-Poly1305, ALPN "smp/1" |
-| SMP Handshake | ✅ | ServerHello/ClientHello exchange |
-| Certificate Handling | ✅ | Chain parsing, keyHash computation |
-| Transport Blocks | ✅ | 16KB padded blocks, content framing |
-| Ed25519 Signatures | ✅ | libsodium integration, SPKI encoding |
-| NEW Command | ✅ | Queue creation with IDS response |
-| SUB Command | ✅ | Queue subscription |
-
-### Key Achievements
-
-- First working native SMP client outside Haskell
-- Full TLS 1.3 compliance with SimpleX servers
-- Correct cryptographic signature generation
-- Protocol-compliant message framing
-
-### Critical Discoveries
-
-1. **keyHash Calculation**: Must use CA certificate (2nd in chain), not server certificate
-2. **Ed25519 Compatibility**: Monocypher incompatible with SimpleX; must use libsodium
-3. **Block Format**: Commands require different format than handshake messages
-4. **SubMode Parameter**: Required for SMP v6 NEW command
+| Task | Status |
+|------|--------|
+| WiFi Connectivity | ✅ |
+| TLS 1.3 (ChaCha20-Poly1305) | ✅ |
+| ALPN "smp/1" | ✅ |
+| SMP Handshake | ✅ |
+| Certificate Chain Parsing | ✅ |
+| keyHash from CA Certificate | ✅ |
+| Ed25519 Signatures (libsodium) | ✅ |
+| Transport Blocks (16KB) | ✅ |
 
 ---
 
@@ -79,115 +63,95 @@ As of v0.1.9-alpha, all base SMP commands are implemented:
 
 **Goal**: Complete bidirectional message exchange
 
-**Status**: ✅ Complete (January 20, 2026)
-
 ### Deliverables
 
-| Task | Status | Description |
-|------|--------|-------------|
-| SEND Command | ✅ | Transmit messages to queues |
-| Message Reception | ✅ | Receive MSG from subscribed queues |
-| ACK Command | ✅ | Acknowledge message delivery |
-| OK Response Handling | ✅ | Command confirmations |
-
-### Technical Requirements Met
-
-#### SEND Command Structure
-```
-SEND [msgFlags] [msgBody]
-  - msgFlags: 'T' or 'F' (ASCII, NOT binary!)
-  - msgBody: message content
-```
-
-#### Message Reception
-```
-MSG [msgId] [timestamp] [msgFlags] [msgBody]
-  - Parse incoming MSG responses
-  - Extract message content
-  - Decrypt with XSalsa20-Poly1305
-```
-
-#### ACK Command
-```
-ACK [msgId]
-  - EntityId = recipientId (NOT senderId!)
-  - Server removes message from queue
-```
+| Task | Status |
+|------|--------|
+| NEW Command | ✅ |
+| SUB Command | ✅ |
+| SEND Command | ✅ |
+| MSG Receive | ✅ |
+| ACK Command | ✅ |
+| DEL Command | ✅ |
 
 ---
 
-## Phase 3: End-to-End Encryption ✅ COMPLETE
+## Phase 3: E2E Encryption ✅ COMPLETE
 
-**Goal**: Implement transport-level E2E encryption
-
-**Status**: ✅ Complete (January 20, 2026)
+**Goal**: Transport-level E2E encryption
 
 ### Deliverables
 
-| Task | Status | Description |
-|------|--------|-------------|
-| X25519 Key Exchange | ✅ | DH shared secret computation |
-| XSalsa20-Poly1305 | ✅ | Message encryption/decryption |
-| Nonce Handling | ✅ | msgId as nonce (zero-padded) |
-| Server DH Key | ✅ | Extract from IDS response |
-| Full Round-Trip | ✅ | SEND→MSG→Decrypt→ACK |
+| Task | Status |
+|------|--------|
+| X25519 Key Exchange | ✅ |
+| Server DH Key Storage | ✅ |
+| crypto_box Decryption | ✅ |
+| HSalsa20 Key Derivation | ✅ |
 
-### Technical Implementation
+### Key Discovery
+
 ```c
-// DH Shared Secret
-crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
+// WRONG: Raw X25519
+crypto_scalarmult(shared, secret, public);
 
-// Nonce = msgId (24 bytes, zero-padded)
-uint8_t nonce[24] = {0};
-memcpy(nonce, msg_id, msgIdLen);
-
-// Decrypt
-crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
+// CORRECT: crypto_box does HSalsa20 key derivation
+crypto_box_beforenm(shared, public, secret);
 ```
 
 ---
 
 ## Phase 3.5: Persistence ✅ COMPLETE
 
-**Goal**: Keys and queue IDs survive reboots
-
-**Status**: ✅ Complete (January 20, 2026)
+**Goal**: Keys survive reboots
 
 ### Deliverables
 
-| Task | Status | Description |
-|------|--------|-------------|
-| NVS Storage | ✅ | Non-volatile key persistence |
-| Queue Reconnect | ✅ | SUB directly after reboot |
-| Key Management | ✅ | have/load/save/clear functions |
-
-### Persisted Data
-
-| Key | Size | Description |
-|-----|------|-------------|
-| rcv_auth_sk | 64 bytes | Ed25519 Secret Key |
-| rcv_auth_pk | 32 bytes | Ed25519 Public Key |
-| rcv_dh_sk | 32 bytes | X25519 Secret Key |
-| rcv_dh_pk | 32 bytes | X25519 Public Key |
-| rcv_id | 24 bytes | Recipient ID |
-| snd_id | 24 bytes | Sender ID |
-| srv_dh_pk | 32 bytes | Server DH Key |
+| Task | Status |
+|------|--------|
+| NVS Storage | ✅ |
+| Queue Reconnect | ✅ |
+| Key Management Functions | ✅ |
 
 ---
 
-## Phase 3.6: Queue Management ✅ COMPLETE
+## Phase 3.6: Multi-Contact ✅ COMPLETE
 
-**Goal**: Full queue lifecycle management
-
-**Status**: ✅ Complete (January 20, 2026)
+**Goal**: Multiple contacts over one connection
 
 ### Deliverables
 
-| Task | Status | Description |
-|------|--------|-------------|
-| DEL Command | ✅ | Delete queue from server |
-| NVS Auto-Clear | ✅ | Clear local keys after DEL |
-| Full SMP Client | ✅ | All base commands implemented |
+| Task | Status |
+|------|--------|
+| contacts_db_t Structure | ✅ |
+| add_contact() | ✅ |
+| remove_contact() | ✅ |
+| list_contacts() | ✅ |
+| subscribe_all_contacts() | ✅ |
+| find_contact_by_recipient_id() | ✅ |
+| NVS Blob Storage | ✅ |
+| Self-Test (E2E Round-Trip) | ✅ |
+
+### Data Structure
+
+```c
+typedef struct {
+    char name[32];
+    uint8_t rcv_auth_secret[64];
+    uint8_t rcv_auth_public[32];
+    uint8_t rcv_dh_secret[32];
+    uint8_t rcv_dh_public[32];
+    uint8_t recipient_id[24];
+    uint8_t sender_id[24];
+    uint8_t srv_dh_public[32];
+    // ... lengths and flags
+} contact_t;
+
+typedef struct {
+    uint8_t num_contacts;
+    contact_t contacts[MAX_CONTACTS];  // 10 slots
+} contacts_db_t;
+```
 
 ---
 
@@ -195,94 +159,37 @@ crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
 
 **Goal**: Complete messaging UI for T-Embed/T-Deck hardware
 
-**Status**: Not started
-
 **Target**: Q1-Q2 2026
 
 ### Deliverables
 
-| Task | Status | Priority | Description |
-|------|--------|----------|-------------|
-| Display Driver | 📋 | Critical | ST7789/ST7735 LCD initialization |
-| LVGL Integration | 📋 | Critical | Graphics library setup |
-| Rotary Encoder | 📋 | High | T-Embed input handling |
-| Main Screen | 📋 | High | Connection status, message count |
-| Conversation List | 📋 | High | Contact/queue list view |
-| Message View | 📋 | High | Chat bubble interface |
-| Compose Screen | 📋 | High | Text input with keyboard |
-| Keyboard Driver | 📋 | High | T-Deck physical keyboard |
-| Settings Menu | 📋 | Medium | WiFi, server config |
-| Status Bar | 📋 | Medium | Signal, battery, time |
+| Task | Status | Priority |
+|------|--------|----------|
+| Display Driver (ST7789) | 📋 | Critical |
+| LVGL Integration | 📋 | Critical |
+| Rotary Encoder (T-Embed) | 📋 | High |
+| Main Screen | 📋 | High |
+| Contact List View | 📋 | High |
+| Message View | 📋 | High |
+| Compose Screen | 📋 | High |
+| Keyboard Driver (T-Deck) | 📋 | High |
+| Settings Menu | 📋 | Medium |
+| Status Bar | 📋 | Medium |
 
-### T-Deck Hardware Specs
-
-```
-Display:
-  - 2.8" IPS LCD (320x240)
-  - ST7789 controller
-  - SPI interface
-
-Keyboard:
-  - Physical QWERTY
-  - I2C interface
-  - Backlight control
-
-Additional:
-  - Trackball navigation
-  - Speaker/microphone
-  - LoRa module (SX1262)
-  - GPS module (optional)
-```
-
-### T-Embed Hardware Specs
+### T-Deck Hardware
 
 ```
-Display:
-  - 1.9" LCD (170x320)
-  - ST7789 controller
-
-Input:
-  - Rotary Encoder with button
-  - Compact form factor
+Display: 2.8" IPS LCD (320x240), ST7789
+Keyboard: Physical QWERTY (I2C)
+Trackball: Navigation
 ```
 
-### UI Design Principles
-
-1. **SimpleX-Style Interface**: Familiar to SimpleX users
-2. **High Contrast**: Readable in various lighting
-3. **Minimal Animations**: Performance over polish
-4. **Keyboard-First**: Optimized for physical input
-
-### Screen Mockups
+### T-Embed Hardware
 
 ```
-┌────────────────────────┐
-│ ◉ SimpleGo    ▂▄▆█ 85%│  ← Status bar
-├────────────────────────┤
-│                        │
-│   ┌──────────────┐     │
-│   │ 🔒 Connected │     │  ← Main status
-│   │   to SMP3    │     │
-│   └──────────────┘     │
-│                        │
-│  Conversations: 3      │
-│  Unread: 2             │
-│                        │
-│  [Enter] Open          │
-│  [Menu] Settings       │
-│                        │
-└────────────────────────┘
+Display: 1.9" LCD (170x320), ST7789
+Input: Rotary Encoder with button
 ```
-
-### Success Criteria
-
-- [ ] Display initializes correctly
-- [ ] LVGL renders without artifacts
-- [ ] Keyboard/Encoder input works reliably
-- [ ] Navigate between screens
-- [ ] Compose and send message via UI
-- [ ] View received messages
-- [ ] Responsive to user input (<100ms)
 
 ---
 
@@ -290,100 +197,37 @@ Input:
 
 **Goal**: Extended functionality for production use
 
-**Status**: Planning
-
 **Target**: Q3-Q4 2026
 
 ### 5.1 Double Ratchet (Agent-Level E2E)
 
-```
-Components:
-  - Identity Key (IK): Long-term Ed25519/X25519
-  - Signed Pre-Key (SPK): Medium-term, signed by IK
-  - One-Time Pre-Key (OPK): Single-use keys
-  
-X3DH Key Agreement:
-  - Initial key exchange protocol
-  - Output: Shared secret for Double Ratchet initialization
+| Component | Status |
+|-----------|--------|
+| X3DH Key Agreement | 📋 |
+| Double Ratchet Algorithm | 📋 |
+| Curve448 Support | 📋 |
 
-Double Ratchet Algorithm:
-  1. DH Ratchet: New key exchange per message chain
-  2. Symmetric Ratchet: Derive new keys per message
-  
-Properties:
-  - Forward Secrecy: Past messages secure if key compromised
-  - Break-in Recovery: Future messages secure after compromise
-```
+### 5.2 Advanced Features
 
-### 5.2 Multiple Queues / Contact Management
-
-```
-- Multiple queue handling
-- Contact storage in NVS
-- Queue-to-contact mapping
-- Contact list UI
-```
-
-### 5.3 Group Messaging
-
-```
-- Group queue management
-- Member key distribution
-- Group admin functions
-```
-
-### 5.4 File Transfer
-
-```
-- XFTP protocol integration
-- Chunked file transfer
-- Progress indication
-```
-
-### 5.5 Connectivity Options
-
-```
-- 4G/LTE modem support (SIM7600)
-- WiFi mesh networking
-- LoRa peer-to-peer (local)
-```
-
-### 5.6 Tor Integration
-
-```
-- Optional Tor proxy
-- .onion SMP servers
-- Enhanced metadata protection
-```
-
-### 5.7 Multi-Device Sync
-
-```
-- Linked device protocol
-- Message synchronization
-- Key sharing mechanism
-```
-
-### 5.8 Hardware Security
-
-```
-- Secure boot
-- Flash encryption
-- Hardware key storage (if available)
-```
+| Feature | Priority |
+|---------|----------|
+| Multiple Servers | High |
+| Bidirectional Chat | High |
+| Group Messaging | Medium |
+| File Transfer (XFTP) | Medium |
+| 4G/LTE Support | High |
+| Tor Integration | Low |
 
 ### Prioritization Matrix
 
 | Feature | Impact | Effort | Priority |
 |---------|--------|--------|----------|
-| Multiple Queues | High | Medium | **High** |
+| T-Embed UI | High | Medium | **Critical** |
+| Bidirectional Chat | High | Low | **High** |
+| Multiple Servers | High | Medium | High |
 | Double Ratchet | High | High | Medium |
 | Group Messaging | High | High | Medium |
-| File Transfer | Medium | Medium | Medium |
 | 4G Connectivity | High | Medium | High |
-| Tor Support | Medium | High | Low |
-| Multi-Device | High | Very High | Low |
-| Hardware Security | High | Medium | High |
 
 ---
 
@@ -393,10 +237,10 @@ Properties:
 2026 Q1
 ├── January   ✅ Phase 1-3.6 Complete!
 │             ├── Protocol Foundation
-│             ├── Full Messaging (SEND, MSG, ACK)
+│             ├── Full Messaging
 │             ├── E2E Encryption
 │             ├── NVS Persistence
-│             └── Queue Management (DEL)
+│             └── Multi-Contact (v0.1.10)
 ├── February  📋 Phase 4 Start (T-Embed UI)
 └── March     📋 Phase 4 Continue
 
@@ -416,14 +260,14 @@ Properties:
 
 ### Immediate (Next)
 
-1. **Multiple Queues** — Handle multiple contacts
-2. **T-Embed UI** — Display + Rotary Encoder
-3. **Contact Management** — Save/load contacts
+1. **T-Embed UI** — Display + Rotary Encoder
+2. **Bidirectional Chat** — Two queues per contact
+3. **Contact Naming UI** — User-friendly management
 
 ### Short-term
 
-4. WiFi Config in NVS
-5. Connection Recovery
+4. Multiple Servers — Contact on different SMP servers
+5. Connection Recovery — Auto-reconnect
 6. T-Deck Keyboard Support
 
 ### Medium-term
@@ -433,33 +277,37 @@ Properties:
 
 ---
 
-## Contributing to Roadmap
+## Version History
 
-### How to Propose Features
+| Version | Date | Milestone |
+|---------|------|-----------|
+| **v0.1.10-alpha** | **2026-01-20** | **🏆 Multi-Contact + E2E!** |
+| v0.1.9-alpha | 2026-01-20 | DEL + Full SMP Client |
+| v0.1.8-alpha | 2026-01-20 | NVS Persistence |
+| v0.1.7-alpha | 2026-01-20 | ACK Command |
+| v0.1.6-alpha | 2026-01-20 | E2E Decryption |
+| v0.1.5-alpha | 2026-01-20 | SEND + MSG |
+| v0.1.4-alpha | 2026-01-20 | SUB Command |
+| v0.1.3-alpha | 2026-01-19 | NEW Command |
+| v0.1.2-alpha | 2026-01-18 | Handshake |
+| v0.1.1-alpha | 2026-01-17 | TLS 1.3 |
+| v0.1.0-alpha | 2026-01-16 | Initial |
 
-1. **Open an Issue**: Describe the feature and use case
-2. **Discussion**: Community feedback and prioritization
-3. **RFC (if major)**: Formal proposal for significant changes
-4. **Implementation**: PR with tests and documentation
+---
+
+## Contributing
 
 ### Current Priorities
 
-Looking for contributors in these areas:
-
-1. **Multiple Queue Support** — Immediate need
-2. **Double Ratchet Port** — Cryptography expertise needed
-3. **LVGL UI Development** — Embedded graphics experience
-4. **Documentation** — Protocol analysis and guides
+1. **LVGL UI Development** — Embedded graphics experience
+2. **Double Ratchet Port** — Cryptography expertise
+3. **Documentation** — Protocol analysis
 
 ---
 
 ## References
 
-- [SimpleX Messaging Protocol](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md)
-- [Double Ratchet Algorithm](https://signal.org/docs/specifications/doubleratchet/)
-- [X3DH Key Agreement](https://signal.org/docs/specifications/x3dh/)
-- [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/)
-- [ESP-IDF NVS Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/storage/nvs_flash.html)
+- [SimpleX Protocol Spec](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md)
 - [LVGL Documentation](https://docs.lvgl.io/)
 - [LilyGo T-Embed](https://github.com/Xinyuan-LilyGO/T-Embed)
 - [LilyGo T-Deck](https://github.com/Xinyuan-LilyGO/T-Deck)

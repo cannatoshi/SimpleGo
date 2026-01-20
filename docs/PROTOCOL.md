@@ -13,10 +13,11 @@
 5. [Command Format](#command-format)
 6. [Cryptographic Operations](#cryptographic-operations)
 7. [Command Reference](#command-reference)
-8. [Key Persistence](#key-persistence)
-9. [Error Handling](#error-handling)
-10. [Implementation Notes](#implementation-notes)
-11. [Performance & Memory](#performance--memory)
+8. [Multi-Contact Architecture](#multi-contact-architecture)
+9. [Key Persistence](#key-persistence)
+10. [Error Handling](#error-handling)
+11. [Implementation Notes](#implementation-notes)
+12. [Performance & Memory](#performance--memory)
 
 ---
 
@@ -81,28 +82,6 @@ v6 has **everything** needed for a complete messenger:
 | Command encryption | ❌ Plain commands | ✅ Optional (`authEncryptCmds`) |
 | Batch commands | ❌ Single | ✅ Multiple per block |
 
-### Haskell Source Reference
-
-```haskell
--- From Transport.hs
-authCmdsSMPVersion = VersionSMP 7
-
--- Session ID handling differs by version:
-implySessId = v >= authCmdsSMPVersion
--- v6: sessionId sent in transmission, NOT in signature
--- v7+: sessionId NOT sent, IS in signature
-```
-
-### Upgrade Strategy
-
-```
-v6 (current) ────────────────► v17 (future)
-              skip v7-v16
-```
-
-When stable, upgrade directly to latest version for optimizations.
-No intermediate versions needed — all are backwards compatible.
-
 ---
 
 ## Transport Layer
@@ -166,7 +145,6 @@ int smp_write_handshake_block(mbedtls_ssl_context *ssl, uint8_t *block,
     block[1] = content_len & 0xFF;          // Length low byte
     memcpy(block + 2, content, content_len);
     
-    // Write entire block
     return mbedtls_ssl_write(ssl, block, SMP_BLOCK_SIZE);
 }
 ```
@@ -233,64 +211,14 @@ Client                          Server
 └────────────────────────────────────────────────────────┘
 ```
 
-#### Parsing ServerHello
-
-```c
-uint8_t *hello = block + 2;  // Skip length prefix
-
-// Protocol versions
-uint16_t minVer = (hello[0] << 8) | hello[1];  // e.g., 6
-uint16_t maxVer = (hello[2] << 8) | hello[3];  // e.g., 8
-
-// Session ID
-uint8_t sessIdLen = hello[4];  // Should be 32
-memcpy(session_id, &hello[5], 32);
-
-// Certificate chain starts at offset 37
-```
-
-### Certificate Chain Parsing
-
-The ServerHello contains a certificate chain in DER format. **Critical**: The keyHash must be computed from the **CA certificate** (second certificate), not the server certificate.
-
-```c
-int parse_cert_chain(const uint8_t *data, int len,
-                     int *cert1_off, int *cert1_len,
-                     int *cert2_off, int *cert2_len) {
-    // Find first certificate (0x30 0x82 = SEQUENCE with 2-byte length)
-    for (int i = 0; i < len - 4; i++) {
-        if (data[i] == 0x30 && data[i+1] == 0x82) {
-            *cert1_off = i;
-            *cert1_len = ((data[i+2] << 8) | data[i+3]) + 4;
-            break;
-        }
-    }
-    
-    // Find second certificate (CA cert)
-    int search_start = *cert1_off + *cert1_len;
-    for (int i = search_start; i < len - 4; i++) {
-        if (data[i] == 0x30 && data[i+1] == 0x82) {
-            *cert2_off = i;
-            *cert2_len = ((data[i+2] << 8) | data[i+3]) + 4;
-            break;
-        }
-    }
-    
-    return 0;
-}
-```
-
 ### keyHash Computation
+
+**CRITICAL**: keyHash must be computed from the **CA certificate** (second in chain), not the server certificate.
 
 ```c
 // keyHash = SHA256(full DER of CA certificate)
 uint8_t ca_hash[32];
-if (cert2_off >= 0) {
-    mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
-} else {
-    // Fallback to first cert (shouldn't happen normally)
-    mbedtls_sha256(hello + cert1_off, cert1_len, ca_hash, 0);
-}
+mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
 ```
 
 ### ClientHello Format (v6)
@@ -302,22 +230,6 @@ if (cert2_off >= 0) {
 │ version   │ keyHashLen│ keyHash            │
 │ (2 bytes) │ (1 byte)  │ (32 bytes)         │
 └───────────┴───────────┴────────────────────┘
-```
-
-```c
-uint8_t client_hello[35];
-int pos = 0;
-
-// Protocol version (big-endian)
-client_hello[pos++] = 0x00;
-client_hello[pos++] = 0x06;  // Version 6
-
-// keyHash with length prefix
-client_hello[pos++] = 32;  // keyHash length
-memcpy(&client_hello[pos], ca_hash, 32);
-pos += 32;
-
-smp_write_handshake_block(&ssl, block, client_hello, pos);
 ```
 
 ---
@@ -344,18 +256,12 @@ smp_write_handshake_block(&ssl, block, client_hello, pos);
 
 **Critical**: The signature covers `smpEncode(sessionId) + transmission_body`.
 
-`smpEncode` adds a length prefix, so the signed data is:
-
-```
-[0x20][sessionId 32 bytes][transmission_body]
-```
-
 ```c
 // Build data to sign
 uint8_t to_sign[256];
 int sign_pos = 0;
 
-to_sign[sign_pos++] = 32;  // Length prefix for sessionId
+to_sign[sign_pos++] = 32;  // Length prefix for sessionId (smpEncode)
 memcpy(&to_sign[sign_pos], session_id, 32);
 sign_pos += 32;
 memcpy(&to_sign[sign_pos], trans_body, trans_body_len);
@@ -366,37 +272,11 @@ uint8_t signature[64];
 crypto_sign_detached(signature, NULL, to_sign, sign_pos, secret_key);
 ```
 
-### Building Complete Transmission
-
-```c
-uint8_t transmission[256];
-int tpos = 0;
-
-// 1. Signature with length prefix
-transmission[tpos++] = 64;  // Ed25519 signature is 64 bytes
-memcpy(&transmission[tpos], signature, 64);
-tpos += 64;
-
-// 2. SessionId with length prefix
-transmission[tpos++] = 32;
-memcpy(&transmission[tpos], session_id, 32);
-tpos += 32;
-
-// 3. Transmission body (corrId + entityId + command)
-memcpy(&transmission[tpos], trans_body, trans_body_len);
-tpos += trans_body_len;
-
-// Send using command block format
-smp_write_command_block(&ssl, block, transmission, tpos);
-```
-
 ---
 
 ## Cryptographic Operations
 
 ### Ed25519 Key Generation
-
-Using libsodium (ESP-IDF component):
 
 ```c
 #include "sodium.h"
@@ -404,7 +284,6 @@ Using libsodium (ESP-IDF component):
 uint8_t secret_key[crypto_sign_SECRETKEYBYTES];  // 64 bytes
 uint8_t public_key[crypto_sign_PUBLICKEYBYTES];  // 32 bytes
 
-// Generate from random seed
 uint8_t seed[32];
 esp_fill_random(seed, 32);
 crypto_sign_seed_keypair(public_key, secret_key, seed);
@@ -416,64 +295,34 @@ crypto_sign_seed_keypair(public_key, secret_key, seed);
 uint8_t dh_secret[32];
 uint8_t dh_public[32];
 
-// Generate random secret
 esp_fill_random(dh_secret, 32);
-
-// Derive public key
 crypto_scalarmult_base(dh_public, dh_secret);
 ```
 
 ### SPKI Key Encoding
 
-SimpleX uses SPKI (Subject Public Key Info) format for public keys:
-
-```
-SPKI = [12-byte header][32-byte public key]
-Total: 44 bytes
-```
-
-#### Ed25519 SPKI Header
+SimpleX uses SPKI (Subject Public Key Info) format for public keys (44 bytes = 12-byte header + 32-byte key):
 
 ```c
 static const uint8_t ED25519_SPKI_HEADER[12] = {
-    0x30, 0x2a,              // SEQUENCE, 42 bytes
-    0x30, 0x05,              // SEQUENCE, 5 bytes (AlgorithmIdentifier)
-    0x06, 0x03,              // OID, 3 bytes
-    0x2b, 0x65, 0x70,        // 1.3.101.112 (Ed25519)
-    0x03, 0x21, 0x00         // BIT STRING, 33 bytes (0x00 + 32 key bytes)
+    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03,
+    0x2b, 0x65, 0x70,        // OID 1.3.101.112 (Ed25519)
+    0x03, 0x21, 0x00
 };
-```
 
-#### X25519 SPKI Header
-
-```c
 static const uint8_t X25519_SPKI_HEADER[12] = {
-    0x30, 0x2a,              // SEQUENCE, 42 bytes
-    0x30, 0x05,              // SEQUENCE, 5 bytes (AlgorithmIdentifier)
-    0x06, 0x03,              // OID, 3 bytes
-    0x2b, 0x65, 0x6e,        // 1.3.101.110 (X25519)
-    0x03, 0x21, 0x00         // BIT STRING, 33 bytes
+    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03,
+    0x2b, 0x65, 0x6e,        // OID 1.3.101.110 (X25519)
+    0x03, 0x21, 0x00
 };
-```
-
-#### Encoding Keys
-
-```c
-#define SPKI_KEY_SIZE 44
-
-uint8_t ed25519_spki[SPKI_KEY_SIZE];
-memcpy(ed25519_spki, ED25519_SPKI_HEADER, 12);
-memcpy(ed25519_spki + 12, ed25519_public, 32);
-
-uint8_t x25519_spki[SPKI_KEY_SIZE];
-memcpy(x25519_spki, X25519_SPKI_HEADER, 12);
-memcpy(x25519_spki + 12, x25519_public, 32);
 ```
 
 ### Message Decryption (E2E)
 
+**CRITICAL**: The **server** encrypts messages for the recipient. The sending client does NOT encrypt — it sends plaintext, and the server uses the recipient's DH key to encrypt.
+
 ```c
-// 1. Compute DH Shared Secret
+// 1. Compute DH Shared Secret with HSalsa20 key derivation
 uint8_t shared[crypto_box_BEFORENMBYTES];
 crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
 
@@ -482,22 +331,30 @@ uint8_t nonce[24] = {0};
 memcpy(nonce, msg_id, msgIdLen);
 
 // 3. Decrypt with NaCl crypto_box (XSalsa20-Poly1305)
-crypto_box_open_easy_afternm(plaintext, ciphertext, len, nonce, shared);
+crypto_box_open_easy_afternm(plain, cipher, cipher_len, nonce, shared);
 ```
 
-### Signature Verification
-
-Always verify signatures locally before sending:
+**CRITICAL: crypto_box vs raw X25519**
 
 ```c
-int verify_result = crypto_sign_verify_detached(
-    signature, to_sign, to_sign_len, public_key);
+// ❌ WRONG: Raw X25519 shared secret is NOT a valid encryption key!
+crypto_scalarmult(shared, secret, public);
+crypto_secretbox_open_easy(plain, cipher, len, nonce, shared);
 
-if (verify_result == 0) {
-    ESP_LOGI(TAG, "Signature OK");
-} else {
-    ESP_LOGE(TAG, "Signature FAILED!");
-}
+// ✅ CORRECT: crypto_box_beforenm does HSalsa20 key derivation
+crypto_box_beforenm(shared, public, secret);
+crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
+```
+
+**Why?** NaCl's `crypto_box` uses HSalsa20 to derive the actual encryption key from the raw X25519 shared secret. Using raw `crypto_scalarmult` output directly as a key will fail decryption!
+
+**Haskell Source Reference:**
+```haskell
+-- Server.hs line 2024: Server encrypts for recipient
+C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId')
+
+-- Crypto.hs line 1372: cbNonce pads to 24 bytes
+cbNonce :: ByteString -> CbNonce
 ```
 
 ---
@@ -516,8 +373,6 @@ if (verify_result == 0) {
 
 ### NEW - Create Queue
 
-Create a new message queue on the server.
-
 **Request:**
 ```
 "NEW " [keyLen][rcvAuthKey SPKI] [keyLen][rcvDhKey SPKI] [subMode]
@@ -531,14 +386,12 @@ subMode: 'S' for SMSubscribe (required for v6+)
 ```
 "IDS " [len][recipientId] [len][senderId] [len][serverDhKey SPKI]
 
-recipientId: 24 bytes, used for SUB command
-senderId: 24 bytes, for sender identification
-serverDhKey: 44 bytes SPKI, for key exchange
+recipientId: 24 bytes, used for SUB/ACK/DEL commands
+senderId: 24 bytes, used for SEND command
+serverDhKey: 44 bytes SPKI, for E2E decryption
 ```
 
 ### SUB - Subscribe to Queue
-
-Subscribe to receive messages from a queue.
 
 **Request:**
 ```
@@ -547,92 +400,154 @@ Subscribe to receive messages from a queue.
 EntityId: recipientId from IDS response
 ```
 
-**Response:**
-```
-"OK" - Success
-"ERR [code]" - Error
-```
+**Response:** `OK` or `ERR [code]`
 
 ### SEND - Send Message
 
-Send a message to a queue.
+**CRITICAL FORMAT:**
 
-**Request:**
 ```
-"SEND " [msgFlags] " " [msgBody]
+"SEND" ' ' [msgFlags] ' ' [msgBody]
+       ↑              ↑
+      0x20           0x20
 
-EntityId: senderId
-msgFlags: 'T' or 'F' (ASCII, NOT binary!)
-msgBody: Encrypted message content
+msgFlags: ASCII 'T' or 'F' (NOT binary 0x00/0x01!)
+  - 'T' = notification enabled
+  - 'F' = no notification
 ```
 
-**Response:**
+**Haskell Source Reference:**
+```haskell
+-- Protocol.hs line 1697
+SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
+
+-- Protocol.hs line 563
+MsgFlags {notification :: Bool}
 ```
-"OK" - Message queued
-"ERR [code]" - Error
+
+**Common Mistake:**
+```c
+// ❌ WRONG: Binary flag
+body[pos++] = 0x00;  // ERR CMD SYNTAX!
+
+// ✅ CORRECT: ASCII flag
+body[pos++] = 'F';   // ASCII 0x46
 ```
+
+**EntityId:** senderId  
+**Response:** `OK` or `ERR [code]`
 
 ### ACK - Acknowledge Message
-
-Acknowledge receipt of a message.
 
 **Request:**
 ```
 "ACK " [msgIdLen][msgId]
 
 EntityId: recipientId (NOT senderId!)
-Auth: Signed with rcvAuthKey
 ```
 
-**Response:**
-```
-"OK" - Message deleted from queue
-"ERR NO_MSG" - Message not found
-```
+**Response:** `OK` or `ERR NO_MSG`
 
 ### DEL - Delete Queue
-
-Delete a queue from the server.
 
 **Request:**
 ```
 "DEL"
 
 EntityId: recipientId (Recipient Command!)
-Auth: Signed with rcvAuthKey
 No parameters!
 ```
 
-**Response:**
-```
-"OK" - Queue + all messages deleted from server
+**Response:** `OK` — Queue and all messages deleted
+
+---
+
+## Multi-Contact Architecture
+
+### Data Structures (v0.1.10+)
+
+```c
+#define MAX_CONTACTS 10
+
+typedef struct {
+    char name[32];
+    uint8_t rcv_auth_secret[64];  // Ed25519 secret key
+    uint8_t rcv_auth_public[32];  // Ed25519 public key
+    uint8_t rcv_dh_secret[32];    // X25519 secret key
+    uint8_t rcv_dh_public[32];    // X25519 public key
+    uint8_t recipient_id[24];
+    uint8_t recipient_id_len;
+    uint8_t sender_id[24];
+    uint8_t sender_id_len;
+    uint8_t srv_dh_public[32];
+    uint8_t have_srv_dh;
+    uint8_t active;
+} contact_t;
+
+typedef struct {
+    uint8_t num_contacts;
+    contact_t contacts[MAX_CONTACTS];
+} contacts_db_t;
 ```
 
-**Haskell Source:**
-```haskell
-DEL :: Command Recipient    -- Recipient Command
-DEL -> e DEL_               -- Format: just "DEL", no params
+### Multi-Contact Flow
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  Single TLS Connection                   │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│   Contact 0          Contact 1          Contact 2       │
+│   ┌─────────┐        ┌─────────┐        ┌─────────┐    │
+│   │ rcvAuth │        │ rcvAuth │        │ rcvAuth │    │
+│   │ rcvDh   │        │ rcvDh   │        │ rcvDh   │    │
+│   │ srvDh   │        │ srvDh   │        │ srvDh   │    │
+│   │ rcvId   │        │ rcvId   │        │ rcvId   │    │
+│   │ sndId   │        │ sndId   │        │ sndId   │    │
+│   └─────────┘        └─────────┘        └─────────┘    │
+│        │                  │                  │          │
+│        └──────────────────┼──────────────────┘          │
+│                           │                             │
+│                     ┌─────▼─────┐                       │
+│                     │  Session  │                       │
+│                     │  (shared) │                       │
+│                     └───────────┘                       │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Message Routing
+
+When MSG arrives, find contact by recipientId:
+
+```c
+int find_contact_by_recipient_id(const uint8_t *rcv_id, uint8_t len) {
+    for (int i = 0; i < db.num_contacts; i++) {
+        if (db.contacts[i].active &&
+            db.contacts[i].recipient_id_len == len &&
+            memcmp(db.contacts[i].recipient_id, rcv_id, len) == 0) {
+            return i;
+        }
+    }
+    return -1;  // Not found
+}
 ```
 
 ---
 
 ## Key Persistence
 
-### NVS Storage (v0.1.8+)
+### NVS Storage (v0.1.10+)
 
-Keys and queue IDs persist across reboots using ESP32's Non-Volatile Storage.
+The entire contacts database is stored as a single NVS blob:
 
-### Persisted Data
+```c
+// Save
+nvs_set_blob(handle, "contacts_db", &db, sizeof(contacts_db_t));
 
-| NVS Key | Size | Description |
-|---------|------|-------------|
-| rcv_auth_sk | 64 bytes | Ed25519 Secret Key |
-| rcv_auth_pk | 32 bytes | Ed25519 Public Key |
-| rcv_dh_sk | 32 bytes | X25519 Secret Key |
-| rcv_dh_pk | 32 bytes | X25519 Public Key |
-| rcv_id | 24 bytes | Recipient ID |
-| snd_id | 24 bytes | Sender ID |
-| srv_dh_pk | 32 bytes | Server DH Key |
+// Load
+nvs_get_blob(handle, "contacts_db", &db, &size);
+```
 
 ### Flow with Persistence
 
@@ -643,57 +558,26 @@ Start
 TLS + Handshake
   │
   ▼
-load_keys_from_nvs()
+load_contacts_from_nvs()
   │
-  ├── Keys found? ──► Skip NEW ──► SUB directly
+  ├── Contacts found? ──► subscribe_all_contacts()
   │
-  └── No keys? ──► NEW ──► save_keys_to_nvs() ──► SUB
-```
-
-### DEL + NVS Clear (v0.1.9)
-
-When DEL command succeeds, local NVS keys are automatically cleared:
-
-```c
-// After successful DEL
-if (response == OK) {
-    clear_saved_keys();  // Wipe NVS
-}
+  └── No contacts? ──► add_contact() ──► save_to_nvs() ──► SUB
 ```
 
 ---
 
 ## Error Handling
 
-### Error Response Format
-
-```
-"ERR " [errorCode] [details]
-```
-
 ### Common Errors
 
 | Error | Cause | Solution |
 |-------|-------|----------|
 | `ERR BLOCK` | Invalid block format | Check 16KB padding, length prefix |
-| `ERR CMD SYNTAX` | Malformed command | Check parameter encoding, subMode |
-| `ERR AUTH` | Signature verification failed | Use libsodium, check signed data format |
-| `ERR SESSION` | Invalid sessionId | Include sessionId in transmission |
+| `ERR CMD SYNTAX` | Malformed command | Check SEND format (two spaces, ASCII flags!) |
+| `ERR AUTH` | Signature failed | Use libsodium, check signed data format |
 | `ERR NO_QUEUE` | Queue doesn't exist | Check recipientId |
-| `ERR QUOTA` | Server quota exceeded | Try different server |
 | `ERR NO_MSG` | Message not found | Already ACK'd |
-
-### Error Debugging Flow
-
-```
-ERR BLOCK
-  └─> Fix block format (16KB, padding, length)
-      └─> ERR CMD SYNTAX
-          └─> Fix command format (subMode, parameters)
-              └─> ERR AUTH
-                  └─> Fix signature (libsodium, signed data format)
-                      └─> SUCCESS!
-```
 
 ### EntityId per Command
 
@@ -711,43 +595,16 @@ ERR BLOCK
 
 ### Critical Discoveries
 
-#### 1. keyHash Source
-
-**Problem**: Connection rejected with invalid keyHash.
-
-**Discovery**: keyHash must be computed from the **CA certificate** (second in chain), not the server certificate.
-
-#### 2. Ed25519 Library Compatibility
-
-**Problem**: `ERR AUTH` despite correct signature format.
-
-**Discovery**: Monocypher and libsodium produce **different Ed25519 signatures** for identical input! SimpleX servers use crypton (libsodium-compatible).
-
-**Solution**: Use ESP-IDF's libsodium component.
-
-#### 3. Block Format Differentiation
-
-**Problem**: `ERR BLOCK` after successful handshake.
-
-**Discovery**: Handshake messages and commands use different block formats.
-
-#### 4. SubMode Requirement
-
-**Problem**: `ERR CMD SYNTAX` on NEW command.
-
-**Discovery**: SMP v6+ requires a `subMode` parameter on NEW command.
-
-#### 5. MsgFlags Encoding
-
-**Problem**: `ERR CMD SYNTAX` on SEND command.
-
-**Discovery**: msgFlags must be ASCII 'T' or 'F', NOT binary 0x00/0x01!
-
-#### 6. ACK/DEL EntityId
-
-**Problem**: `ERR AUTH` on ACK/DEL commands.
-
-**Discovery**: ACK and DEL are **Recipient commands** — entityId must be recipientId, not senderId.
+| Discovery | Details |
+|-----------|---------|
+| keyHash | Must use CA certificate (2nd in chain) |
+| Ed25519 | libsodium required (Monocypher incompatible) |
+| Block Format | Commands ≠ Handshake format |
+| SubMode | Required for SMP v6 NEW command |
+| MsgFlags | ASCII 'T'/'F', NOT binary |
+| SEND Format | Two spaces: `SEND ' ' flags ' ' body` |
+| crypto_box | HSalsa20 key derivation required |
+| Server Encryption | Server encrypts for recipient, not sender |
 
 ---
 
@@ -757,12 +614,8 @@ ERR BLOCK
 
 | Operation | Time |
 |-----------|------|
-| Ed25519 keygen | ~8ms |
 | Ed25519 sign | ~8ms |
-| Ed25519 verify | ~21ms |
-| X25519 keygen | ~8ms |
 | X25519 DH | ~8ms |
-| SHA-256 | <1ms (HW) |
 | crypto_box decrypt | ~1ms |
 | TLS handshake | ~800ms |
 | NVS read/write | ~5ms |
@@ -773,22 +626,12 @@ ERR BLOCK
 |-----------|-----------|
 | TLS context | ~40KB |
 | Block buffer | 16KB |
-| Key storage | ~256 bytes |
+| contacts_db (10) | ~3KB |
 | Total | ~60KB |
 
 ---
 
 ## Quick Reference
-
-### Block Sizes
-
-| Constant | Value | Usage |
-|----------|-------|-------|
-| SMP_BLOCK_SIZE | 16384 | All blocks |
-| MAX_CONTENT | 16382 | Block - 2 byte header |
-| SESSION_ID_LEN | 32 | Session identifier |
-| ED25519_SIG_LEN | 64 | Signature size |
-| SPKI_KEY_SIZE | 44 | 12 header + 32 key |
 
 ### Key Lengths
 
@@ -805,11 +648,9 @@ ERR BLOCK
 
 - [SMP Protocol Specification](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md)
 - [SimpleX Haskell Source](https://github.com/simplex-chat/simplexmq)
-- [RFC 8032 - Ed25519](https://tools.ietf.org/html/rfc8032)
-- [RFC 7748 - X25519](https://tools.ietf.org/html/rfc7748)
 - [libsodium Documentation](https://doc.libsodium.org/)
 - [ESP-IDF NVS Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/storage/nvs_flash.html)
 
 ---
 
-*Last updated: January 20, 2026 — v0.1.9-alpha*
+*Last updated: January 20, 2026 — v0.1.10-alpha*
