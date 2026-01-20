@@ -263,6 +263,7 @@ Server response: ERR NO_QUEUE
 **Fix**: Queue doesn't exist. Either:
 - No keys saved in NVS → need NEW command
 - Server restarted → queue lost
+- Queue was DEL'd
 - Call `clear_saved_keys()` and restart to create new queue
 
 ### Hex Dump Helper
@@ -296,6 +297,13 @@ void hex_dump(const char *label, const uint8_t *data, size_t len) {
 3. Press `Ctrl+T, R` to reboot
 4. Watch for "NVS: Keys loaded!" and "Skipping NEW"
 5. Should go directly to SUB
+
+### DEL Test (Queue Deletion)
+
+1. Have an active queue (subscribed)
+2. Call `delete_queue()` function
+3. Watch for "Queue deleted from server!" and "NVS cleared!"
+4. Reboot — should go to NEW (no saved keys)
 
 ### Reset Keys
 
@@ -355,16 +363,15 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
 
 Examples:
 ```bash
-git commit -m "feat(smp): implement ACK command"
-git commit -m "fix(crypto): use libsodium for Ed25519"
-git commit -m "docs(protocol): add version comparison"
-git commit -m "feat(nvs): implement key persistence"
+git commit -m "feat(smp): implement DEL command"
+git commit -m "fix(nvs): clear keys after DEL"
+git commit -m "docs(protocol): add DEL command reference"
 ```
 
 ### Tagging Releases
 
 ```bash
-git tag -a v0.1.8-alpha -m "NVS Key Persistence"
+git tag -a v0.1.9-alpha -m "DEL Command + Full SMP Client"
 git push origin main --tags
 ```
 
@@ -423,4 +430,4 @@ parttool.py --port COM5 erase_partition --partition-name nvs
 
 ---
 
-*Last updated: January 20, 2026 — v0.1.8-alpha*
+*Last updated: January 20, 2026 — v0.1.9-alpha*

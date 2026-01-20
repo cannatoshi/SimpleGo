@@ -1,31 +1,36 @@
 # SimpleGo
 
-> **The First Native SimpleX SMP Client for ESP32** — Part of the Sentinel Secure Messenger Suite
+> **The First Complete Native SimpleX SMP Client for ESP32** — Part of the Sentinel Secure Messenger Suite
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-green.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
 [![Framework: ESP-IDF 5.5](https://img.shields.io/badge/Framework-ESP--IDF%205.5-red.svg)](https://docs.espressif.com/projects/esp-idf/)
-[![Version: v0.1.8-alpha](https://img.shields.io/badge/Version-v0.1.8--alpha-orange.svg)]()
-[![Status: Persistent](https://img.shields.io/badge/Status-Persistent-brightgreen.svg)]()
+[![Version: v0.1.9-alpha](https://img.shields.io/badge/Version-v0.1.9--alpha-orange.svg)]()
+[![Status: Full SMP Client](https://img.shields.io/badge/Status-Full%20SMP%20Client-brightgreen.svg)]()
 
 ---
 
-## 🔑 NEW: Keys Survive Reboots!
+## 🏆 MILESTONE: Full Single-Queue SMP Client!
 
-**As of v0.1.8-alpha (January 20, 2026)**, SimpleGo now persists keys and queue IDs in NVS:
+**As of v0.1.9-alpha (January 20, 2026)**, SimpleGo implements all base SMP commands:
+
+| Command | Function | Status |
+|---------|----------|--------|
+| NEW | Create queue | ✅ |
+| SUB | Subscribe to queue | ✅ |
+| SEND | Send message | ✅ |
+| MSG | Receive + decrypt | ✅ |
+| ACK | Acknowledge message | ✅ |
+| DEL | Delete queue | ✅ |
 
 ```
-First Start:
-I (6769) SMP:   🎉🎉🎉 QUEUE CREATED! 🎉🎉🎉
-I (6809) SMP:       NVS: Keys saved!
-
-After Reboot:
-I (6289) SMP:       NVS: Keys loaded!
-I (6289) SMP:   [4-6] Skipping NEW - using saved queue!
-I (6659) SMP:   ✅ SUBSCRIBED! Ready to receive messages.
+🗑️ Queue Deletion:
+I (187810) SMP:   🗑️ Deleting queue...
+I (188170) SMP:   ✅ Queue deleted from server!
+I (188190) SMP:   ✅ NVS cleared!
 ```
 
-**No more losing your queue on power cycle!** 🎉
+**First complete native ESP32 SimpleX client!** 🎉
 
 ---
 
@@ -46,18 +51,27 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 
 ## ✅ What's Working
 
+### SMP Commands
+
+| Command | Status | Description |
+|---------|--------|-------------|
+| NEW | ✅ Complete | Queue creation with IDS response |
+| SUB | ✅ Complete | Queue subscription |
+| SEND | ✅ Complete | Message transmission |
+| MSG | ✅ Complete | Message receive + decrypt |
+| ACK | ✅ Complete | Message acknowledgment |
+| DEL | ✅ Complete | Queue deletion |
+
+### Features
+
 | Feature | Status | Description |
 |---------|--------|-------------|
 | TLS 1.3 Connection | ✅ Complete | ChaCha20-Poly1305, ALPN "smp/1" |
 | SMP Handshake | ✅ Complete | ServerHello/ClientHello exchange |
-| NEW Command | ✅ Complete | Queue creation with IDS response |
-| SUB Command | ✅ Complete | Queue subscription |
-| SEND Command | ✅ Complete | Message transmission |
-| MSG Receive | ✅ Complete | Message parsing |
-| E2E Decryption | ✅ Complete | X25519 DH + XSalsa20-Poly1305 |
-| ACK Command | ✅ Complete | Message acknowledgment |
-| **NVS Persistence** | ✅ **Complete** | **Keys survive reboots!** |
-| DEL Command | 📋 Planned | Queue deletion |
+| E2E Encryption | ✅ Complete | X25519 DH + XSalsa20-Poly1305 |
+| NVS Persistence | ✅ Complete | Keys survive reboots |
+| Queue Reconnect | ✅ Complete | Skip NEW on restart |
+| Multiple Queues | 📋 Planned | Contact management |
 
 ### Cryptography
 
@@ -66,7 +80,7 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 | Ed25519 Signatures | ✅ Complete | libsodium, SPKI encoding |
 | X25519 Key Exchange | ✅ Complete | DH shared secret |
 | SHA-256 Hashing | ✅ Complete | Certificate fingerprints |
-| XSalsa20-Poly1305 | ✅ Complete | Message decryption |
+| XSalsa20-Poly1305 | ✅ Complete | Message encryption/decryption |
 | Double Ratchet | 📋 Planned | Full E2E (Agent-level) |
 
 ---
@@ -85,6 +99,36 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 
 ---
 
+## 🗑️ DEL Command (v0.1.9)
+
+### Delete Queue from Server
+
+```c
+static void delete_queue(mbedtls_ssl_context *ssl, uint8_t *block,
+                         const uint8_t *session_id,
+                         const uint8_t *recipient_id, uint8_t recipient_id_len,
+                         const uint8_t *rcv_auth_secret);
+```
+
+### Command Format
+
+```
+[sigLen=64][signature]
+[sessLen=32][sessionId]
+[corrIdLen][corrId]
+[entityIdLen][recipientId]    ← Recipient Command!
+"DEL"                         ← No parameters
+```
+
+### What Happens
+
+1. DEL command sent to server
+2. Server deletes queue + all messages
+3. Server responds with `OK`
+4. Local NVS keys automatically cleared
+
+---
+
 ## 🔑 NVS Key Persistence (v0.1.8)
 
 ### Persisted Data
@@ -99,7 +143,7 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 | snd_id | 24 bytes | Sender ID |
 | srv_dh_pk | 32 bytes | Server DH Key |
 
-### New Flow
+### Flow
 
 ```
 Start
@@ -211,7 +255,8 @@ See [ROADMAP.md](ROADMAP.md) for detailed plans.
 **Phase 1: Protocol Foundation** ✅ Complete  
 **Phase 2: Full Messaging** ✅ Complete  
 **Phase 3: E2E Encryption** ✅ Complete  
-**Phase 3.5: Persistence** ✅ **Complete!**  
+**Phase 3.5: Persistence** ✅ Complete  
+**Phase 3.6: Queue Management** ✅ **Complete!**  
 **Phase 4: User Interface** 📋 Planned  
 **Phase 5: Advanced Features** 📋 Future  
 
@@ -266,7 +311,8 @@ See [LICENSE](LICENSE) for full terms.
 
 | Version | Date | Milestone |
 |---------|------|-----------|
-| **v0.1.8-alpha** | **2026-01-20** | **🔑 NVS Key Persistence!** |
+| **v0.1.9-alpha** | **2026-01-20** | **🗑️ DEL + Full SMP Client!** |
+| v0.1.8-alpha | 2026-01-20 | 🔑 NVS Persistence |
 | v0.1.7-alpha | 2026-01-20 | 🎯 ACK Command |
 | v0.1.6-alpha | 2026-01-20 | 🏆 E2E Decryption! |
 | v0.1.5-alpha | 2026-01-20 | SEND + MSG receive |
@@ -279,7 +325,7 @@ See [LICENSE](LICENSE) for full terms.
 ---
 
 <p align="center">
-  <strong>🏆 First Native ESP32 SimpleX E2E Client — Now Persistent! 🏆</strong><br>
+  <strong>🏆 First Complete Native ESP32 SimpleX SMP Client! 🏆</strong><br>
   <em>Privacy is not a privilege, it's a right.</em>
 </p>
 

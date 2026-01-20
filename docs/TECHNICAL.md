@@ -145,6 +145,28 @@ False = "F" (ASCII 0x46)
 
 ---
 
+### Discovery #6: DEL is Parameter-less
+
+**Date**: January 20, 2026
+
+**Problem**: Understanding DEL command format.
+
+**Finding**: DEL is a **Recipient command** with NO parameters.
+
+```haskell
+-- From Haskell source
+DEL :: Command Recipient    -- Recipient Command
+DEL -> e DEL_               -- Format: just "DEL", no params
+```
+
+**Key Points**:
+- EntityId = recipientId (like SUB, ACK)
+- Command = "DEL" (no space, no parameters)
+- Response = "OK" (queue + messages deleted)
+- After OK: Clear local NVS keys
+
+---
+
 ## Architecture Decisions
 
 ### Why ESP-IDF over Arduino?
@@ -249,7 +271,7 @@ void save_keys_to_nvs()     // Save after IDS
 void clear_saved_keys()     // Delete all (reset)
 ```
 
-### New Flow
+### Flow
 
 ```
 Start
@@ -265,6 +287,13 @@ load_keys_from_nvs()
   └── No keys? ──► NEW ──► save_keys_to_nvs() ──► SUB
 ```
 
+### DEL + NVS Clear (v0.1.9)
+
+When DEL command succeeds:
+1. Server deletes queue + messages
+2. Server responds with OK
+3. Client calls `clear_saved_keys()` to wipe local NVS
+
 ---
 
 ## Debugging Journey
@@ -273,13 +302,13 @@ load_keys_from_nvs()
 
 ```
 Timeline:
-────────────────────────────────────────────────────────────────────>
+─────────────────────────────────────────────────────────────────────────>
 
-[TLS FAIL] [ERR BLOCK] [ERR CMD] [ERR AUTH] [DECRYPT] [ACK OK] [NVS]
-    │          │           │         │          │         │       │
-    ▼          ▼           ▼         ▼          ▼         ▼       ▼
-  TLS 1.3   Block      SubMode   libsodium   E2E      Full    Keys
-  + ALPN    format     + flags   signatures  works    cycle   persist
+[TLS FAIL] [ERR BLOCK] [ERR CMD] [ERR AUTH] [DECRYPT] [ACK OK] [NVS] [DEL]
+    │          │           │         │          │         │       │     │
+    ▼          ▼           ▼         ▼          ▼         ▼       ▼     ▼
+  TLS 1.3   Block      SubMode   libsodium   E2E      Full    Keys  Full
+  + ALPN    format     + flags   signatures  works    cycle   save  SMP!
 ```
 
 ### Error Analysis
@@ -315,6 +344,7 @@ Timeline:
 6. MSG decrypt working
 7. ACK working
 8. NVS persistence working
+9. DEL working ← Full SMP Client!
 ```
 
 ### 3. The Source is Truth
@@ -328,11 +358,14 @@ ERR BLOCK   → Block format
 ERR CMD     → Command format
 ERR AUTH    → Signature or entityId
 ERR NO_MSG  → Already ACK'd
+ERR NO_QUEUE → Queue deleted or doesn't exist
 ```
 
-### 5. Persist Early
+### 5. Persist Early, Clear on Delete
 
-Save keys immediately after IDS response. Power can fail anytime.
+- Save keys immediately after IDS response
+- Clear keys immediately after successful DEL
+- Power can fail anytime
 
 ---
 
@@ -371,4 +404,21 @@ Save keys immediately after IDS response. Power can fail anytime.
 
 ---
 
-*Last updated: January 20, 2026 — v0.1.8-alpha*
+## 🏆 Milestone: Full Single-Queue SMP Client
+
+As of v0.1.9-alpha, all base SMP commands implemented:
+
+| Command | Function | Status |
+|---------|----------|--------|
+| NEW | Create queue | ✅ |
+| SUB | Subscribe | ✅ |
+| SEND | Send message | ✅ |
+| MSG | Receive + decrypt | ✅ |
+| ACK | Acknowledge | ✅ |
+| DEL | Delete queue | ✅ |
+
+**Achievement Unlocked: "First Complete Native ESP32 SimpleX SMP Client"**
+
+---
+
+*Last updated: January 20, 2026 — v0.1.9-alpha*

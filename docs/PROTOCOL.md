@@ -247,9 +247,9 @@ smp_write_handshake_block(&ssl, block, client_hello, pos);
 │ (1 byte)  │ (64 bytes)        │ (1 byte)  │ (32 bytes)           │
 ├───────────┴───────────────────┴───────────┴──────────────────────┤
 │ Transmission Body                                                │
-├───────────┬───────────────┬───────────┬──────────────────────────┤
-│ corrIdLen │ corrId        │ entityLen │ entityId    │ command... │
-└───────────┴───────────────┴───────────┴──────────────────────────┘
+├───────────┬───────────────────┬───────────┬──────────────────────┤
+│ corrIdLen │ corrId            │ entityLen │ entityId  │ command  │
+└───────────┴───────────────────┴───────────┴──────────────────────┘
 ```
 
 ### Signature Computation (v6)
@@ -331,6 +331,16 @@ crypto_box_open_easy_afternm(plaintext, ciphertext, len, nonce, shared);
 
 ## Command Reference
 
+### Command Types
+
+| Command | Type | EntityId | Description |
+|---------|------|----------|-------------|
+| NEW | - | empty | Create queue |
+| SUB | Recipient | recipientId | Subscribe |
+| SEND | Sender | senderId | Send message |
+| ACK | Recipient | recipientId | Acknowledge |
+| DEL | Recipient | recipientId | Delete queue |
+
 ### NEW - Create Queue
 
 ```
@@ -380,6 +390,40 @@ Auth: Signed with rcvAuthKey
 "ERR NO_MSG" - Message not found
 ```
 
+### DEL - Delete Queue
+
+```
+"DEL"
+
+EntityId: recipientId (Recipient Command!)
+Auth: Signed with rcvAuthKey
+No parameters!
+```
+
+**Response:**
+```
+"OK" - Queue + all messages deleted from server
+```
+
+**Haskell Source:**
+```haskell
+DEL :: Command Recipient    -- Recipient Command
+DEL -> e DEL_               -- Format: just "DEL", no params
+```
+
+**Implementation:**
+```c
+static void delete_queue(mbedtls_ssl_context *ssl, uint8_t *block,
+                         const uint8_t *session_id,
+                         const uint8_t *recipient_id, uint8_t recipient_id_len,
+                         const uint8_t *rcv_auth_secret) {
+    // Build transmission body: [corrId][recipientId]"DEL"
+    // Sign with [0x20][sessionId] prefix
+    // Send and wait for "OK"
+    // Clear local NVS keys
+}
+```
+
 ---
 
 ## Key Persistence
@@ -416,6 +460,17 @@ load_keys_from_nvs()
   └── No keys? ──► NEW ──► save_keys_to_nvs() ──► SUB
 ```
 
+### DEL + NVS Clear (v0.1.9)
+
+When DEL command succeeds, local NVS keys are automatically cleared:
+
+```c
+// After successful DEL
+if (response == OK) {
+    clear_saved_keys();  // Wipe NVS
+}
+```
+
 ---
 
 ## Error Handling
@@ -428,6 +483,7 @@ load_keys_from_nvs()
 | `ERR CMD SYNTAX` | Malformed command | Check subMode, msgFlags |
 | `ERR AUTH` | Signature failed | Use libsodium, check format |
 | `ERR NO_MSG` | Message not found | Already ACK'd |
+| `ERR NO_QUEUE` | Queue doesn't exist | Need NEW or queue deleted |
 
 ### EntityId per Command
 
@@ -450,4 +506,4 @@ load_keys_from_nvs()
 
 ---
 
-*Last updated: January 20, 2026 — v0.1.8-alpha*
+*Last updated: January 20, 2026 — v0.1.9-alpha*

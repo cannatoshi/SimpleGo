@@ -16,10 +16,26 @@ SimpleGo development follows a phased approach, building from protocol fundament
 │  Phase 2: Full Messaging          ████████████████████ 100% ✅      │
 │  Phase 3: E2E Encryption          ████████████████████ 100% ✅      │
 │  Phase 3.5: Persistence           ████████████████████ 100% ✅      │
+│  Phase 3.6: Queue Management      ████████████████████ 100% ✅      │
 │  Phase 4: User Interface          ░░░░░░░░░░░░░░░░░░░░   0% 📋      │
 │  Phase 5: Advanced Features       ░░░░░░░░░░░░░░░░░░░░   0% 📋      │
 └─────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## 🏆 MILESTONE: Full Single-Queue SMP Client Complete!
+
+As of v0.1.9-alpha, all base SMP commands are implemented:
+
+| Command | Function | Status |
+|---------|----------|--------|
+| NEW | Create queue | ✅ |
+| SUB | Subscribe to queue | ✅ |
+| SEND | Send message | ✅ |
+| MSG | Receive + decrypt | ✅ |
+| ACK | Acknowledge message | ✅ |
+| DEL | Delete queue | ✅ |
 
 ---
 
@@ -106,21 +122,35 @@ SimpleGo development follows a phased approach, building from protocol fundament
 | snd_id | 24 bytes | Sender ID |
 | srv_dh_pk | 32 bytes | Server DH Key |
 
-### New Flow
+---
+
+## Phase 3.6: Queue Management ✅ COMPLETE
+
+**Goal**: Full queue lifecycle management
+
+**Status**: ✅ Complete (January 20, 2026)
+
+### Deliverables
+
+| Task | Status | Description |
+|------|--------|-------------|
+| DEL Command | ✅ | Delete queue from server |
+| NVS Auto-Clear | ✅ | Clear local keys after DEL |
+| Full SMP Client | ✅ | All base commands implemented |
+
+### DEL Command Format
 
 ```
-Start
-  │
-  ▼
-TLS + Handshake
-  │
-  ▼
-load_keys_from_nvs()
-  │
-  ├── Keys found? ──► Skip NEW ──► SUB directly
-  │
-  └── No keys? ──► NEW ──► save_keys_to_nvs() ──► SUB
+[sigLen=64][signature]
+[sessLen=32][sessionId]
+[corrIdLen][corrId]
+[entityIdLen][recipientId]    ← Recipient Command!
+"DEL"                         ← No parameters
 ```
+
+### Server Response
+
+- `OK` = Queue + all messages deleted
 
 ---
 
@@ -170,11 +200,11 @@ load_keys_from_nvs()
 
 | Feature | Priority | Description |
 |---------|----------|-------------|
-| DEL Command | High | Delete queues |
 | Multiple Queues | High | Contact management |
-| Double Ratchet | Medium | Agent-level E2E (Curve448) |
+| Contact Storage | High | Save/load contacts in NVS |
 | WiFi Config | Medium | Credentials in NVS |
 | Connection Recovery | Medium | Auto-reconnect |
+| Double Ratchet | Medium | Agent-level E2E (Curve448) |
 | Group Messaging | Low | Group queues |
 | File Transfer | Low | XFTP integration |
 
@@ -184,11 +214,12 @@ load_keys_from_nvs()
 
 ```
 2026 Q1
-├── January   ✅ Phase 1-3.5 Complete!
+├── January   ✅ Phase 1-3.6 Complete!
 │             ├── Protocol Foundation
 │             ├── Full Messaging (SEND, MSG, ACK)
 │             ├── E2E Encryption
-│             └── NVS Persistence
+│             ├── NVS Persistence
+│             └── Queue Management (DEL)
 ├── February  📋 Phase 4 Start (T-Embed UI)
 └── March     📋 Phase 4 Continue
 
@@ -208,13 +239,13 @@ load_keys_from_nvs()
 
 ### Immediate (Next)
 
-1. **T-Embed UI** — Display + Rotary Encoder
-2. **DEL Command** — Queue cleanup
-3. **WiFi Config** — Store credentials in NVS
+1. **Multiple Queues** — Handle multiple contacts
+2. **T-Embed UI** — Display + Rotary Encoder
+3. **Contact Management** — Save/load contacts
 
 ### Short-term
 
-4. Multiple Queues
+4. WiFi Config in NVS
 5. Connection Recovery
 6. T-Deck Keyboard Support
 

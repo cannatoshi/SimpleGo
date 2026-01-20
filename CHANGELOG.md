@@ -11,9 +11,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned
 - T-Embed UI (Display + Encoder)
-- DEL command implementation
 - Multiple queue support
+- Contact management
 - Double Ratchet (Curve448)
+
+---
+
+## [0.1.9-alpha] - 2026-01-20
+
+### 🗑️ DEL Command + Full SMP Client!
+
+Queue deletion implemented! All base SMP commands now complete — SimpleGo is a **full single-queue SMP client**.
+
+### Added
+- **DEL Command** — Delete queues from server
+- **NVS Auto-Clear** — Local keys cleared after successful DEL
+- **Full SMP Client** — All base commands implemented!
+
+### Technical Details
+
+**DEL Command Format:**
+```
+[sigLen=64][signature]
+[sessLen=32][sessionId]
+[corrIdLen][corrId]
+[entityIdLen][recipientId]    ← Recipient Command!
+"DEL"                         ← No parameters
+```
+
+**Server Response:**
+- `OK` = Queue + all messages deleted
+
+### Proof - Log Output
+```
+I (187810) SMP:   🗑️ Deleting queue...
+I (187930) SMP:   DEL sent!
+I (188170) SMP:   ✅ Queue deleted from server!
+I (188190) SMP:       NVS: Keys cleared!
+I (188190) SMP:   ✅ NVS cleared!
+```
+
+### 🏆 Full SMP Command Set Complete!
+
+| Command | Function | Status |
+|---------|----------|--------|
+| NEW | Create queue | ✅ |
+| SUB | Subscribe to queue | ✅ |
+| SEND | Send message | ✅ |
+| MSG | Receive + decrypt | ✅ |
+| ACK | Acknowledge message | ✅ |
+| DEL | Delete queue | ✅ |
 
 ---
 
@@ -227,7 +274,8 @@ SEND command working, MSG receive implemented, complete message loop operational
 
 | Version | Date | Milestone |
 |---------|------|-----------|
-| **v0.1.8-alpha** | **2026-01-20** | **🔑 NVS Key Persistence!** |
+| **v0.1.9-alpha** | **2026-01-20** | **🗑️ DEL + Full SMP Client!** |
+| v0.1.8-alpha | 2026-01-20 | 🔑 NVS Persistence |
 | v0.1.7-alpha | 2026-01-20 | 🎯 ACK Command |
 | v0.1.6-alpha | 2026-01-20 | 🏆 E2E Decryption! |
 | v0.1.5-alpha | 2026-01-20 | SEND + MSG receive |
@@ -241,16 +289,16 @@ SEND command working, MSG receive implemented, complete message loop operational
 
 ## 🏆 Achievement Unlocked
 
-**"First Native ESP32 SimpleX E2E Client — Persistent!"**
+**"First Complete Native ESP32 SimpleX SMP Client"**
 
-- ✅ Queue Management (NEW, SUB)
+- ✅ Queue Management (NEW, SUB, DEL)
+- ✅ Message Lifecycle (SEND, MSG, ACK)
 - ✅ SMP Protocol v6
 - ✅ Ed25519 Signing
 - ✅ X25519 Key Exchange
 - ✅ NaCl crypto_box Encryption
-- ✅ Full Message Round-Trip
-- ✅ ACK Command
-- ✅ **NVS Key Persistence — Survives Reboots!**
+- ✅ NVS Key Persistence
+- ✅ **Full Single-Queue SMP Client!**
 
 ---
 

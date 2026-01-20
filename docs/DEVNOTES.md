@@ -6,22 +6,20 @@
 
 ## Current Status (20. Januar 2026)
 
-### Version: v0.1.8-alpha
+### Version: v0.1.9-alpha
 
-### 🔑 NVS Key Persistence Complete!
+### 🏆 Full Single-Queue SMP Client Complete!
 
-Keys and Queue-IDs now survive reboots!
+All base SMP commands implemented:
 
-```
-First Start:
-I (6769) SMP:   🎉🎉🎉 QUEUE CREATED! 🎉🎉🎉
-I (6809) SMP:       NVS: Keys saved!
-
-After Reboot:
-I (6289) SMP:       NVS: Keys loaded!
-I (6289) SMP:   [4-6] Skipping NEW - using saved queue!
-I (6659) SMP:   ✅ SUBSCRIBED! Ready to receive messages.
-```
+| Command | Function | Status |
+|---------|----------|--------|
+| NEW | Create queue | ✅ |
+| SUB | Subscribe | ✅ |
+| SEND | Send message | ✅ |
+| MSG | Receive + decrypt | ✅ |
+| ACK | Acknowledge | ✅ |
+| DEL | Delete queue | ✅ |
 
 ---
 
@@ -42,121 +40,70 @@ I (6659) SMP:   ✅ SUBSCRIBED! Ready to receive messages.
 - ✅ X25519 DH Shared Secret
 - ✅ XSalsa20-Poly1305 Decryption
 - ✅ ACK command with OK response
-- ✅ **NVS Key Persistence** ← v0.1.8
-- ✅ **Queue Reconnect after Reboot** ← v0.1.8
+- ✅ NVS Key Persistence
+- ✅ Queue Reconnect after Reboot
+- ✅ **DEL command** ← v0.1.9
+- ✅ **NVS Auto-Clear after DEL** ← v0.1.9
 
 ---
 
-## Today's Addition: NVS Persistence (v0.1.8)
+## Today's Addition: DEL Command (v0.1.9)
 
-### New Functions
-
-```c
-bool have_saved_keys()      // Check if keys exist in NVS
-bool load_keys_from_nvs()   // Load all keys from NVS
-void save_keys_to_nvs()     // Save after IDS response
-void clear_saved_keys()     // Delete all keys (reset)
-```
-
-### Persisted Data (NVS Namespace: "simplego")
-
-| Key | Size | Description |
-|-----|------|-------------|
-| rcv_auth_sk | 64 bytes | Ed25519 Secret Key |
-| rcv_auth_pk | 32 bytes | Ed25519 Public Key |
-| rcv_dh_sk | 32 bytes | X25519 Secret Key |
-| rcv_dh_pk | 32 bytes | X25519 Public Key |
-| rcv_id | 24 bytes | Recipient ID |
-| rcv_id_len | 1 byte | Recipient ID length |
-| snd_id | 24 bytes | Sender ID |
-| snd_id_len | 1 byte | Sender ID length |
-| srv_dh_pk | 32 bytes | Server DH Key |
-| have_srv_dh | 1 byte | Flag if server DH exists |
-
-### New Flow
-
-```
-Start
-  │
-  ▼
-TLS + ServerHello + ClientHello
-  │
-  ▼
-load_keys_from_nvs()
-  │
-  ├── Keys found? ──► [4-6] Skip NEW ──► SUB directly
-  │
-  └── No keys? ──► NEW ──► IDS ──► save_keys_to_nvs() ──► SUB
-```
-
-### Implementation Notes
+### New Function
 
 ```c
-// NVS Namespace
-#define NVS_NAMESPACE "simplego"
-
-// Check for saved keys
-bool have_saved_keys() {
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
-        return false;
-    }
-    
-    size_t len = 0;
-    esp_err_t err = nvs_get_blob(handle, "rcv_auth_sk", NULL, &len);
-    nvs_close(handle);
-    
-    return (err == ESP_OK && len == crypto_sign_SECRETKEYBYTES);
-}
-
-// Load all keys
-bool load_keys_from_nvs() {
-    nvs_handle_t handle;
-    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle) != ESP_OK) {
-        return false;
-    }
-    
-    size_t len;
-    
-    // Load Ed25519 keys
-    len = crypto_sign_SECRETKEYBYTES;
-    nvs_get_blob(handle, "rcv_auth_sk", rcv_auth_secret, &len);
-    len = crypto_sign_PUBLICKEYBYTES;
-    nvs_get_blob(handle, "rcv_auth_pk", rcv_auth_public, &len);
-    
-    // Load X25519 keys
-    len = 32;
-    nvs_get_blob(handle, "rcv_dh_sk", rcv_dh_secret, &len);
-    nvs_get_blob(handle, "rcv_dh_pk", rcv_dh_public, &len);
-    
-    // Load queue IDs
-    len = 24;
-    nvs_get_blob(handle, "rcv_id", recipient_id, &len);
-    nvs_get_u8(handle, "rcv_id_len", &recipient_id_len);
-    
-    // ... etc
-    
-    nvs_close(handle);
-    return true;
-}
+static void delete_queue(mbedtls_ssl_context *ssl, uint8_t *block,
+                         const uint8_t *session_id,
+                         const uint8_t *recipient_id, uint8_t recipient_id_len,
+                         const uint8_t *rcv_auth_secret);
 ```
 
----
+### DEL Command Format
 
-## Bonus: ESP-IDF Monitor Commands
+```
+[sigLen=64][signature]
+[sessLen=32][sessionId]
+[corrIdLen][corrId]
+[entityIdLen][recipientId]    ← Recipient Command (like SUB, ACK)
+"DEL"                         ← No parameters!
+```
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+]` | Exit monitor |
-| `Ctrl+T, R` | Reboot device |
-| `Ctrl+T, H` | Help menu |
-| `Ctrl+T, P` | Pause output |
+### From Haskell Source
 
-Sehr nützlich für Reboot-Tests! 🔄
+```haskell
+DEL :: Command Recipient    -- Recipient Command
+DEL -> e DEL_               -- Format: just "DEL", no params
+```
+
+### What Happens
+
+1. DEL command sent to server
+2. Server deletes queue + all messages
+3. Server responds with `OK`
+4. Local NVS keys automatically cleared
+
+### Proof - Log Output
+
+```
+I (187810) SMP:   🗑️ Deleting queue...
+I (187930) SMP:   DEL sent!
+I (188170) SMP:   ✅ Queue deleted from server!
+I (188190) SMP:       NVS: Keys cleared!
+I (188190) SMP:   ✅ NVS cleared!
+```
 
 ---
 
 ## Previous Additions
+
+### v0.1.8 - NVS Persistence
+
+```c
+bool have_saved_keys()      // Check if keys exist
+bool load_keys_from_nvs()   // Load all keys
+void save_keys_to_nvs()     // Save after IDS
+void clear_saved_keys()     // Delete all (reset)
+```
 
 ### v0.1.7 - ACK Command
 
@@ -183,24 +130,37 @@ crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
 
 ---
 
+## ESP-IDF Monitor Commands
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+]` | Exit monitor |
+| `Ctrl+T, R` | Reboot device |
+| `Ctrl+T, H` | Help menu |
+| `Ctrl+T, P` | Pause output |
+
+Sehr nützlich für Reboot-Tests! 🔄
+
+---
+
 ## Next Steps
 
 ### Immediate
 
-1. ~~NVS Key Persistence~~ ✅ DONE (v0.1.8)
+1. **Multiple Queues** — Handle multiple contacts
 2. **T-Embed UI** — Display + Rotary Encoder
-3. **DEL Command** — Delete queue on reset
+3. **Contact Management** — Save/load contacts
 
 ### Short-term
 
-4. **Multiple Queues** — Handle multiple contacts
-5. **Error Recovery** — Reconnect on connection loss
-6. **Config Storage** — WiFi credentials in NVS
+4. WiFi Config in NVS
+5. Connection Recovery
+6. T-Deck Keyboard Support
 
 ### Medium-term
 
-7. **T-Deck UI** — LCD + Physical Keyboard
-8. **Double Ratchet** — Curve448 for Agent-level E2E
+7. Double Ratchet (Curve448)
+8. Group Messaging
 
 ---
 
@@ -210,6 +170,7 @@ crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
 
 | Issue | Solution | Date |
 |-------|----------|------|
+| DEL command | Recipient Command, no params | 20.01.2026 |
 | Keys lost on reboot | NVS persistence | 20.01.2026 |
 | ACK command | EntityId = recipientId | 20.01.2026 |
 | MSG decryption | X25519 DH + XSalsa20-Poly1305 | 20.01.2026 |
@@ -222,30 +183,36 @@ crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
 
 | Issue | Status | Notes |
 |-------|--------|-------|
-| DEL command | TODO | For queue cleanup |
 | Multiple queues | TODO | Contact management |
 | Connection recovery | TODO | Auto-reconnect |
+| T-Embed UI | TODO | Display integration |
 
 ---
 
 ## 🏆 Achievement Unlocked
 
-**"First Native ESP32 SimpleX E2E Client — Persistent!"**
+**"First Complete Native ESP32 SimpleX SMP Client"**
 
-- ✅ Queue Management (NEW, SUB)
+- ✅ Queue Management (NEW, SUB, DEL)
+- ✅ Message Lifecycle (SEND, MSG, ACK)
 - ✅ SMP Protocol v6
 - ✅ Ed25519 Signing
 - ✅ X25519 Key Exchange
 - ✅ NaCl crypto_box Encryption
-- ✅ Full Message Round-Trip
-- ✅ ACK Command
-- ✅ **NVS Key Persistence — Survives Reboots!**
+- ✅ NVS Key Persistence
+- ✅ **Full Single-Queue SMP Client!**
 
 ---
 
 ## Session Log
 
 ### 20. Januar 2026 (Heute)
+
+**v0.1.9-alpha - DEL COMMAND + FULL SMP CLIENT! 🗑️**
+- DEL command implementation
+- Server-side queue deletion
+- Auto NVS clear after DEL
+- All base SMP commands complete!
 
 **v0.1.8-alpha - NVS KEY PERSISTENCE! 🔑**
 - NVS storage for all keys and queue IDs
