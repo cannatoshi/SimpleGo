@@ -8,12 +8,11 @@
 
 1. [Prerequisites](#prerequisites)
 2. [Environment Setup](#environment-setup)
-3. [Hardware Setup](#hardware-setup)
-4. [Building & Flashing](#building--flashing)
-5. [Architecture Overview](#architecture-overview)
-6. [Development Workflow](#development-workflow)
-7. [Debugging](#debugging)
-8. [Testing](#testing)
+3. [Building & Flashing](#building--flashing)
+4. [Architecture Overview](#architecture-overview)
+5. [Development Workflow](#development-workflow)
+6. [Debugging](#debugging)
+7. [Testing](#testing)
 
 ---
 
@@ -65,35 +64,6 @@ cd esp-idf
 . ~/esp/esp-idf/export.sh
 ```
 
-#### Verify Installation
-
-```bash
-idf.py --version
-# Should show: ESP-IDF v5.5.2
-```
-
----
-
-## Hardware Setup
-
-### LilyGo T-Deck (Target)
-
-| Component | Specification |
-|-----------|---------------|
-| MCU | ESP32-S3FN16R8 @ 240MHz |
-| Flash | 16MB |
-| PSRAM | 8MB |
-| Display | 2.8" IPS LCD 320x240 (ST7789) |
-| Keyboard | Physical QWERTY (I2C) |
-
-### LilyGo T-Embed (Target)
-
-| Component | Specification |
-|-----------|---------------|
-| MCU | ESP32-S3 @ 240MHz |
-| Display | 1.9" LCD 170x320 (ST7789) |
-| Input | Rotary Encoder with button |
-
 ---
 
 ## Building & Flashing
@@ -132,54 +102,73 @@ idf.py build flash monitor -p /dev/ttyUSB0
 
 ## Architecture Overview
 
-### System Stack
+### System Stack (v0.1.12)
 
 ```
-┌─────────────────────────────────────────┐
-│           Application Layer             │
-├─────────────────────────────────────────┤
-│  Invitation Links (v0.1.11+)            │
-│  ├── SMP Queue URI Generation           │
-│  ├── SimpleX Contact Link (Web)         │
-│  ├── Direct App Link (simplex:/)        │
-│  ├── Base64 Standard Encoding           │
-│  └── URL Encoding (double for +/=)      │
-├─────────────────────────────────────────┤
-│  Contact Management (v0.1.10+)          │
-│  ├── contacts_db_t (10 slots)           │
-│  ├── add/remove/list_contacts()         │
-│  ├── Message Routing (by recipientId)   │
-│  └── NVS Blob Persistence               │
-├─────────────────────────────────────────┤
-│  Crypto Stack                           │
-│  ├── Ed25519 (libsodium)                │
-│  ├── X25519 (libsodium)                 │
-│  ├── crypto_box (XSalsa20-Poly1305)     │
-│  └── SHA-256 (mbedTLS HW)               │
-├─────────────────────────────────────────┤
-│  SMP Protocol Layer                     │
-│  ├── NEW, SUB, SEND, MSG, ACK, DEL      │
-│  ├── 16KB Block Framing                 │
-│  └── Multi-Contact over one TLS         │
-├─────────────────────────────────────────┤
-│  Network Stack                          │
-│  ├── TLS 1.3 (mbedTLS)                  │
-│  ├── WiFi (ESP32)                       │
-│  └── TCP/IP                             │
-└─────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│           Application Layer                                     │
+├─────────────────────────────────────────────────────────────────┤
+│  Agent Protocol Layer                           ✅ NEW!         │
+│  ├── parse_agent_message()                                      │
+│  ├── AgentInvitation Parser (Type 'I')                          │
+│  ├── Reply Queue URI Extraction                                 │
+│  └── Peer Profile Parsing                                       │
+├─────────────────────────────────────────────────────────────────┤
+│  Message Decryption Stack                                       │
+│  ├── Layer 3: SMP E2E (server DH)                               │
+│  ├── Layer 5: Contact DH (decrypt_client_msg())   ✅ NEW!       │
+│  └── Layer 6: Agent Protocol Parsing              ✅ NEW!       │
+├─────────────────────────────────────────────────────────────────┤
+│  Invitation Links                                               │
+│  ├── Base64URL Encoding                                         │
+│  └── Double-encoded = padding (%253D)                           │
+├─────────────────────────────────────────────────────────────────┤
+│  Contact Management                                             │
+│  ├── contacts_db_t (10 slots)                                   │
+│  ├── add/remove/list_contacts()                                 │
+│  └── NVS Blob Persistence                                       │
+├─────────────────────────────────────────────────────────────────┤
+│  Crypto Stack                                                   │
+│  ├── Ed25519 (libsodium)                                        │
+│  ├── X25519 (libsodium)                                         │
+│  ├── crypto_box (XSalsa20-Poly1305)                             │
+│  └── SHA-256 (mbedTLS HW)                                       │
+├─────────────────────────────────────────────────────────────────┤
+│  SMP Protocol Layer                                             │
+│  ├── NEW, SUB, SEND, MSG, ACK, DEL                              │
+│  ├── 16KB Block Framing                                         │
+│  └── Multi-Contact over one TLS                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  Network Stack                                                  │
+│  ├── TLS 1.3 (mbedTLS)                                          │
+│  ├── WiFi (ESP32)                                               │
+│  └── TCP/IP                                                     │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### New Functions (v0.1.11)
+### New Functions (v0.1.12)
 
 ```c
-// Base64 Standard encoding (+ / = characters)
-void base64_standard_encode(const uint8_t *input, size_t len, char *output);
+// Layer 5: Contact DH Decryption
+static int decrypt_client_msg(
+    const uint8_t *enc, int enc_len,
+    const uint8_t *sender_dh_pub,   // 32 bytes raw X25519
+    const uint8_t *our_dh_secret,   // 32 bytes
+    uint8_t *plain
+);
 
-// URL encoding with proper escaping
-void url_encode(const char *input, char *output, size_t max_len);
+// Layer 6: Agent Protocol Parser
+static void parse_agent_message(contact_t *contact, const uint8_t *plain, int plain_len);
+```
 
-// Generate and print all invitation link formats
-void print_invitation_links(void);
+### Removed Functions (v0.1.12)
+
+```c
+// Replaced/Refactored:
+- base64_pre_encode()
+- base64_std_encode()
+- parse_smp_client_header()
+- parse_agent_envelope()
 ```
 
 ---
@@ -215,23 +204,6 @@ Edit `main/main.c`:
 #define WIFI_PASS "YourPassword"
 ```
 
-### Typical Development Cycle
-
-```
-1. Edit main/main.c
-2. idf.py build
-3. idf.py flash monitor -p COM5
-4. Test
-5. Repeat
-```
-
-### Clean Build
-
-```bash
-idf.py fullclean
-idf.py build
-```
-
 ---
 
 ## Debugging
@@ -252,23 +224,6 @@ E (1234) esp-tls-mbedtls: mbedtls_ssl_handshake returned -0x7780
 ```
 **Fix**: Check WiFi, server hostname, TLS 1.3 config.
 
-#### ERR BLOCK
-
-```
-Server response: ERR BLOCK
-```
-**Fix**: Check block format — commands need transmission headers.
-
-#### ERR CMD SYNTAX
-
-```
-Server response: ERR CMD SYNTAX
-```
-**Fix**: Check command format:
-- NEW: Missing subMode? Add 'S'
-- SEND: Binary flags? Use ASCII 'T'/'F'
-- SEND: Missing space? Format is `SEND ' ' flags ' ' body`
-
 #### ERR AUTH
 
 ```
@@ -277,34 +232,36 @@ Server response: ERR AUTH
 **Fix**:
 - Using libsodium (not Monocypher)?
 - Correct entityId? (ACK/DEL use recipientId!)
-- Signature includes `[0x20][sessionId]` prefix?
 
-#### ERR NO_QUEUE
+#### Invalid Link
 
 ```
-Server response: ERR NO_QUEUE
+SimpleX App shows: "Invalid link"
 ```
-**Fix**: Queue doesn't exist. Clear NVS and create new queue.
+**Fix**:
+- Use Base64URL for DH key (not Standard Base64!)
+- Double-encode `=` padding: `=` → `%3D` → `%253D`
 
-#### E2E Decryption Fails
+#### Layer 3 Decryption Produces Garbage
 
-**Fix**: Use `crypto_box_beforenm()`, NOT raw `crypto_scalarmult()`!
+**Check**: Is this an initial message (AgentInvitation)?  
+**Fix**: Apply Layer 5 Contact DH decryption first!
 
 ```c
-// ❌ WRONG
-crypto_scalarmult(shared, secret, public);
-
-// ✅ CORRECT (HSalsa20 key derivation)
-crypto_box_beforenm(shared, public, secret);
+// Look for SPKI header at offset 14
+if (memcmp(&decrypted[14], SPKI_HEADER, 12) == 0) {
+    // This is Layer 5 encrypted! Extract sender's DH and decrypt again
+}
 ```
 
-#### Invitation Links Not Working
+#### Agent Message Type Unknown
 
-**Fix**: Check encoding:
-- Base64 Standard (NOT base64url!) for DH key
-- Double URL encode `+` and `=` in Base64 DH key
-- Include `q=c` parameter for queue mode
-- Version ranges: outer `v=2-7`, inner `v=1-4`
+**Fix**: Check 2-byte BE version at offset 0, then type at offset 2.
+
+```c
+uint16_t agent_version = (plain[0] << 8) | plain[1];
+char agent_type = plain[2];  // 'C', 'I', 'M', or 'R'
+```
 
 ### Hex Dump Helper
 
@@ -329,77 +286,46 @@ void hex_dump(const char *label, const uint8_t *data, size_t len) {
 2. Watch for "TLS OK! ALPN: smp/1"
 3. Watch for "Subscriptions complete"
 
-### Multi-Contact Test (v0.1.10+)
-
-1. Start fresh (no contacts)
-2. `add_contact("Test")` → Watch for "QUEUE CREATED!"
-3. `add_contact("Test2")` → Second queue
-4. Reboot (`Ctrl+T, R`)
-5. Watch for "Loaded 2 contacts"
-6. Watch for "Subscriptions complete: 2/2"
-
 ### Invitation Link Test (v0.1.11+)
 
 1. Create a contact with `add_contact("Test")`
-2. Watch for invitation links in output:
-   ```
-   🔗 SIMPLEX CONTACT LINKS ════════════════════════════════
-   📱 [0] Test ──────────────────────────────────────────────
-   📋 SMP Queue URI (raw):
-      smp://1jne...@smp3.simplexonflux.com:5223/XLEV...#/?v=1-4&dh=MCow...&q=c
-   
-   🌐 SimpleX Contact Link (COPY THIS!):
-      https://simplex.chat/contact#/?v=2-7&smp=smp%3A%2F%2F...
-   ```
-3. Copy the 🌐 Web Link
-4. Open in browser → Should show SimpleX landing page
-5. Open link in SimpleX Desktop/Mobile App
-6. Click "Connect" in SimpleX App
-7. Send a message from SimpleX App
-8. Watch ESP32 output for:
-   ```
-   💬 MESSAGE for [Test]!
-   🔓 DECRYPTED: <your message>
-   ✅ ACK OK
-   ```
+2. Copy the 🌐 Web Link from output
+3. Open in browser → Should show SimpleX landing page
+4. Open link in SimpleX Desktop/Mobile App
+5. Click "Connect" in SimpleX App
 
-### Self-Test (E2E Round-Trip)
+### Agent Protocol Test (v0.1.12+)
 
-The self-test sends a message to your own queue and verifies decryption:
+After SimpleX App sends connection request:
 
+1. Watch for `💬 MESSAGE for [Test]!`
+2. Watch for `🔓 Layer 3 Decrypted: XXXXX bytes`
+3. Watch for `🔓 Layer 5 Decrypted: XXX bytes` ← **NEW!**
+4. Watch for `📋 Agent: Version=X, Type='I'` ← **NEW!**
+5. Watch for `🔗 Reply Queue: ...` ← **NEW!**
+6. Watch for `👤 Peer: <username>` ← **NEW!**
+
+**Expected Output:**
 ```
-🧪 SELF-TEST: Sending to [0] Test...
-📤 SEND command sent!
 💬 MESSAGE for [Test]!
-🔓 DECRYPTED: Hello from ESP32!
+🔓 Layer 3 Decrypted: 16106 bytes (SMP E2E)
+🔓 Layer 5 Decrypted: 847 bytes (Client DH)
+📋 Agent Message: Version=7, Type='I' (Invitation)
+🔗 Reply Queue: simplex:/invitation#/?v=2-7&smp=...@smp10.simplex.im/...
+👤 Peer Profile: {"displayName":"Alice",...}
 ✅ ACK OK
 ```
 
-### NVS Tests
+### Message Layer Verification
 
-**Save Test:**
-1. Add contacts
-2. Watch for "NVS: Saved contacts_db"
-3. Reboot
-4. Watch for "NVS: Loaded X contacts"
-
-**Clear Test:**
-```c
-// Temporarily add at start of main():
-nvs_flash_erase();
-```
-
-Or:
-```bash
-idf.py erase-flash
-```
-
-### Test Servers
-
-| Server | Location |
-|--------|----------|
-| smp3.simplexonflux.com | EU (default) |
-| smp1.simplexonflux.com | US |
+| Layer | Expected Output |
+|-------|-----------------|
+| Layer 1 | `TLS OK! ALPN: smp/1` |
+| Layer 2 | `Received 16384 bytes` |
+| Layer 3 | `Layer 3 Decrypted: XXXXX bytes` |
+| Layer 4 | (Implicit in Layer 3 output) |
+| Layer 5 | `Layer 5 Decrypted: XXX bytes` |
+| Layer 6 | `Agent: Version=X, Type='X'` |
 
 ---
 
@@ -436,15 +362,9 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`
 
 Examples:
 ```bash
-git commit -m "feat(links): add SimpleX-compatible invitation links"
-git commit -m "fix(encoding): double URL encode Base64 special chars"
-```
-
-### Tagging Releases
-
-```bash
-git tag -a v0.1.11-alpha -m "Invitation Links Working"
-git push origin main --tags
+git commit -m "feat(agent): implement Layer 5 Contact DH decryption"
+git commit -m "fix(url): use Base64URL encoding for DH key"
+git commit -m "feat(agent): parse AgentInvitation and extract reply queue"
 ```
 
 ---
@@ -454,8 +374,8 @@ git push origin main --tags
 - [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/)
 - [libsodium Documentation](https://doc.libsodium.org/)
 - [SimpleX Protocol Spec](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md)
-- [LVGL Documentation](https://docs.lvgl.io/)
+- [SimpleX Agent Protocol](https://github.com/simplex-chat/simplexmq/tree/stable/src/Simplex/Messaging/Agent)
 
 ---
 
-*Last updated: January 20, 2026 — v0.1.11-alpha*
+*Last updated: January 21, 2026 — v0.1.12-alpha*
