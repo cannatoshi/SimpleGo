@@ -4,193 +4,247 @@
 
 ---
 
-## Current Status (January 20, 2026)
+## Current Status (January 21, 2026)
 
-### Version: v0.1.11-alpha
+### Version: v0.1.12-alpha
 
-### 🔗 Invitation Links Working!
+### 🔐 Agent Protocol + Full Message Layer Decoding!
 
-SimpleX Desktop/Mobile Apps can now connect directly to ESP32!
+ESP32 now decodes the complete 6-layer message stack — seeing peer's profile and reply queue URI!
 
 **Latest Output:**
 ```
 I (5765) SMP: ========================================
-I (5765) SMP:   SimpleGo v0.1.11 - Invitation Links
+I (5765) SMP:   SimpleGo v0.1.12 - Agent Protocol
 I (5765) SMP:   Part of Sentinel Secure Messenger Suite
 I (5765) SMP: ========================================
-I (6088) SMP: [1/7] Establishing TCP + TLS connection...
-I (6288) SMP:       TLS OK! ALPN: smp/1
-I (6488) SMP: [2/7] Waiting for ServerHello...
-I (6598) SMP: [3/7] Sending ClientHello...
-I (6708) SMP: [4/7] Loading contacts from NVS...
-I (6708) SMP:       Loaded 2 contacts
-I (6718) SMP: [5/7] Subscribing all contacts...
-I (6958) SMP:       📡 Subscriptions complete: 2/2
 
-🔗 SIMPLEX CONTACT LINKS ════════════════════════════════════════════
-📱 [0] Test ─────────────────────────────────────────────────────────
-📋 SMP Queue URI (raw):
-   smp://1jne379u7IDJSxAvXbWb_JgoE7iabcslX0LBF22Rej0@smp3.simplexonflux.com:5223/XLEVCxbNocUkdcmSuQJMHQ_efzha0W_R#/?v=1-4&dh=MCowBQYDK2VuAyEA5tJkIGLCSx0fSehiUt5wmL7Pyq8H+VX2Km3ChgGaDRE=&q=c
-
-🌐 SimpleX Contact Link (COPY THIS!):
-   https://simplex.chat/contact#/?v=2-7&smp=smp%3A%2F%2F1jne379u7IDJSxAvXbWb_JgoE7iabcslX0LBF22Rej0%40smp3.simplexonflux.com%3A5223%2FXLEVCxbNocUkdcmSuQJMHQ_efzha0W_R%23%2F%3Fv%3D1-4%26dh%3DMCowBQYDK2VuAyEA5tJkIGLCSx0fSehiUt5wmL7Pyq8H%252BVX2Km3ChgGaDRE%253D%26q%3Dc
-
-══════════════════════════════════════════════════════════════════════
-📝 ANLEITUNG:
-   1. Den 🌐 Web Link kopieren
-   2. In SimpleX Desktop/Mobile App öffnen
-   3. 'Connect' klicken
-   4. Nachricht senden
-   5. ESP32 empfängt MSG!
+💬 MESSAGE for [Test]!
+🔓 Layer 3 Decrypted: 16106 bytes (SMP E2E)
+🔓 Layer 5 Decrypted: 847 bytes (Client DH)
+📋 Agent Message: Version=7, Type='I' (Invitation)
+🔗 Reply Queue: simplex:/invitation#/?v=2-7&smp=smp%3A%2F%2F...@smp10.simplex.im/...
+👤 Peer Profile: {"displayName":"Alice",...}
+✅ ACK OK
 ```
 
 ---
 
 ## Working Features
 
-- ✅ **Invitation Links** ← NEU!
+- ✅ **Agent Protocol Parsing (Layer 6)** ← NEU!
+- ✅ **Client DH Decryption (Layer 5)** ← NEU!
+- ✅ **Reply Queue URI Extraction** ← NEU!
+- ✅ **Peer Profile Visibility** ← NEU!
+- ✅ Contact Link URL Encoding Fixed (Base64URL)
+- ✅ SMP E2E Decryption (Layer 3)
 - ✅ Multi-Contact Database (10 slots)
-- ✅ NVS Persistence (contacts_db as blob)
-- ✅ Batch SUB (all contacts, one connection)
-- ✅ Message Routing (by recipientId)
-- ✅ E2E Decryption (crypto_box)
-- ✅ Self-Test (SEND → MSG → DECRYPT → ACK)
+- ✅ NVS Persistence
 - ✅ All SMP Commands (NEW, SUB, SEND, MSG, ACK, DEL)
 - ✅ TLS 1.3 + ALPN "smp/1"
-- ✅ Ed25519 + X25519 + XSalsa20-Poly1305
 
 ---
 
-## Link Generation (v0.1.11)
-
-### Three Link Formats
+## Message Layer Stack (Complete!)
 
 ```
-📋 SMP Queue URI (raw):
-smp://keyHash@server:5223/senderId#/?v=1-4&dh=<base64>&q=c
-
-🌐 SimpleX Contact Link:
-https://simplex.chat/contact#/?v=2-7&smp=<URL-ENCODED-SMP-URI>
-
-📲 Direct App Link:
-simplex:/contact#/?v=2-7&smp=<URL-ENCODED-SMP-URI>
+┌─────────────────────────────────────────────────────────────────┐
+│  Layer 1: TLS 1.3 Transport                                     │
+│  └── ALPN: "smp/1", ChaCha20-Poly1305                          │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 2: SMP Transport Block                                   │
+│  └── [2-byte transmissionLength] [content] [padding to 16KB]   │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 3: SMP E2E Encryption                                    │
+│  └── crypto_box(msg, nonce, server_dh_pub, our_dh_secret)      │
+│  └── Nonce: 24 bytes, Tag: 16 bytes                            │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 4: SMP Client Message                                    │
+│  └── [2-byte length prefix] [encrypted_content] [padding]      │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 5: Contact DH Encryption (Initial Messages)              │
+│  └── [X25519 SPKI key (44 bytes)] [crypto_box encrypted body]  │
+│  └── crypto_box(body, nonce, sender_dh_pub, contact_dh_secret) │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 6: Agent Protocol Message                                │
+│  └── [2-byte version BE] [type: 'C'/'I'/'M'/'R'] [body]        │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### URL-Encoding Rules
+---
+
+## Key Discoveries (v0.1.12)
+
+### 1. Contact Link URL Encoding (KRITISCH!)
+
+**Problem:** Links mit `+` im DH Key wurden als "Invalid link" abgelehnt.
+
+**Lösung:**
+```
+DH Key Encoding: Base64URL (nicht Standard Base64!)
+- Verwende '-' statt '+'
+- Verwende '_' statt '/'
+- '=' Padding MUSS doppelt encoded werden: = → %3D → %253D
+
+Vergleich:
+FALSCH: dh%3DMCowBQYDK2VuAyEA5nPWbPZTKmf3NdwGzYOq...%2Bv24%3D
+                                                    ^^^  ^^^
+                                                 Einfach encoded (FALSCH)
+
+RICHTIG: dh%3DMCowBQYDK2VuAyEABo11ArKXGHb9zoz_76yz...%253D
+                                              ^       ^^^^^
+                                           Base64URL  Doppelt encoded
+```
+
+### 2. Message Format nach Layer 3 Decryption
 
 ```
-Single encoded:
-  :  →  %3A
-  /  →  %2F
-  @  →  %40
-  #  →  %23
-  ?  →  %3F
-  &  →  %26
-  =  →  %3D
-
-Double encoded (Base64 DH-Key only):
-  +  →  %252B
-  =  →  %253D
+┌──────────────────────────────────────────────────────────────────┐
+│ Offset 0-1:   Length Prefix (BE)        │ z.B. 0x3E82 = 16002   │
+│ Offset 2-5:   Unknown Header            │ 00 00 00 00           │
+│ Offset 6-9:   "ip" + 2 bytes            │ 69 70 xx xx           │
+│ Offset 10-13: "T " + version "1,"       │ 54 20 00 04 31 2c     │
+│ Offset 14-57: X25519 SPKI (44 bytes)    │ 30 2a 30 05 06 03...  │
+│ Offset 58+:   crypto_box encrypted body │ [nonce][ciphertext]   │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-### Version Ranges
+### 3. X25519 SPKI Header Format
 
-| Layer | Version | Meaning |
-|-------|---------|---------|
-| Contact URI (outer) | `v=2-7` | Agent Version Range |
-| SMP Queue (inner) | `v=1-4` | SMP Client Version Range |
+```
+SPKI Header (12 bytes): 30 2a 30 05 06 03 2b 65 6e 03 21 00
+                        │  │  │  │  │  │  │  │  │  │  │  │
+                        │  │  │  │  │  │  │  │  │  │  │  └─ 0x00
+                        │  │  │  │  │  │  │  │  │  │  └─── BIT STRING length (33)
+                        │  │  │  │  │  │  │  │  │  └────── BIT STRING tag (0x03)
+                        │  │  │  │  │  │  └──┴──┴───────── OID 1.3.101.110 (X25519)
+                        │  │  │  └──┴──┴────────────────── OID container
+                        │  │  └─────────────────────────── AlgorithmIdentifier
+                        │  └────────────────────────────── Total length (42)
+                        └───────────────────────────────── SEQUENCE tag
 
-### New Functions
+Full SPKI (44 bytes) = Header (12 bytes) + Raw X25519 Key (32 bytes)
+```
+
+### 4. Agent Protocol Message Types
 
 ```c
-// Base64 Standard encoding (+ / = characters)
-void base64_standard_encode(const uint8_t *input, size_t len, char *output);
+'C' = AgentConfirmation  // Connection confirmation with encrypted connInfo
+'I' = AgentInvitation    // Invitation with reply queue URI + profile
+'M' = AgentMsgEnvelope   // Double Ratchet encrypted message
+'R' = AgentRatchetKey    // Ratchet key exchange
+```
 
-// URL encoding with proper escaping
-void url_encode(const char *input, char *output, size_t max_len);
+### 5. AgentInvitation Format (Type 'I')
 
-// Generate and print all link formats
-void print_invitation_links(void);
+```
+AgentInvitation = [version:2][type:'I'][connReqLen:2][connReq][connInfo]
+
+connReq = URL-encoded simplex:/invitation#/?v=2-7&smp=...
+connInfo = Peer's profile (JSON or binary)
+
+Beispiel decoded:
+"simplex:/invitation#/?v=2-7&smp=smp%3A%2F%2F6iIcWT_dF2zN_w5xzZEY7HI2Prbh3ldP07YTyDexPjE%3D%40smp10.simplex.im%2FzeKFSKNA_xTcbWniJn-gB4m9V2RIWZ..."
+```
+
+### 6. Agent Version vs SMP Version
+
+```
+- SMP Version: "1," in Header (String bei Offset 12)
+- Agent Version: 2-byte BE Integer (z.B. 0x0007 = Version 7)
 ```
 
 ---
 
-## Key Discoveries (v0.1.11)
+## Connection Flow (Contact Address q=c)
 
-### Double Encoding for Base64 Special Characters
+```
+┌──────────┐                              ┌──────────┐
+│ SimpleX  │                              │  ESP32   │
+│   App    │                              │(Contact) │
+└────┬─────┘                              └────┬─────┘
+     │  1. Scannt Contact Link                 │
+     │  2. SEND AgentInvitation ───────────────>  (Reply Queue + Profile)
+     │  3. Wartet auf Accept...                │
+     │     <───────────── AgentConfirmation    │  (Zu App's Reply Queue!)
+     │  4. "Connected!"                        │
+```
+
+---
+
+## Code-Änderungen v0.1.12
+
+### Neue Funktionen
 
 ```c
-// Im Base64-encoded DH-Key:
-+  →  %2B   →  %252B  (doppelt encoded!)
-=  →  %3D   →  %253D  (doppelt encoded!)
+// DH Decryption für Client Messages (Layer 5)
+static int decrypt_client_msg(
+    const uint8_t *enc, int enc_len,
+    const uint8_t *sender_dh_pub,   // 32 bytes raw X25519
+    const uint8_t *our_dh_secret,   // 32 bytes
+    uint8_t *plain
+);
 
-// Warum? Der SMP URI wird URL-encoded in den Contact URI eingebettet.
-// Base64 special chars müssen zweimal encoded werden.
+// Verbesserter Agent Message Parser (Layer 6)
+static void parse_agent_message(contact_t *contact, const uint8_t *plain, int plain_len);
 ```
 
-### DH Key Format
-
-```
-Base64 Standard (NICHT base64url!)
-  - Mit + / = Zeichen
-  - SPKI Header (44 bytes total)
-  - X25519 Public Key
-```
-
-### Queue Mode Parameter
-
-```
-q=c  →  Contact Queue (für Contact Links)
-q=m  →  Message Queue (für Gruppen, etc.)
-```
-
-### Haskell Source References
-
-| File | Line | Discovery |
-|------|------|-----------|
-| Protocol.hs | 1078-1085 | `crEncode` Contact URI Format |
-| Protocol.hs | SMPQueueUri | `v=1-4&dh=<key>&q=c` Format |
-| ConnectionRequestTests.hs | - | `simplex:/contact#/?v=2-7&smp=` |
-
----
-
-## Test Results (v0.1.11)
-
-| Test | Result |
-|------|--------|
-| Link in Browser öffnen | ✅ SimpleX Landing Page |
-| Link in SimpleX App öffnen | ✅ "Connect to Contact" Dialog |
-| Connect klicken | ✅ Verbindung hergestellt |
-| Nachricht senden | ✅ ESP32 empfängt MSG |
-| E2E Decryption | ✅ Nachricht entschlüsselt |
-| ACK senden | ✅ OK Response |
-
----
-
-## Data Structures (v0.1.10+)
+### Entfernte Funktionen
 
 ```c
-#define MAX_CONTACTS 10
+// Nicht mehr benötigt:
+- base64_pre_encode()
+- base64_std_encode()
+- parse_smp_client_header()
+- parse_agent_envelope()
+```
 
-typedef struct {
-    char name[32];
-    uint8_t rcv_auth_secret[64];  // Ed25519 secret
-    uint8_t rcv_auth_public[32];  // Ed25519 public
-    uint8_t rcv_dh_secret[32];    // X25519 secret
-    uint8_t rcv_dh_public[32];    // X25519 public
-    uint8_t recipient_id[24];
-    uint8_t recipient_id_len;
-    uint8_t sender_id[24];
-    uint8_t sender_id_len;
-    uint8_t srv_dh_public[32];
-    uint8_t have_srv_dh;
-    uint8_t active;
-} contact_t;
+### URL Encoding Fix
 
-typedef struct {
-    uint8_t num_contacts;
-    contact_t contacts[MAX_CONTACTS];
-} contacts_db_t;
+```c
+// DH Key jetzt als Base64URL mit Padding
+// = wird pre-encoded zu %3D vor dem URL-encode
+// Ergebnis: %253D (doppelt encoded)
+```
+
+---
+
+## Debugging-Erkenntnisse
+
+| Issue | Solution |
+|-------|----------|
+| SPKI Detection Bug | Byte-Offsets waren falsch (`i+5` statt `i+4` für 0x06) |
+| Kein 'K' Header | Initial Messages haben kein explizites 'K' Prefix - SPKI ist direkt embedded |
+| Version String "1," | Zeigt SMP Protocol Version an, bei Offset 12 |
+| Agent Version | 2-byte BE Integer, nicht String |
+
+---
+
+## Aktueller Feature-Stand
+
+```
+SimpleGo v0.1.12-alpha Feature Matrix:
+═══════════════════════════════════════════════════════════════
+✅ TLS 1.3 Connection (ALPN: smp/1)
+✅ SMP Handshake (ServerHello/ClientHello)
+✅ Queue Creation (NEW → IDS)
+✅ Queue Subscribe (SUB → OK)
+✅ Contact Link Generation (Base64URL + double-encoded =)
+✅ Message Receive (MSG)
+✅ SMP E2E Decryption (Layer 3)
+✅ Client Message Decryption (Layer 5) ← NEU!
+✅ Agent Protocol Parsing (Layer 6) ← NEU!
+✅ AgentInvitation Detection ('I') ← NEU!
+✅ Reply Queue URI Extraction ← NEU!
+✅ Peer Profile Visibility ← NEU!
+═══════════════════════════════════════════════════════════════
+🔜 Parse Reply Queue URI
+🔜 Connect to Peer's SMP Server
+🔜 Send AgentConfirmation
+🔜 Connection Established
+🔜 Double Ratchet Implementation
+🔜 Send/Receive Chat Messages
+═══════════════════════════════════════════════════════════════
 ```
 
 ---
@@ -206,173 +260,43 @@ idf.py build flash monitor -p COM5
 **WSL (Haskell source analysis):**
 ```bash
 cd ~/simplexmq
-grep -r "pattern" src --include="*.hs"
+grep -r "AgentInvitation\|AgentConfirmation" src --include="*.hs"
 ```
 
 ---
 
-## Session Updates
+## Haskell Source References
 
-### v0.1.11-alpha - Invitation Links (Today!)
-
-**Major Achievement:**
-- SimpleX-compatible contact links working!
-- SimpleX Desktop/Mobile can connect to ESP32!
-
-**New Functions:**
-- `base64_standard_encode()` — Base64 mit + / =
-- `url_encode()` — Standard URL encoding
-- `print_invitation_links()` — Alle Link-Formate ausgeben
-
-**Key Discovery:**
-- Doppeltes Encoding für + und = im Base64 DH-Key
-
-### v0.1.10-alpha - Multi-Contact + E2E
-
-**Major Changes:**
-- Multi-contact database with NVS persistence
-- Batch subscribe for all contacts
-- E2E decryption working (crypto_box fix!)
-- Self-test proves full round-trip
-
-**Critical Fix:**
-```c
-// HSalsa20 key derivation is essential!
-crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
-```
-
-### v0.1.9-alpha - DEL Command
-
-- Queue deletion from server
-- NVS auto-clear after DEL
-
-### v0.1.8-alpha - NVS Persistence
-
-- Keys survive reboots
-- Skip NEW on restart → go to SUB
-
-### v0.1.7-alpha - ACK Command
-
-- EntityId = recipientId (not senderId!)
-- Full message lifecycle complete
-
-### v0.1.6-alpha - E2E (Single Queue)
-
-- First working E2E decryption
-- X25519 DH + XSalsa20-Poly1305
+| File | Discovery |
+|------|-----------|
+| Agent/Protocol.hs | Agent message types 'C', 'I', 'M', 'R' |
+| Agent/Client.hs | AgentInvitation format with connReq |
+| Crypto.hs | Double crypto_box layers |
 
 ---
 
-## Full E2E Flow (Proven!)
+## Next Steps (v0.1.13)
 
-```
-┌──────────┐                              ┌──────────┐
-│  Client  │                              │  Server  │
-└────┬─────┘                              └────┬─────┘
-     │                                         │
-     │  NEW (rcvAuthKey, rcvDhKey)            │
-     │────────────────────────────────────────>│
-     │                                         │
-     │  IDS (recipientId, senderId, srvDhKey) │
-     │<────────────────────────────────────────│
-     │                                         │
-     │  SUB (recipientId)                      │
-     │────────────────────────────────────────>│
-     │                                         │
-     │  OK                                     │
-     │<────────────────────────────────────────│
-     │                                         │
-     │  ═══════════════════════════════════   │
-     │  📋 Generate Invitation Link:          │
-     │  smp://keyHash@server/senderId#/...    │
-     │  ═══════════════════════════════════   │
-     │                                         │
-     │  (SimpleX App connects via Link)       │
-     │                                         │
-     │  SEND ' ' 'F' ' ' "Hello!"             │
-     │────────────────────────────────────────>│
-     │                                         │
-     │  (Server encrypts with rcvDhSecret)    │
-     │                                         │
-     │  MSG [msgId][ts][flags][encrypted]     │
-     │<────────────────────────────────────────│
-     │                                         │
-     │  Client decrypts with:                 │
-     │  crypto_box_beforenm(shared, srvDh, rcvDh)
-     │  crypto_box_open_easy_afternm(...)     │
-     │                                         │
-     │  ACK (msgId)                            │
-     │────────────────────────────────────────>│
-     │                                         │
-     │  OK                                     │
-     │<────────────────────────────────────────│
-     │                                         │
-```
-
----
-
-## Next Steps
-
-### Immediate
-
-1. **T-Embed UI** — Display + Rotary Encoder
-2. **Bidirectional Chat** — Two queues per contact
-3. **QR Code Generation** — Display invitation link as QR
-
-### Short-term
-
-4. Multiple Servers — Contact on different SMP servers
-5. Connection Recovery — Auto-reconnect
-6. T-Deck Keyboard Support
-
-### Medium-term
-
-7. Double Ratchet (Curve448)
-8. Group Messaging
-
----
-
-## Known Issues
-
-### Resolved (v0.1.11)
-
-| Issue | Solution |
-|-------|----------|
-| Links not working | Double encoding for Base64 + and = |
-| Wrong DH key format | Base64 Standard, nicht base64url |
-| Missing queue mode | `q=c` Parameter hinzugefügt |
-
-### Resolved (v0.1.10)
-
-| Issue | Solution |
-|-------|----------|
-| E2E decryption fails | Use `crypto_box_beforenm()` not `crypto_scalarmult()` |
-| SEND syntax error | ASCII 'T'/'F', two spaces |
-| Wrong encryption key | HSalsa20 key derivation required |
-
-### Open
-
-| Issue | Status | Notes |
-|-------|--------|-------|
-| Multi-server | TODO | All contacts on same server |
-| Bidirectional chat | TODO | Need two queues per contact |
-| T-Embed UI | TODO | Display integration |
-| QR Code | TODO | Show link as scannable QR |
+1. **Reply Queue URI Parser** — Extrahiere Server, Queue ID, DH Key
+2. **Multi-Server Support** — Verbinde zu smp10.simplex.im (Peer's Server)
+3. **AgentConfirmation Builder** — Erstelle Antwort-Nachricht
+4. **SEND to Peer** — Sende Confirmation an Peer's Queue
+5. **Connection Complete!** — SimpleX App zeigt "Connected"
 
 ---
 
 ## 🏆 Achievement Unlocked
 
-**"First Native ESP32 SimpleX Client with Working Invitation Links"**
+**"First Native ESP32 SimpleX Client with Full Message Layer Decoding"**
 
-- ✅ Multiple Queues (10 contacts, one connection)
-- ✅ Contact Management (Add/Remove/List)
-- ✅ Full Message Lifecycle (NEW→SUB→SEND→MSG→DECRYPT→ACK)
-- ✅ XSalsa20-Poly1305 E2E Encryption
-- ✅ Ed25519 Signing + X25519 Key Exchange
-- ✅ NVS Persistent Storage
-- ✅ **SimpleX-Compatible Invitation Links**
+- ✅ TLS 1.3 + SMP Handshake
+- ✅ Queue Management (NEW, SUB, DEL)
+- ✅ Message Lifecycle (SEND, MSG, ACK)
+- ✅ SMP E2E Decryption (Layer 3)
+- ✅ **Client Message Decryption (Layer 5)**
+- ✅ **Agent Protocol Parsing (Layer 6)**
+- ✅ **AgentInvitation + Reply Queue Extraction**
 
 ---
 
-*Last updated: January 20, 2026 — v0.1.11-alpha*
+*Last updated: January 21, 2026 — v0.1.12-alpha*
