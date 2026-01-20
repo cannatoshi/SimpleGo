@@ -1,6 +1,6 @@
 /**
  * SimpleGo - Native SimpleX SMP Client for ESP32
- * v0.1.10-alpha - Multi-Contact Test
+ * v0.1.11-alpha - Multi-Contact Test
  * github.com/cannatoshi/SimpleGo
  * Autor: cannatoshi
  * 
@@ -86,6 +86,81 @@ static int base64url_encode(const uint8_t *input, int input_len, char *output, i
     if (mod == 1) j -= 2;
     else if (mod == 2) j -= 1;
     
+    output[j] = '\0';
+    return j;
+}
+
+// ============== Standard Base64 Encoding (with padding, for dh param) ==============
+
+static const char base64_std_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static int base64_std_encode(const uint8_t *input, int input_len, char *output, int output_max) {
+    int i, j;
+    for (i = 0, j = 0; i < input_len && j < output_max - 4; ) {
+        uint32_t octet_a = i < input_len ? input[i++] : 0;
+        uint32_t octet_b = i < input_len ? input[i++] : 0;
+        uint32_t octet_c = i < input_len ? input[i++] : 0;
+        uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
+        
+        output[j++] = base64_std_chars[(triple >> 18) & 0x3F];
+        output[j++] = base64_std_chars[(triple >> 12) & 0x3F];
+        output[j++] = base64_std_chars[(triple >> 6) & 0x3F];
+        output[j++] = base64_std_chars[triple & 0x3F];
+    }
+    
+    // Add padding for standard base64
+    int mod = input_len % 3;
+    if (mod == 1) {
+        output[j-2] = '=';
+        output[j-1] = '=';
+    } else if (mod == 2) {
+        output[j-1] = '=';
+    }
+    
+    output[j] = '\0';
+    return j;
+}
+
+// ============== URL Encoding ==============
+
+// Single URL encode - encodes all special characters
+static int url_encode(const char *input, char *output, int output_max) {
+    static const char *hex = "0123456789ABCDEF";
+    int j = 0;
+    for (int i = 0; input[i] && j < output_max - 4; i++) {
+        unsigned char c = (unsigned char)input[i];
+        // Only keep alphanumeric and - _ . ~ unreserved
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || 
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+            output[j++] = c;
+        } else {
+            // Percent-encode everything else including : / # ? = & @ +
+            output[j++] = '%';
+            output[j++] = hex[(c >> 4) & 0x0F];
+            output[j++] = hex[c & 0x0F];
+        }
+    }
+    output[j] = '\0';
+    return j;
+}
+
+// Pre-encode Base64 special chars (+ and =) so they become double-encoded after url_encode
+// + → %2B, = → %3D (then url_encode makes %2B → %252B, %3D → %253D)
+static int base64_pre_encode(const char *input, char *output, int output_max) {
+    int j = 0;
+    for (int i = 0; input[i] && j < output_max - 4; i++) {
+        if (input[i] == '+') {
+            output[j++] = '%';
+            output[j++] = '2';
+            output[j++] = 'B';
+        } else if (input[i] == '=') {
+            output[j++] = '%';
+            output[j++] = '3';
+            output[j++] = 'D';
+        } else {
+            output[j++] = input[i];
+        }
+    }
     output[j] = '\0';
     return j;
 }
@@ -460,40 +535,97 @@ static void list_contacts(void) {
 }
 
 static void print_invitation_links(const uint8_t *ca_hash) {
-    char hash_b64[64];
-    char dh_b64[64];
-    char snd_b64[64];
+    char hash_b64[64];           // keyHash (Base64URL, no padding)
+    char snd_b64[64];            // senderId (Base64URL, no padding)
+    char dh_b64[80];             // dhPublicKey (Standard Base64 with padding)
+    char dh_preencoded[256];     // DH key with + and = pre-encoded
+    char smp_uri[512];           // SMP URI with pre-encoded DH
+    char smp_uri_encoded[2048];  // Final URL-encoded SMP URI
     
+    // Encode keyHash as Base64URL (no padding)
     base64url_encode(ca_hash, 32, hash_b64, sizeof(hash_b64));
     
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "🔗 CONNECTION INFO (raw SMP queue data):");
-    ESP_LOGI(TAG, "════════════════════════════════════════");
+    ESP_LOGI(TAG, "🔗 SIMPLEX CONTACT LINKS");
+    ESP_LOGI(TAG, "══════════════════════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "Server keyHash: %s", hash_b64);
+    ESP_LOGI(TAG, "");
     
     for (int i = 0; i < MAX_CONTACTS; i++) {
         if (!contacts_db.contacts[i].active) continue;
         
         contact_t *c = &contacts_db.contacts[i];
         
-        base64url_encode(c->rcv_dh_public, 32, dh_b64, sizeof(dh_b64));
+        // Encode senderId as Base64URL (no padding)
         base64url_encode(c->sender_id, c->sender_id_len, snd_b64, sizeof(snd_b64));
         
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "📱 [%d] %s:", i, c->name);
-        ESP_LOGI(TAG, "   Server:  %s:%d", SMP_HOST, SMP_PORT);
-        ESP_LOGI(TAG, "   keyHash: %s", hash_b64);
-        ESP_LOGI(TAG, "   dhKey:   %s", dh_b64);
-        ESP_LOGI(TAG, "   sndId:   %s", snd_b64);
+        // Encode dhPublicKey as SPKI + Standard Base64 (WITH padding, WITH +/=)
+        // SPKI format: 12-byte header + 32-byte raw key = 44 bytes
+        uint8_t dh_spki[44];
+        memcpy(dh_spki, X25519_SPKI_HEADER, 12);
+        memcpy(dh_spki + 12, c->rcv_dh_public, 32);
+        base64_std_encode(dh_spki, 44, dh_b64, sizeof(dh_b64));
         
-        // Print senderId as hex for SEND command
-        printf("   sndId (hex): ");
+        // Pre-encode + and = in the Base64 DH key
+        // This makes them double-encoded after the final url_encode()
+        // + → %2B → %252B (after url_encode)
+        // = → %3D → %253D (after url_encode)
+        base64_pre_encode(dh_b64, dh_preencoded, sizeof(dh_preencoded));
+        
+        // Build SMP URI with pre-encoded DH key
+        // - v=1-4 for SMP client version range  
+        // - q=c for Contact queue mode
+        snprintf(smp_uri, sizeof(smp_uri), 
+                 "smp://%s@%s:%d/%s#/?v=1-4&dh=%s&q=c",
+                 hash_b64, SMP_HOST, SMP_PORT, snd_b64, dh_preencoded);
+        
+        // Single URL-encode the entire SMP URI
+        // : → %3A, / → %2F, @ → %40, # → %23, etc. (single)
+        // %2B → %252B, %3D → %253D (double, because % → %25)
+        url_encode(smp_uri, smp_uri_encoded, sizeof(smp_uri_encoded));
+        
+        ESP_LOGI(TAG, "📱 [%d] %s", i, c->name);
+        ESP_LOGI(TAG, "──────────────────────────────────────────────────────────────────────────────");
+        
+        // Format 1: Raw SMP Queue URI (for reference/debugging)
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "   📋 SMP Queue URI (raw):");
+        printf("   smp://%s@%s:%d/%s#/?v=1-4&dh=%s&q=c\n", 
+               hash_b64, SMP_HOST, SMP_PORT, snd_b64, dh_b64);
+        
+        // Format 2: Web landing page (MAIN - copy this!)
+        // v=2-7 is the agent version range
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "   🌐 SimpleX Contact Link (COPY THIS!):");
+        printf("   https://simplex.chat/contact#/?v=2-7&smp=%s\n", smp_uri_encoded);
+        
+        // Format 3: simplex: URI scheme (for direct app opening)
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "   📲 Direct App Link:");
+        printf("   simplex:/contact#/?v=2-7&smp=%s\n", smp_uri_encoded);
+        
+        // Debug info
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "   🔧 Debug Info:");
+        ESP_LOGI(TAG, "      senderId (b64url): %s", snd_b64);
+        ESP_LOGI(TAG, "      dhPubKey (b64std): %s", dh_b64);
+        printf("      senderId (hex): ");
         for (int j = 0; j < c->sender_id_len; j++) {
             printf("%02x", c->sender_id[j]);
         }
         printf("\n");
+        
+        ESP_LOGI(TAG, "");
     }
     
-    ESP_LOGI(TAG, "════════════════════════════════════════");
+    ESP_LOGI(TAG, "══════════════════════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "📝 ANLEITUNG:");
+    ESP_LOGI(TAG, "   1. Den 🌐 Web Link kopieren");
+    ESP_LOGI(TAG, "   2. In SimpleX Desktop/Mobile App öffnen");
+    ESP_LOGI(TAG, "   3. 'Connect' klicken");
+    ESP_LOGI(TAG, "   4. Nachricht senden");
+    ESP_LOGI(TAG, "   5. ESP32 empfängt MSG!");
     ESP_LOGI(TAG, "");
 }
 
@@ -982,6 +1114,183 @@ static bool decrypt_message(contact_t *c, const uint8_t *encrypted, int enc_len,
     return true;
 }
 
+// ============== Agent Message Parsing ==============
+
+// Agent message types (after SMP-level decryption)
+#define AGENT_MSG_CONFIRMATION  'C'  // Connection request from peer
+#define AGENT_MSG_ENVELOPE      'M'  // Normal message (Double Ratchet encrypted)
+#define AGENT_MSG_INVITATION    'I'  // Invitation
+#define AGENT_MSG_RATCHET_KEY   'R'  // Ratchet key exchange
+
+// Parse SMP client message header
+// Returns pointer to body after header, or NULL on error
+static const uint8_t* parse_smp_client_header(const uint8_t *data, int len, 
+                                              uint8_t *sender_key, int *sender_key_len) {
+    if (len < 1) return NULL;
+    
+    *sender_key_len = 0;
+    
+    if (data[0] == '_') {
+        // Empty header - message from secured queue
+        return data + 1;
+    } else if (data[0] == 'K') {
+        // Header with sender key - initial confirmation
+        if (len < 2) return NULL;
+        int key_len = data[1];
+        if (len < 2 + key_len) return NULL;
+        if (sender_key && key_len <= 64) {
+            memcpy(sender_key, data + 2, key_len);
+            *sender_key_len = key_len;
+        }
+        return data + 2 + key_len;
+    }
+    
+    // Unknown header - might be raw agent message
+    return data;
+}
+
+// Parse agent message envelope
+// Returns the message type and fills in version
+static char parse_agent_envelope(const uint8_t *data, int len, 
+                                 uint16_t *agent_version,
+                                 const uint8_t **body, int *body_len) {
+    if (len < 3) return 0;
+    
+    // Agent version is 2 bytes, big-endian
+    *agent_version = (data[0] << 8) | data[1];
+    
+    // Message type
+    char msg_type = data[2];
+    
+    // Body starts after type
+    *body = data + 3;
+    *body_len = len - 3;
+    
+    return msg_type;
+}
+
+// Dump hex for debugging
+static void dump_hex(const char *label, const uint8_t *data, int len, int max_bytes) {
+    int show = (len > max_bytes) ? max_bytes : len;
+    printf("   %s (%d bytes): ", label, len);
+    for (int i = 0; i < show; i++) {
+        printf("%02x ", data[i]);
+    }
+    if (len > max_bytes) printf("...");
+    printf("\n");
+}
+
+// Parse and display agent message details
+static void parse_agent_message(contact_t *contact, const uint8_t *plain, int plain_len) {
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "   🔬 AGENT MESSAGE ANALYSIS:");
+    
+    // First, check for SMP client header
+    uint8_t sender_key[64];
+    int sender_key_len = 0;
+    const uint8_t *body = parse_smp_client_header(plain, plain_len, sender_key, &sender_key_len);
+    
+    if (!body) {
+        ESP_LOGW(TAG, "      ⚠️ Failed to parse SMP client header");
+        dump_hex("Raw data", plain, plain_len, 32);
+        return;
+    }
+    
+    int body_offset = body - plain;
+    int body_len = plain_len - body_offset;
+    
+    if (sender_key_len > 0) {
+        ESP_LOGI(TAG, "      📌 Header: 'K' (initial confirmation)");
+        dump_hex("Sender key", sender_key, sender_key_len, 44);
+    } else if (plain[0] == '_') {
+        ESP_LOGI(TAG, "      📌 Header: '_' (secured queue)");
+    } else {
+        ESP_LOGI(TAG, "      📌 Header: none (raw agent msg)");
+    }
+    
+    // Parse agent envelope
+    if (body_len < 3) {
+        ESP_LOGW(TAG, "      ⚠️ Body too short for agent envelope");
+        dump_hex("Body", body, body_len, 32);
+        return;
+    }
+    
+    uint16_t agent_version;
+    const uint8_t *agent_body;
+    int agent_body_len;
+    char msg_type = parse_agent_envelope(body, body_len, &agent_version, &agent_body, &agent_body_len);
+    
+    ESP_LOGI(TAG, "      📦 Agent Version: %d", agent_version);
+    
+    switch (msg_type) {
+        case AGENT_MSG_CONFIRMATION:
+            ESP_LOGI(TAG, "      📬 Type: CONFIRMATION ('C') - Connection Request!");
+            ESP_LOGI(TAG, "      ────────────────────────────────────");
+            ESP_LOGI(TAG, "      🎉 A SimpleX client wants to connect!");
+            
+            // Parse confirmation: "0" or "1" + e2eParams + encConnInfo
+            if (agent_body_len > 0) {
+                char e2e_flag = agent_body[0];
+                ESP_LOGI(TAG, "      E2E flag: '%c' (%s)", e2e_flag,
+                         e2e_flag == '0' ? "no e2e params" : "has e2e params");
+                
+                // The rest is the encrypted connection info
+                // This contains the peer's profile, reply queue, etc.
+                dump_hex("encConnInfo", agent_body + 1, agent_body_len - 1, 64);
+                
+                ESP_LOGI(TAG, "");
+                ESP_LOGI(TAG, "      ⚡ NEXT STEPS:");
+                ESP_LOGI(TAG, "         1. Parse e2e encryption params");
+                ESP_LOGI(TAG, "         2. Decrypt connInfo with our DH key");
+                ESP_LOGI(TAG, "         3. Extract peer's reply queue & profile");
+                ESP_LOGI(TAG, "         4. Send our confirmation back");
+                ESP_LOGI(TAG, "         5. Initialize Double Ratchet");
+            }
+            break;
+            
+        case AGENT_MSG_ENVELOPE:
+            ESP_LOGI(TAG, "      📬 Type: MESSAGE ENVELOPE ('M')");
+            ESP_LOGI(TAG, "      ⚠️ This is Double Ratchet encrypted!");
+            ESP_LOGI(TAG, "      Need to implement ratchet to decrypt.");
+            dump_hex("encAgentMessage", agent_body, agent_body_len, 64);
+            break;
+            
+        case AGENT_MSG_INVITATION:
+            ESP_LOGI(TAG, "      📬 Type: INVITATION ('I')");
+            // Format: connReqLength (2 bytes) + connReq + connInfo
+            if (agent_body_len >= 2) {
+                uint16_t req_len = (agent_body[0] << 8) | agent_body[1];
+                ESP_LOGI(TAG, "      ConnReq length: %d", req_len);
+                dump_hex("connReq", agent_body + 2, (req_len < agent_body_len - 2) ? req_len : agent_body_len - 2, 64);
+            }
+            break;
+            
+        case AGENT_MSG_RATCHET_KEY:
+            ESP_LOGI(TAG, "      📬 Type: RATCHET KEY ('R')");
+            ESP_LOGI(TAG, "      Peer is sending ratchet key exchange.");
+            dump_hex("ratchetInfo", agent_body, agent_body_len, 64);
+            break;
+            
+        default:
+            ESP_LOGW(TAG, "      📬 Type: UNKNOWN (0x%02x / '%c')", msg_type, 
+                     (msg_type >= 32 && msg_type < 127) ? msg_type : '?');
+            dump_hex("Body", body, body_len, 64);
+            
+            // Try to show as printable string
+            ESP_LOGI(TAG, "      As text: ");
+            printf("         \"");
+            for (int i = 0; i < body_len && i < 100; i++) {
+                char c = body[i];
+                if (c >= 32 && c < 127) printf("%c", c);
+                else printf(".");
+            }
+            printf("\"\n");
+            break;
+    }
+    
+    ESP_LOGI(TAG, "");
+}
+
 // ============== Main SMP Connection ==============
 
 static void smp_connect(void) {
@@ -1002,7 +1311,7 @@ static void smp_connect(void) {
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║  SimpleGo v0.1.10-alpha Multi-Test ║");
+    ESP_LOGI(TAG, "║  SimpleGo v0.1.11-alpha Agent-Test ║");
     ESP_LOGI(TAG, "╚════════════════════════════════════╝");
     ESP_LOGI(TAG, "");
 
@@ -1112,15 +1421,6 @@ static void smp_connect(void) {
         ESP_LOGI(TAG, "      ✅ %d contact(s) loaded from NVS", contacts_db.num_contacts);
     }
     
-    // Create second contact "Alice" for multi-contact testing
-    if (contacts_db.num_contacts == 1) {
-        ESP_LOGI(TAG, "      ➕ Creating second contact 'Alice' for testing...");
-        int idx = add_contact(&ssl, block, session_id, "Alice");
-        if (idx >= 0) {
-            ESP_LOGI(TAG, "      ✅ Alice created in slot %d!", idx);
-        }
-    }
-    
     list_contacts();
     
     // ========== Step 5: Subscribe All Contacts ==========
@@ -1130,12 +1430,10 @@ static void smp_connect(void) {
     // Print connection info
     print_invitation_links(ca_hash);
     
-    // Self-test: Uncomment to test message round-trip
-    // self_test_send(&ssl, block, session_id, 0);
-    
     // ========== Message Receive Loop ==========
     ESP_LOGI(TAG, "╔════════════════════════════════════╗");
     ESP_LOGI(TAG, "║   📨 Waiting for messages...       ║");
+    ESP_LOGI(TAG, "║   (Connect with SimpleX App!)      ║");
     ESP_LOGI(TAG, "╚════════════════════════════════════╝");
     ESP_LOGI(TAG, "");
     
@@ -1207,13 +1505,15 @@ static void smp_connect(void) {
             
             if (contact) {
                 ESP_LOGI(TAG, "");
-                ESP_LOGI(TAG, "   💬 MESSAGE for [%s]!", contact->name);
+                ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
+                ESP_LOGI(TAG, "║   💬 MESSAGE RECEIVED for [%s]!", contact->name);
+                ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
             } else {
                 ESP_LOGI(TAG, "");
                 ESP_LOGI(TAG, "   💬 MESSAGE (unknown contact)!");
             }
-            ESP_LOGI(TAG, "      MsgId: %02x%02x%02x%02x...", msg_id[0], msg_id[1], msg_id[2], msg_id[3]);
-            ESP_LOGI(TAG, "      Encrypted: %d bytes", enc_len);
+            ESP_LOGI(TAG, "   MsgId: %02x%02x%02x%02x...", msg_id[0], msg_id[1], msg_id[2], msg_id[3]);
+            ESP_LOGI(TAG, "   Encrypted: %d bytes", enc_len);
             
             // Try to decrypt
             if (contact && contact->have_srv_dh && enc_len > crypto_secretbox_MACBYTES) {
@@ -1221,34 +1521,10 @@ static void smp_connect(void) {
                 if (plain) {
                     int plain_len = 0;
                     if (decrypt_message(contact, &resp[p], enc_len, msg_id, msgIdLen, plain, &plain_len)) {
-                        // Strip padding - find actual message length (before '#' padding)
-                        int actual_len = plain_len;
-                        for (int i = plain_len - 1; i >= 0; i--) {
-                            if (plain[i] != '#') {
-                                actual_len = i + 1;
-                                break;
-                            }
-                        }
+                        ESP_LOGI(TAG, "   🔓 SMP-Level Decryption OK! (%d bytes)", plain_len);
                         
-                        // Skip message header (first ~6 bytes are metadata)
-                        int msg_start = 0;
-                        for (int i = 0; i < actual_len && i < 20; i++) {
-                            if (plain[i] == ' ' && i > 0) {
-                                msg_start = i + 1;
-                                break;
-                            }
-                        }
-                        
-                        ESP_LOGI(TAG, "   🔓 DECRYPTED:");
-                        printf("      \"");
-                        for (int i = msg_start; i < actual_len && i < msg_start + 500; i++) {
-                            char c = plain[i];
-                            if (c >= 32 && c < 127) {
-                                printf("%c", c);
-                            }
-                        }
-                        printf("\"\n");
-                        ESP_LOGI(TAG, "      (%d bytes payload)", actual_len - msg_start);
+                        // Parse the agent message to understand what we got
+                        parse_agent_message(contact, plain, plain_len);
                         
                         // Send ACK
                         ESP_LOGI(TAG, "   📨 Sending ACK...");
@@ -1293,6 +1569,8 @@ static void smp_connect(void) {
                         atp += ap;
                         
                         smp_write_command_block(&ssl, block, ack_trans, atp);
+                    } else {
+                        ESP_LOGE(TAG, "   ❌ Decryption failed!");
                     }
                     free(plain);
                 }
