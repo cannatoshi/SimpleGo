@@ -1,12 +1,12 @@
 # SimpleGo
 
-> **The First Native SimpleX SMP Client for ESP32 with Working Invitation Links** — Part of the Sentinel Secure Messenger Suite
+> **The First Native SimpleX SMP Client for ESP32 with Full Message Layer Decoding** — Part of the Sentinel Secure Messenger Suite
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-green.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
 [![Framework: ESP-IDF 5.5](https://img.shields.io/badge/Framework-ESP--IDF%205.5-red.svg)](https://docs.espressif.com/projects/esp-idf/)
-[![Version: v0.1.11-alpha](https://img.shields.io/badge/Version-v0.1.11--alpha-orange.svg)]()
-[![Status: Invitation Links Working](https://img.shields.io/badge/Status-Invitation%20Links%20Working-brightgreen.svg)]()
+[![Version: v0.1.12-alpha](https://img.shields.io/badge/Version-v0.1.12--alpha-orange.svg)]()
+[![Status: Agent Protocol Working](https://img.shields.io/badge/Status-Agent%20Protocol%20Working-brightgreen.svg)]()
 
 ---
 
@@ -16,29 +16,19 @@ SimpleGo brings [SimpleX Chat](https://simplex.chat/) — the first messaging pl
 
 ---
 
-## 🔗 MILESTONE: Invitation Links Working!
+## 🔐 MILESTONE: Full Message Layer Decoding!
 
-**As of v0.1.11-alpha (January 20, 2026)**, SimpleGo generates SimpleX-compatible invitation links!
+**As of v0.1.12-alpha (January 21, 2026)**, SimpleGo decodes the complete 6-layer message stack!
 
 ```
-🔗 SIMPLEX CONTACT LINKS ════════════════════════════════════════════
-📱 [0] Test ─────────────────────────────────────────────────────────
-📋 SMP Queue URI (raw):
-   smp://1jne...@smp3.simplexonflux.com:5223/XLEV...#/?v=1-4&dh=MCow...&q=c
-
-🌐 SimpleX Contact Link (COPY THIS!):
-   https://simplex.chat/contact#/?v=2-7&smp=smp%3A%2F%2F...
-
-══════════════════════════════════════════════════════════════════════
-📝 HOW TO CONNECT:
-   1. Copy the 🌐 Web Link
-   2. Open in SimpleX Desktop/Mobile App
-   3. Click 'Connect'
-   4. Send a message
-   5. ESP32 receives MSG!
+🔓 Layer 3 Decrypted: 16106 bytes (SMP E2E)
+🔓 Layer 5 Decrypted: 847 bytes (Client DH)
+📋 Agent Message: Version=7, Type='I' (Invitation)
+🔗 Reply Queue: simplex:/invitation#/?v=2-7&smp=smp%3A%2F%2F...@smp10.simplex.im/...
+👤 Peer Profile: {"displayName":"Alice",...}
 ```
 
-**SimpleX Desktop/Mobile Apps can now connect directly to ESP32!** 🎉
+**ESP32 now sees peer's profile and reply queue URI!** 🎉
 
 ---
 
@@ -60,93 +50,99 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    SimpleGo Client                      │
-├─────────────────────────────────────────────────────────┤
-│  UI Layer                              📋 PLANNED       │
-│  └── OLED/LCD Display (LVGL planned)                    │
-├─────────────────────────────────────────────────────────┤
-│  Invitation Links                      ✅ COMPLETE      │
-│  ├── SMP Queue URI Generation                           │
-│  ├── SimpleX Contact Link (Web)                         │
-│  ├── Direct App Link (simplex:/)                        │
-│  └── Base64 + URL Encoding                              │
-├─────────────────────────────────────────────────────────┤
-│  Contact Management                    ✅ COMPLETE      │
-│  ├── Multi-Contact Database           - 10 slots        │
-│  ├── NVS Persistence                  - Survives reboot │
-│  └── Message Routing                  - By recipientId  │
-├─────────────────────────────────────────────────────────┤
-│  Crypto Engine                         ✅ COMPLETE      │
-│  ├── Ed25519 (libsodium)              - Signatures      │
-│  ├── X25519 (libsodium)               - Key Exchange    │
-│  ├── XSalsa20-Poly1305 (libsodium)    - E2E Encryption  │
-│  └── SHA-256 (mbedTLS)                - Hashing         │
-├─────────────────────────────────────────────────────────┤
-│  SMP Protocol Layer                    ✅ COMPLETE      │
-│  ├── NEW, SUB, SEND, MSG, ACK, DEL    ✅ All Commands   │
-│  ├── TLS 1.3 Transport                ✅ Working        │
-│  └── 16KB Block Framing               ✅ Working        │
-├─────────────────────────────────────────────────────────┤
-│  Network Layer                         ✅ COMPLETE      │
-│  ├── WiFi (ESP32)                                       │
-│  ├── TLS 1.3 (mbedTLS)                                  │
-│  └── Tor (planned)                                      │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                       SimpleGo Client                           │
+├─────────────────────────────────────────────────────────────────┤
+│  UI Layer                                       📋 PLANNED      │
+│  └── OLED/LCD Display (LVGL planned)                            │
+├─────────────────────────────────────────────────────────────────┤
+│  Agent Protocol Layer                           ✅ NEW!         │
+│  ├── AgentInvitation Parser (Type 'I')                          │
+│  ├── Reply Queue URI Extraction                                 │
+│  ├── Peer Profile Parsing (ConnInfo)                            │
+│  └── AgentConfirmation Builder (planned)                        │
+├─────────────────────────────────────────────────────────────────┤
+│  Message Decryption Stack                       ✅ COMPLETE     │
+│  ├── Layer 3: SMP E2E (server DH)                               │
+│  ├── Layer 5: Client DH (contact DH)            ✅ NEW!         │
+│  └── Layer 6: Agent Protocol Parsing            ✅ NEW!         │
+├─────────────────────────────────────────────────────────────────┤
+│  Invitation Links                               ✅ FIXED        │
+│  ├── Base64URL Encoding (not Standard!)                         │
+│  └── Double-encoded = padding (%253D)                           │
+├─────────────────────────────────────────────────────────────────┤
+│  Contact Management                             ✅ COMPLETE     │
+│  ├── Multi-Contact Database (10 slots)                          │
+│  ├── NVS Persistence                                            │
+│  └── Message Routing                                            │
+├─────────────────────────────────────────────────────────────────┤
+│  Crypto Engine                                  ✅ COMPLETE     │
+│  ├── Ed25519 (libsodium)                                        │
+│  ├── X25519 (libsodium)                                         │
+│  ├── crypto_box (XSalsa20-Poly1305)                             │
+│  └── SHA-256 (mbedTLS)                                          │
+├─────────────────────────────────────────────────────────────────┤
+│  SMP Protocol Layer                             ✅ COMPLETE     │
+│  ├── NEW, SUB, SEND, MSG, ACK, DEL                              │
+│  ├── TLS 1.3 Transport                                          │
+│  └── 16KB Block Framing                                         │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## ✅ What's Working
 
-### SMP Commands
+### Message Layer Stack (Complete!)
 
-| Command | Status | Description |
-|---------|--------|-------------|
-| NEW | ✅ Complete | Queue creation with IDS response |
-| SUB | ✅ Complete | Queue subscription (batch for all contacts) |
-| SEND | ✅ Complete | Message transmission |
-| MSG | ✅ Complete | Message receive + E2E decrypt |
-| ACK | ✅ Complete | Message acknowledgment |
-| DEL | ✅ Complete | Queue deletion |
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  Layer 1: TLS 1.3 Transport                      ✅ COMPLETE    │
+│  └── ALPN: "smp/1", ChaCha20-Poly1305                          │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 2: SMP Transport Block                    ✅ COMPLETE    │
+│  └── [2-byte transmissionLength] [content] [padding to 16KB]   │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 3: SMP E2E Encryption                     ✅ COMPLETE    │
+│  └── crypto_box(msg, nonce, server_dh_pub, our_dh_secret)      │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 4: SMP Client Message                     ✅ COMPLETE    │
+│  └── [2-byte length prefix] [encrypted_content] [padding]      │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 5: Contact DH Encryption                  ✅ NEW!        │
+│  └── [X25519 SPKI 44 bytes] [crypto_box encrypted body]        │
+├─────────────────────────────────────────────────────────────────┤
+│  Layer 6: Agent Protocol Message                 ✅ NEW!        │
+│  └── [2-byte version BE] [type: 'C'/'I'/'M'/'R'] [body]        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Agent Message Types
+
+| Type | Name | Status | Description |
+|------|------|--------|-------------|
+| `'I'` | AgentInvitation | ✅ Parsed | Reply queue URI + profile |
+| `'C'` | AgentConfirmation | 📋 Planned | Connection confirmation |
+| `'M'` | AgentMsgEnvelope | 📋 Planned | Double Ratchet encrypted |
+| `'R'` | AgentRatchetKey | 📋 Planned | Ratchet key exchange |
 
 ### Features
 
 | Feature | Status | Description |
 |---------|--------|-------------|
-| **Invitation Links** | ✅ **NEW!** | SimpleX-compatible contact links |
-| Multi-Contact | ✅ Complete | Up to 10 contacts, one TLS connection |
-| E2E Encryption | ✅ Complete | X25519 DH + XSalsa20-Poly1305 |
+| **Agent Protocol** | ✅ **NEW!** | Full message layer decoding |
+| **Client DH Decrypt** | ✅ **NEW!** | Layer 5 decryption working |
+| **Reply Queue URI** | ✅ **NEW!** | Extract peer's SMP server + queue |
+| **Peer Profile** | ✅ **NEW!** | See username from connInfo |
+| Invitation Links | ✅ Fixed | Base64URL + double-encoded = |
+| Multi-Contact | ✅ Complete | 10 contacts, one TLS connection |
+| E2E Encryption | ✅ Complete | crypto_box Layer 3 |
 | NVS Persistence | ✅ Complete | Contacts survive reboots |
-| Message Routing | ✅ Complete | Dispatch by recipientId |
-| Self-Test | ✅ Complete | Verify full E2E round-trip |
-| TLS 1.3 | ✅ Complete | ChaCha20-Poly1305, ALPN "smp/1" |
-
-### Invitation Link Formats
-
-| Format | Usage |
-|--------|-------|
-| SMP Queue URI | Raw protocol URI for debugging |
-| Web Link | `https://simplex.chat/contact#/?v=2-7&smp=...` |
-| App Link | `simplex:/contact#/?v=2-7&smp=...` |
-
-### Cryptography
-
-| Feature | Status | Description |
-|---------|--------|-------------|
-| Ed25519 Signatures | ✅ Complete | libsodium, SPKI encoding |
-| X25519 Key Exchange | ✅ Complete | Per-contact DH keys |
-| crypto_box | ✅ Complete | HSalsa20 key derivation + XSalsa20-Poly1305 |
-| Base64 Standard | ✅ Complete | For invitation link DH keys |
-| SHA-256 | ✅ Complete | Certificate fingerprints |
-| Double Ratchet | 📋 Planned | Full Agent-level E2E |
+| All SMP Commands | ✅ Complete | NEW, SUB, SEND, MSG, ACK, DEL |
 
 ---
 
 ## 🔧 Hardware
-
-### Currently Testing On
-- **ESP32-S3 DevKit** — Development board
 
 ### Target Hardware
 
@@ -154,21 +150,19 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 |--------|--------|----------|
 | **LilyGo T-Deck** | 🎯 Primary | ESP32-S3, 2.8" LCD, Keyboard, 8MB PSRAM |
 | **LilyGo T-Embed** | 🎯 Secondary | ESP32-S3, 1.9" LCD, Rotary Encoder |
-| **T-Deck Plus** | 📋 Planned | + GPS, 2000mAh Battery |
 
 ---
 
 ## 📈 Performance (ESP32-S3 @ 240MHz)
 
-| Operation | Time | Library |
-|-----------|------|---------|
-| Ed25519 Sign | ~8ms | libsodium |
-| X25519 DH | ~8ms | libsodium |
-| crypto_box decrypt | ~1ms | libsodium |
-| Base64 encode | <1ms | custom |
-| URL encode | <1ms | custom |
-| TLS Handshake | ~800ms | mbedTLS |
-| NVS read/write | ~5ms | ESP-IDF |
+| Operation | Time |
+|-----------|------|
+| Ed25519 Sign | ~8ms |
+| X25519 DH | ~8ms |
+| crypto_box decrypt (Layer 3) | ~1ms |
+| crypto_box decrypt (Layer 5) | ~1ms |
+| Agent message parse | <1ms |
+| TLS Handshake | ~800ms |
 
 ---
 
@@ -181,30 +175,7 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 | **TLS** | mbedTLS 3.x (TLS 1.3, ChaCha20-Poly1305) |
 | **Cryptography** | libsodium (Ed25519, X25519, crypto_box) |
 | **Storage** | NVS (Non-volatile key persistence) |
-| **Protocol** | SMP v6 |
-
----
-
-## 📁 Project Structure
-
-```
-SimpleGo/
-├── README.md                 # This file
-├── CHANGELOG.md              # Version history
-├── ROADMAP.md                # Development roadmap
-├── LICENSE                   # AGPL-3.0
-├── main/
-│   ├── main.c                # Main application
-│   ├── CMakeLists.txt
-│   └── idf_component.yml
-├── docs/
-│   ├── DEVELOPMENT.md        # Build & setup guide
-│   ├── PROTOCOL.md           # SMP protocol deep dive
-│   ├── TECHNICAL.md          # Key learnings
-│   └── DEVNOTES.md           # Session notes
-├── CMakeLists.txt
-└── sdkconfig.defaults
-```
+| **Protocol** | SMP v6 + Agent Protocol |
 
 ---
 
@@ -212,30 +183,31 @@ SimpleGo/
 
 ### Build & Flash
 
-```powershell
-# Windows (ESP-IDF PowerShell)
-cd C:\Espressif\projects\simplex_client
-idf.py build flash monitor -p COM5
-
-# Linux/macOS
-cd ~/esp/simplex_client
+```bash
+cd ~/SimpleGo
 idf.py build flash monitor -p /dev/ttyUSB0
 ```
 
-### Monitor Commands
+### Expected Output
 
-| Key | Action |
-|-----|--------|
-| `Ctrl+]` | Exit monitor |
-| `Ctrl+T, R` | Reboot device |
+```
+🔗 SIMPLEX CONTACT LINKS ════════════════════════════════
+📱 [0] Test ──────────────────────────────────────────────
+🌐 https://simplex.chat/contact#/?v=2-7&smp=...
 
-See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed setup.
+[SimpleX App scannt Link und sendet Invitation]
+
+💬 MESSAGE for [Test]!
+🔓 Layer 3 Decrypted: 16106 bytes
+🔓 Layer 5 Decrypted: 847 bytes
+📋 Agent: Version=7, Type='I'
+🔗 Reply Queue: smp10.simplex.im/...
+👤 Peer: Alice
+```
 
 ---
 
 ## 🗺️ Roadmap
-
-See [ROADMAP.md](ROADMAP.md) for detailed plans.
 
 | Phase | Status |
 |-------|--------|
@@ -244,9 +216,11 @@ See [ROADMAP.md](ROADMAP.md) for detailed plans.
 | Phase 3: E2E Encryption | ✅ Complete |
 | Phase 3.5: Persistence | ✅ Complete |
 | Phase 3.6: Multi-Contact | ✅ Complete |
-| Phase 3.7: Invitation Links | ✅ **Complete!** |
+| Phase 3.7: Invitation Links | ✅ Complete |
+| Phase 3.8: Agent Protocol | ✅ **Complete!** |
+| Phase 3.9: Connection Complete | 📋 Next |
 | Phase 4: User Interface | 📋 Planned |
-| Phase 5: Advanced Features | 📋 Future |
+| Phase 5: Double Ratchet | 📋 Future |
 
 ---
 
@@ -258,20 +232,7 @@ SimpleGo inherits SimpleX's privacy-first design:
 2. **No Central Directory** — No server stores your contact list
 3. **Forward Secrecy** — Per-contact key isolation
 4. **Metadata Protection** — Servers can't correlate senders and recipients
-
----
-
-## 🤝 Contributing
-
-1. **Read the docs** — [DEVELOPMENT.md](docs/DEVELOPMENT.md), [PROTOCOL.md](docs/PROTOCOL.md)
-2. **Check issues** — Look for `good first issue` labels
-3. **Fork & PR** — Standard GitHub workflow
-
-### Current Priorities
-
-1. **T-Embed UI** — Display + Rotary Encoder
-2. **Double Ratchet** — Full Agent-level E2E
-3. **Bidirectional Chat** — Two queues per contact
+5. **Double Encryption** — Layer 3 (SMP) + Layer 5 (Contact DH)
 
 ---
 
@@ -281,31 +242,19 @@ SimpleGo inherits SimpleX's privacy-first design:
 
 ---
 
-## 🙏 Acknowledgments
-
-- **[SimpleX Chat](https://simplex.chat/)** — Protocol design and inspiration
-- **[Espressif](https://www.espressif.com/)** — ESP32 platform and ESP-IDF
-- **[LilyGo](https://lilygo.cc/)** — T-Deck / T-Embed hardware
-- **[libsodium](https://libsodium.org/)** — Cryptographic primitives
-
----
-
 ## Version History
 
 | Version | Date | Milestone |
 |---------|------|-----------|
-| **v0.1.11-alpha** | **2026-01-20** | **🔗 Invitation Links!** |
+| **v0.1.12-alpha** | **2026-01-21** | **🔐 Agent Protocol!** |
+| v0.1.11-alpha | 2026-01-20 | 🔗 Invitation Links |
 | v0.1.10-alpha | 2026-01-20 | 🏆 Multi-Contact + E2E |
-| v0.1.9-alpha | 2026-01-20 | 🗑️ DEL + Full SMP Client |
-| v0.1.8-alpha | 2026-01-20 | 🔑 NVS Persistence |
-| v0.1.7-alpha | 2026-01-20 | ✅ ACK Command |
-| v0.1.6-alpha | 2026-01-20 | 🔐 E2E (Single) |
-| v0.1.5-alpha | 2026-01-20 | 📨 SEND + MSG |
+| v0.1.9-alpha | 2026-01-20 | 🗑️ Full SMP Client |
 
 ---
 
 <p align="center">
-  <strong>🔗 First Native ESP32 SimpleX Client with Working Invitation Links! 🔗</strong><br>
+  <strong>🔐 First Native ESP32 SimpleX Client with Full Message Layer Decoding! 🔐</strong><br>
   <em>Privacy is not a privilege, it's a right.</em>
 </p>
 
