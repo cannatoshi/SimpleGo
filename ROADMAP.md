@@ -17,6 +17,7 @@ SimpleGo development follows a phased approach, building from protocol fundament
 │  Phase 3: E2E Encryption          ████████████████████ 100% ✅      │
 │  Phase 3.5: Persistence           ████████████████████ 100% ✅      │
 │  Phase 3.6: Multi-Contact         ████████████████████ 100% ✅      │
+│  Phase 3.7: Invitation Links      ████████████████████ 100% ✅      │
 │  Phase 4: User Interface          ░░░░░░░░░░░░░░░░░░░░   0% 📋      │
 │  Phase 5: Advanced Features       ░░░░░░░░░░░░░░░░░░░░   0% 📋      │
 └─────────────────────────────────────────────────────────────────────┘
@@ -24,19 +25,18 @@ SimpleGo development follows a phased approach, building from protocol fundament
 
 ---
 
-## 🏆 MILESTONE: Multi-Contact + E2E Complete!
+## 🔗 MILESTONE: Invitation Links Complete!
 
-As of v0.1.10-alpha, full multi-contact support with E2E encryption:
+As of v0.1.11-alpha, SimpleX-compatible invitation links are working!
 
 | Feature | Status |
 |---------|--------|
-| Multiple Contacts (10 slots) | ✅ |
-| One TLS Connection | ✅ |
-| NVS Persistence | ✅ |
-| Batch Subscribe | ✅ |
-| Message Routing | ✅ |
-| E2E Decryption | ✅ |
-| Self-Test | ✅ |
+| SMP Queue URI Generation | ✅ |
+| SimpleX Contact Link (Web) | ✅ |
+| Direct App Link (simplex:/) | ✅ |
+| Base64 Standard Encoding | ✅ |
+| URL Encoding (double for +/=) | ✅ |
+| Tested with SimpleX App | ✅ |
 
 ---
 
@@ -89,16 +89,6 @@ As of v0.1.10-alpha, full multi-contact support with E2E encryption:
 | crypto_box Decryption | ✅ |
 | HSalsa20 Key Derivation | ✅ |
 
-### Key Discovery
-
-```c
-// WRONG: Raw X25519
-crypto_scalarmult(shared, secret, public);
-
-// CORRECT: crypto_box does HSalsa20 key derivation
-crypto_box_beforenm(shared, public, secret);
-```
-
 ---
 
 ## Phase 3.5: Persistence ✅ COMPLETE
@@ -132,25 +122,38 @@ crypto_box_beforenm(shared, public, secret);
 | NVS Blob Storage | ✅ |
 | Self-Test (E2E Round-Trip) | ✅ |
 
-### Data Structure
+---
 
-```c
-typedef struct {
-    char name[32];
-    uint8_t rcv_auth_secret[64];
-    uint8_t rcv_auth_public[32];
-    uint8_t rcv_dh_secret[32];
-    uint8_t rcv_dh_public[32];
-    uint8_t recipient_id[24];
-    uint8_t sender_id[24];
-    uint8_t srv_dh_public[32];
-    // ... lengths and flags
-} contact_t;
+## Phase 3.7: Invitation Links ✅ COMPLETE
 
-typedef struct {
-    uint8_t num_contacts;
-    contact_t contacts[MAX_CONTACTS];  // 10 slots
-} contacts_db_t;
+**Goal**: Generate SimpleX-compatible contact links
+
+### Deliverables
+
+| Task | Status |
+|------|--------|
+| SMP Queue URI Format | ✅ |
+| Contact URI Format (v=2-7) | ✅ |
+| Base64 Standard Encoding | ✅ |
+| URL Encoding | ✅ |
+| Double Encoding (+/= in Base64) | ✅ |
+| Web Link (simplex.chat) | ✅ |
+| App Link (simplex:/) | ✅ |
+| print_invitation_links() | ✅ |
+| Test with SimpleX Desktop | ✅ |
+| Test with SimpleX Mobile | ✅ |
+
+### Link Formats
+
+```
+📋 SMP Queue URI (raw):
+smp://keyHash@server:5223/senderId#/?v=1-4&dh=<base64>&q=c
+
+🌐 SimpleX Contact Link:
+https://simplex.chat/contact#/?v=2-7&smp=<URL-ENCODED-SMP-URI>
+
+📲 Direct App Link:
+simplex:/contact#/?v=2-7&smp=<URL-ENCODED-SMP-URI>
 ```
 
 ---
@@ -172,6 +175,7 @@ typedef struct {
 | Contact List View | 📋 | High |
 | Message View | 📋 | High |
 | Compose Screen | 📋 | High |
+| **QR Code Display** | 📋 | **High** |
 | Keyboard Driver (T-Deck) | 📋 | High |
 | Settings Menu | 📋 | Medium |
 | Status Bar | 📋 | Medium |
@@ -211,8 +215,8 @@ Input: Rotary Encoder with button
 
 | Feature | Priority |
 |---------|----------|
+| Bidirectional Chat | **Critical** |
 | Multiple Servers | High |
-| Bidirectional Chat | High |
 | Group Messaging | Medium |
 | File Transfer (XFTP) | Medium |
 | 4G/LTE Support | High |
@@ -223,6 +227,7 @@ Input: Rotary Encoder with button
 | Feature | Impact | Effort | Priority |
 |---------|--------|--------|----------|
 | T-Embed UI | High | Medium | **Critical** |
+| QR Code Display | High | Low | **High** |
 | Bidirectional Chat | High | Low | **High** |
 | Multiple Servers | High | Medium | High |
 | Double Ratchet | High | High | Medium |
@@ -235,12 +240,13 @@ Input: Rotary Encoder with button
 
 ```
 2026 Q1
-├── January   ✅ Phase 1-3.6 Complete!
+├── January   ✅ Phase 1-3.7 Complete!
 │             ├── Protocol Foundation
 │             ├── Full Messaging
 │             ├── E2E Encryption
 │             ├── NVS Persistence
-│             └── Multi-Contact (v0.1.10)
+│             ├── Multi-Contact (v0.1.10)
+│             └── Invitation Links (v0.1.11)
 ├── February  📋 Phase 4 Start (T-Embed UI)
 └── March     📋 Phase 4 Continue
 
@@ -261,8 +267,8 @@ Input: Rotary Encoder with button
 ### Immediate (Next)
 
 1. **T-Embed UI** — Display + Rotary Encoder
-2. **Bidirectional Chat** — Two queues per contact
-3. **Contact Naming UI** — User-friendly management
+2. **QR Code Display** — Show invitation link as scannable QR
+3. **Bidirectional Chat** — Two queues per contact
 
 ### Short-term
 
@@ -281,7 +287,8 @@ Input: Rotary Encoder with button
 
 | Version | Date | Milestone |
 |---------|------|-----------|
-| **v0.1.10-alpha** | **2026-01-20** | **🏆 Multi-Contact + E2E!** |
+| **v0.1.11-alpha** | **2026-01-20** | **🔗 Invitation Links!** |
+| v0.1.10-alpha | 2026-01-20 | 🏆 Multi-Contact + E2E |
 | v0.1.9-alpha | 2026-01-20 | DEL + Full SMP Client |
 | v0.1.8-alpha | 2026-01-20 | NVS Persistence |
 | v0.1.7-alpha | 2026-01-20 | ACK Command |
@@ -300,8 +307,9 @@ Input: Rotary Encoder with button
 ### Current Priorities
 
 1. **LVGL UI Development** — Embedded graphics experience
-2. **Double Ratchet Port** — Cryptography expertise
-3. **Documentation** — Protocol analysis
+2. **QR Code Library** — QR generation for ESP32
+3. **Double Ratchet Port** — Cryptography expertise
+4. **Documentation** — Protocol analysis
 
 ---
 
