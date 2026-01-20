@@ -10,6 +10,12 @@
 
 ---
 
+## 🎯 Vision
+
+SimpleGo brings [SimpleX Chat](https://simplex.chat/) — the first messaging platform without user identifiers — to standalone hardware devices. No smartphone required, no cloud dependency, complete privacy in your pocket.
+
+---
+
 ## 🏆 MILESTONE: Full Single-Queue SMP Client!
 
 **As of v0.1.9-alpha (January 20, 2026)**, SimpleGo implements all base SMP commands:
@@ -49,6 +55,52 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 
 ---
 
+## 🏗️ Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    SimpleGo Client                      │
+├─────────────────────────────────────────────────────────┤
+│  UI Layer                              📋 PLANNED       │
+│  └── OLED/LCD Display (LVGL planned)                    │
+├─────────────────────────────────────────────────────────┤
+│  Crypto Engine                         ✅ COMPLETE      │
+│  ├── Ed25519 (libsodium)              - Signatures      │
+│  ├── X25519 (libsodium)               - Key Exchange    │
+│  ├── XSalsa20-Poly1305 (libsodium)    - E2E Encryption  │
+│  └── SHA-256 (mbedTLS)                - Hashing         │
+├─────────────────────────────────────────────────────────┤
+│  SMP Protocol Layer                    ✅ COMPLETE      │
+│  ├── NEW, SUB, SEND, MSG, ACK, DEL    ✅ All Commands   │
+│  ├── TLS 1.3 Transport                ✅ Working        │
+│  ├── 16KB Block Framing               ✅ Working        │
+│  └── NVS Key Persistence              ✅ Working        │
+├─────────────────────────────────────────────────────────┤
+│  Network Layer                         ✅ COMPLETE      │
+│  ├── WiFi (ESP32)                                       │
+│  ├── TLS 1.3 (mbedTLS)                                  │
+│  └── Tor (planned)                                      │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 🔧 Hardware
+
+### Currently Testing On
+- **ESP32-S3 DevKit** — Development board
+
+### Target Hardware
+
+| Device | Status | Features |
+|--------|--------|----------|
+| **LilyGo T-Deck** | 🎯 Primary Target | ESP32-S3, 2.8" LCD, Keyboard, 8MB PSRAM |
+| **LilyGo T-Embed** | 🎯 Secondary | ESP32-S3, 1.9" LCD, Rotary Encoder |
+| **T-Deck Plus** | 📋 Planned | + GPS, 2000mAh Battery |
+| **Heltec LoRa 32** | ✅ Tested | ESP32, 0.96" OLED, LoRa |
+
+---
+
 ## ✅ What's Working
 
 ### SMP Commands
@@ -85,6 +137,22 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 
 ---
 
+## 📈 Performance Benchmarks (ESP32-S3 @ 240MHz)
+
+| Operation | Time | Library |
+|-----------|------|---------|
+| Ed25519 KeyGen | ~8ms | libsodium |
+| Ed25519 Sign | ~8ms | libsodium |
+| Ed25519 Verify | ~21ms | libsodium |
+| X25519 KeyGen | ~8ms | libsodium |
+| X25519 DH | ~8ms | libsodium |
+| SHA-256 | <1ms | mbedTLS (HW) |
+| crypto_box decrypt | ~1ms | libsodium |
+| TLS Handshake | ~800ms | mbedTLS |
+| NVS read/write | ~5ms | ESP-IDF |
+
+---
+
 ## 🛠️ Technical Stack
 
 | Component | Technology | Notes |
@@ -96,96 +164,6 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 | **Cryptography** | libsodium | Ed25519, X25519, crypto_box |
 | **Storage** | NVS | Non-volatile key persistence |
 | **Protocol** | SMP v6 | SimpleX Messaging Protocol |
-
----
-
-## 🗑️ DEL Command (v0.1.9)
-
-### Delete Queue from Server
-
-```c
-static void delete_queue(mbedtls_ssl_context *ssl, uint8_t *block,
-                         const uint8_t *session_id,
-                         const uint8_t *recipient_id, uint8_t recipient_id_len,
-                         const uint8_t *rcv_auth_secret);
-```
-
-### Command Format
-
-```
-[sigLen=64][signature]
-[sessLen=32][sessionId]
-[corrIdLen][corrId]
-[entityIdLen][recipientId]    ← Recipient Command!
-"DEL"                         ← No parameters
-```
-
-### What Happens
-
-1. DEL command sent to server
-2. Server deletes queue + all messages
-3. Server responds with `OK`
-4. Local NVS keys automatically cleared
-
----
-
-## 🔑 NVS Key Persistence (v0.1.8)
-
-### Persisted Data
-
-| Key | Size | Description |
-|-----|------|-------------|
-| rcv_auth_sk | 64 bytes | Ed25519 Secret Key |
-| rcv_auth_pk | 32 bytes | Ed25519 Public Key |
-| rcv_dh_sk | 32 bytes | X25519 Secret Key |
-| rcv_dh_pk | 32 bytes | X25519 Public Key |
-| rcv_id | 24 bytes | Recipient ID |
-| snd_id | 24 bytes | Sender ID |
-| srv_dh_pk | 32 bytes | Server DH Key |
-
-### Flow
-
-```
-Start
-  │
-  ▼
-TLS + Handshake
-  │
-  ▼
-load_keys_from_nvs()
-  │
-  ├── Keys found? ──► Skip NEW ──► SUB directly
-  │
-  └── No keys? ──► NEW ──► save_keys_to_nvs() ──► SUB
-```
-
-### API Functions
-
-```c
-bool have_saved_keys()      // Check if keys exist in NVS
-bool load_keys_from_nvs()   // Load all keys from NVS
-void save_keys_to_nvs()     // Save after IDS response
-void clear_saved_keys()     // Delete all keys (reset)
-```
-
----
-
-## 🔐 E2E Encryption Details
-
-### How MSG Decryption Works
-
-```c
-// 1. Compute DH Shared Secret (X25519)
-uint8_t shared[crypto_box_BEFORENMBYTES];
-crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
-
-// 2. Nonce = msgId (24 bytes, zero-padded)
-uint8_t nonce[24] = {0};
-memcpy(nonce, msg_id, msgIdLen);
-
-// 3. Decrypt with NaCl crypto_box (XSalsa20-Poly1305)
-crypto_box_open_easy_afternm(plaintext, ciphertext, cipher_len, nonce, shared);
-```
 
 ---
 
@@ -288,6 +266,15 @@ SimpleGo is part of the **Sentinel Secure Messenger Suite** and welcomes contrib
 2. **Check the issues** — Look for `good first issue` labels
 3. **Fork & PR** — Standard GitHub workflow
 
+### Current Priorities
+
+Looking for contributors in these areas:
+
+1. **Multiple Queue Support** — Contact management
+2. **Double Ratchet Port** — Cryptography expertise needed
+3. **LVGL UI Development** — Embedded graphics experience
+4. **Documentation** — Protocol analysis and guides
+
 ---
 
 ## 📜 License
@@ -316,11 +303,11 @@ See [LICENSE](LICENSE) for full terms.
 | v0.1.7-alpha | 2026-01-20 | 🎯 ACK Command |
 | v0.1.6-alpha | 2026-01-20 | 🏆 E2E Decryption! |
 | v0.1.5-alpha | 2026-01-20 | SEND + MSG receive |
-| v0.1.4-alpha | 2026-01-20 | SUB command |
-| v0.1.3-alpha | 2026-01-19 | NEW command (libsodium fix) |
-| v0.1.2-alpha | 2026-01-18 | Handshake (keyHash fix) |
-| v0.1.1-alpha | 2026-01-17 | TLS 1.3 |
-| v0.1.0-alpha | 2026-01-16 | Initial |
+| v0.4.1 | 2026-01-20 | SUB command |
+| v0.4.0 | 2026-01-19 | NEW command (libsodium fix) |
+| v0.3.0 | 2026-01-18 | Handshake (keyHash fix) |
+| v0.2.0 | 2026-01-17 | TLS 1.3 |
+| v0.1.0 | 2026-01-16 | Initial |
 
 ---
 
