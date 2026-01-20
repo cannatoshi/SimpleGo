@@ -1,6 +1,6 @@
 # SimpleGo Development Guide
 
-> Setup, build, and development workflow for SimpleGo
+> Complete setup guide and development documentation
 
 ---
 
@@ -8,11 +8,13 @@
 
 1. [Prerequisites](#prerequisites)
 2. [Environment Setup](#environment-setup)
-3. [Project Setup](#project-setup)
-4. [Build & Flash](#build--flash)
-5. [Development Workflow](#development-workflow)
-6. [Debugging](#debugging)
-7. [Testing](#testing)
+3. [Hardware Setup](#hardware-setup)
+4. [Library Installation](#library-installation)
+5. [Building & Flashing](#building--flashing)
+6. [Architecture Overview](#architecture-overview)
+7. [Development Workflow](#development-workflow)
+8. [Debugging](#debugging)
+9. [Testing](#testing)
 
 ---
 
@@ -39,7 +41,9 @@
 
 ## Environment Setup
 
-### Windows
+### ESP-IDF Installation (Recommended)
+
+#### Windows
 
 1. **Download ESP-IDF Installer**
    - https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/windows-setup.html
@@ -57,7 +61,7 @@
    C:\Espressif\idf_cmd_init.ps1
    ```
 
-### Linux / macOS
+#### Linux / macOS
 
 ```bash
 # Clone ESP-IDF
@@ -73,24 +77,263 @@ cd esp-idf
 . ~/esp/esp-idf/export.sh
 ```
 
-### Verify Installation
+#### Verify Installation
 
 ```bash
 idf.py --version
 # Should show: ESP-IDF v5.5.2
 ```
 
+### Arduino IDE (Alternative - Legacy)
+
+> **Note**: ESP-IDF is recommended for SimpleGo. Arduino setup documented for reference.
+
+1. Download Arduino IDE 2.x from [arduino.cc](https://www.arduino.cc/en/software)
+2. Install for your platform (Windows/Mac/Linux)
+
+#### ESP32 Board Support (Manual Installation)
+
+The Arduino Board Manager often times out downloading large ESP32 packages. Manual installation is more reliable:
+
+**Windows (PowerShell):**
+```powershell
+# Create hardware directory
+mkdir "$env:USERPROFILE\Documents\Arduino\hardware"
+
+# Clone Heltec ESP32 framework
+cd "$env:USERPROFILE\Documents\Arduino\hardware"
+git clone https://github.com/Heltec-Aaron-Lee/WiFi_Kit_series.git
+
+# Restructure for Arduino
+mkdir heltec
+move WiFi_Kit_series heltec\esp32
+
+# Install toolchain
+cd "$env:USERPROFILE\Documents\Arduino\hardware\heltec\esp32\tools"
+.\get.exe
+```
+
+**Linux/Mac (Bash):**
+```bash
+# Create hardware directory
+mkdir -p ~/Arduino/hardware/heltec
+
+# Clone and setup
+cd ~/Arduino/hardware/heltec
+git clone https://github.com/Heltec-Aaron-Lee/WiFi_Kit_series.git esp32
+
+# Install toolchain
+cd ~/Arduino/hardware/heltec/esp32/tools
+python3 get.py
+```
+
 ---
 
-## Project Setup
+## Hardware Setup
 
-### Clone Repository
+### Heltec WiFi LoRa 32 V2 (Development Board)
+
+| Component | Specification |
+|-----------|---------------|
+| MCU | ESP32-D0WDQ6 Dual Core @ 240MHz |
+| Flash | 4MB |
+| SRAM | 520KB |
+| Display | 0.96" OLED 128x64 (SSD1306) |
+| LoRa | SX1276 (433/868/915MHz) |
+| WiFi | 802.11 b/g/n 2.4GHz |
+| USB | CP2102 USB-Serial |
+
+**Pin Configuration:**
+- OLED SDA: GPIO 4
+- OLED SCL: GPIO 15
+- OLED RST: GPIO 16
+- LED: GPIO 25
+- LoRa NSS: GPIO 18
+- LoRa RST: GPIO 14
+- LoRa DIO0: GPIO 26
+
+### LilyGo T-Deck (Target Hardware)
+
+| Component | Specification |
+|-----------|---------------|
+| MCU | ESP32-S3FN16R8 Dual Core @ 240MHz |
+| Flash | 16MB |
+| PSRAM | 8MB |
+| Display | 2.8" IPS LCD 320x240 (ST7789) |
+| Keyboard | Integrated (ESP32-C3 controller) |
+| Trackball | Yes |
+| Touch | Capacitive |
+| LoRa | Optional SX1262 |
+
+### LilyGo T-Embed (Target Hardware)
+
+| Component | Specification |
+|-----------|---------------|
+| MCU | ESP32-S3 Dual Core @ 240MHz |
+| Flash | 16MB |
+| PSRAM | 8MB |
+| Display | 1.9" LCD 170x320 (ST7789) |
+| Input | Rotary Encoder with button |
+| Form Factor | Compact |
+
+### USB Driver (CP2102)
+
+Download from Silicon Labs: https://www.silabs.com/documents/public/software/CP210x_Windows_Drivers.zip
+
+---
+
+## Library Installation
+
+### ESP-IDF Dependencies
+
+Managed via `idf_component.yml`:
+
+```yaml
+dependencies:
+  espressif/libsodium: "^1.0.20"
+```
+
+Automatically downloaded on first build.
+
+### Arduino Libraries (if using Arduino)
+
+#### 1. Heltec ESP32 Library
+```bash
+cd ~/Arduino/libraries  # or Documents\Arduino\libraries on Windows
+git clone https://github.com/HelTecAutomation/Heltec_ESP32.git
+```
+
+#### 2. Adafruit GFX (Dependency)
+
+Install via Arduino Library Manager:
+- Sketch → Include Library → Manage Libraries
+- Search "Adafruit GFX" → Install
+
+---
+
+## Building & Flashing
+
+### ESP-IDF (Recommended)
+
+#### Set Target
 
 ```bash
-cd ~/esp  # or C:\Espressif\projects on Windows
-git clone https://github.com/cannatoshi/SimpleGo.git
-cd SimpleGo
+idf.py set-target esp32s3
 ```
+
+#### Build
+
+```bash
+idf.py build
+```
+
+#### Flash
+
+```bash
+# Windows (check COM port in Device Manager)
+idf.py flash -p COM5
+
+# Linux
+idf.py flash -p /dev/ttyUSB0
+
+# macOS
+idf.py flash -p /dev/cu.usbserial-*
+```
+
+#### Monitor
+
+```bash
+idf.py monitor -p COM5  # or /dev/ttyUSB0
+```
+
+#### All-in-One
+
+```bash
+idf.py build flash monitor -p COM5
+```
+
+### Monitor Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `Ctrl+]` | Exit monitor |
+| `Ctrl+T, R` | Reboot device |
+| `Ctrl+T, H` | Help menu |
+| `Ctrl+T, P` | Pause output |
+
+### Arduino IDE (Alternative)
+
+1. **Board:** "WiFi LoRa 32(V2)" (under Heltec ESP32 Series)
+2. **Upload Speed:** 921600
+3. **Flash Frequency:** 80MHz
+4. **Port:** Select your COM port
+
+#### Upload Issues
+
+If upload fails, enter bootloader mode manually:
+1. Hold **PRG/BOOT** button
+2. Press **RST** button once
+3. Release **PRG/BOOT**
+4. Upload again
+
+---
+
+## Architecture Overview
+
+### Crypto Stack
+
+```
+┌─────────────────────────────────────────┐
+│           Application Layer             │
+├─────────────────────────────────────────┤
+│  libsodium (ESP-IDF Component)          │
+│  ├── Ed25519 - Digital Signatures       │
+│  ├── X25519 - ECDH Key Exchange         │
+│  └── XSalsa20-Poly1305 - crypto_box     │
+├─────────────────────────────────────────┤
+│  mbedTLS (Built into ESP-IDF)           │
+│  ├── SHA-256/512 - Hashing              │
+│  ├── TLS 1.3 - Transport Security       │
+│  └── ChaCha20-Poly1305 - TLS Cipher     │
+├─────────────────────────────────────────┤
+│  ESP32 Hardware                         │
+│  ├── Hardware RNG (esp_random)          │
+│  ├── SHA Hardware Acceleration          │
+│  └── AES Hardware Acceleration          │
+└─────────────────────────────────────────┘
+```
+
+### Network Stack
+
+```
+┌─────────────────────────────────────────┐
+│         SMP Protocol Layer              │
+│  ├── NEW, SUB, SEND, MSG, ACK, DEL      │
+│  ├── 16KB Block Framing                 │
+│  ├── Command Serialization              │
+│  └── Queue Management                   │
+├─────────────────────────────────────────┤
+│         TLS 1.3 Layer                   │
+│  └── mbedTLS (ChaCha20-Poly1305)        │
+├─────────────────────────────────────────┤
+│         TCP/IP Layer                    │
+│  └── ESP32 WiFi Stack                   │
+└─────────────────────────────────────────┘
+```
+
+### SimpleX Protocol Requirements
+
+| Primitive | SimpleX Usage | Our Implementation |
+|-----------|---------------|-------------------|
+| Ed25519 | Command signatures | ✅ libsodium |
+| X25519 | SMP key exchange | ✅ libsodium |
+| XSalsa20-Poly1305 | SMP encryption | ✅ libsodium |
+| SHA-256 | keyHash | ✅ mbedTLS |
+| X448 | Double Ratchet DH | 📋 Planned |
+
+---
+
+## Development Workflow
 
 ### Project Structure
 
@@ -130,61 +373,7 @@ Default server is `smp3.simplexonflux.com`. To change:
 #define SMP_PORT "5223"
 ```
 
----
-
-## Build & Flash
-
-### Set Target
-
-```bash
-idf.py set-target esp32s3
-```
-
-### Build
-
-```bash
-idf.py build
-```
-
-### Flash
-
-```bash
-# Windows (check COM port in Device Manager)
-idf.py flash -p COM5
-
-# Linux
-idf.py flash -p /dev/ttyUSB0
-
-# macOS
-idf.py flash -p /dev/cu.usbserial-*
-```
-
-### Monitor
-
-```bash
-idf.py monitor -p COM5  # or /dev/ttyUSB0
-```
-
-### All-in-One
-
-```bash
-idf.py build flash monitor -p COM5
-```
-
-### Monitor Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+]` | Exit monitor |
-| `Ctrl+T, R` | Reboot device |
-| `Ctrl+T, H` | Help menu |
-| `Ctrl+T, P` | Pause output |
-
----
-
-## Development Workflow
-
-### Typical Cycle
+### Typical Development Cycle
 
 ```
 1. Edit main/main.c
@@ -266,6 +455,20 @@ Server response: ERR NO_QUEUE
 - Queue was DEL'd
 - Call `clear_saved_keys()` and restart to create new queue
 
+#### DNS Resolution Fails
+
+ESP32 DNS can be unreliable. Use direct IP addresses:
+```c
+IPAddress smpServer(172, 236, 211, 32);  // smp11.simplex.im
+```
+
+#### Port 5223 Blocked
+
+Some networks block non-standard ports. Use port 443:
+```c
+const int smpPort = 443;  // Works on most networks
+```
+
 ### Hex Dump Helper
 
 ```c
@@ -327,27 +530,8 @@ idf.py flash monitor
 |--------|----------|-------|
 | smp3.simplexonflux.com | EU | Default, reliable |
 | smp1.simplexonflux.com | US | Alternative |
+| smp4.simplexonflux.com | EU | Untested |
 | Your own | Local | Run simplexmq server |
-
----
-
-## Dependencies
-
-### libsodium
-
-Managed via `idf_component.yml`:
-
-```yaml
-dependencies:
-  libsodium:
-    version: "^1.0.20"
-```
-
-Automatically downloaded on first build.
-
-### mbedTLS
-
-Built into ESP-IDF. Configured via menuconfig.
 
 ---
 
@@ -420,6 +604,28 @@ parttool.py --port COM5 erase_partition --partition-name nvs
 
 ---
 
+## Troubleshooting
+
+### Board Not Recognized
+
+1. Check USB cable (data cable, not charge-only)
+2. Install CP2102 driver
+3. Try different USB port
+
+### Upload Timeout
+
+1. Enter bootloader mode (PRG + RST)
+2. Reduce upload speed to 115200
+3. Check if another program uses the port
+
+### Library Not Found
+
+1. Restart Arduino IDE after installing libraries
+2. Check library is in correct path
+3. Verify library.properties exists
+
+---
+
 ## Resources
 
 - [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/)
@@ -427,6 +633,9 @@ parttool.py --port COM5 erase_partition --partition-name nvs
 - [mbedTLS Documentation](https://mbed-tls.readthedocs.io/)
 - [libsodium Documentation](https://doc.libsodium.org/)
 - [SimpleX Protocol Spec](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md)
+- [Monocypher Documentation](https://monocypher.org/manual/)
+- [Heltec ESP32 Docs](https://docs.heltec.org/en/node/esp32/)
+- [LVGL Documentation](https://docs.lvgl.io/)
 
 ---
 
