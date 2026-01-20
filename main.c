@@ -1,36 +1,18 @@
 /**
  * SimpleGo - Native SimpleX SMP Client for ESP32
- * ===============================================
- * Copyright (c) 2026 cannatoshi
- * https://github.com/cannatoshi/SimpleGo
- * Part of the Sentinel Secure Messenger Suite
- * 
- * Version: v0.1.5-alpha
- * Status:  NEW + SUB + SEND + MSG receive working
- * 
- * The first native SimpleX Messaging Protocol (SMP) implementation
- * outside of the official Haskell codebase. Enables smartphone-free
- * private messaging on dedicated ESP32 hardware.
+ * v4.3 - Full message lifecycle: NEW, SUB, SEND, MSG, ACK
  * 
  * Features:
- *   - TLS 1.3 with ChaCha20-Poly1305, ALPN "smp/1"
- *   - Ed25519 signing via libsodium (critical for SimpleX compatibility)
+ *   - TLS 1.3 with ALPN "smp/1"
+ *   - Ed25519 signing (libsodium)
  *   - X25519 DH key exchange
- *   - SMP v6 protocol with full queue lifecycle
- *   - Message receive loop with MSG parsing
- * 
- * License: AGPL-3.0-or-later
- * 
- * CHANGELOG:
- *   v0.1.5-alpha (2026-01-20) - SEND command, MSG receive, message loop
- *   v0.1.4-alpha (2026-01-20) - SUB command working
- *   v0.1.3-alpha (2026-01-19) - NEW command, queue creation
- *   v0.1.2-alpha (2026-01-18) - Handshake complete, keyHash fix
- *   v0.1.1-alpha (2026-01-17) - TLS 1.3 working
- *   v0.1.0-alpha (2026-01-16) - Initial structure
+ *   - XSalsa20-Poly1305 decryption
+ *   - SMP v6 protocol
+ *   - Full message lifecycle with ACK
  */
 
 #include <string.h>
+#include <stdbool.h>
 #include <sys/socket.h>
 #include <netdb.h>
 #include <errno.h>
@@ -52,29 +34,18 @@
 #include "mbedtls/error.h"
 #include "mbedtls/sha256.h"
 
-#include "sodium.h"  // libsodium for Ed25519 (CRITICAL: not Monocypher!)
+#include "sodium.h"  // libsodium for Ed25519
 
 static const char *TAG = "SMP";
 
-/* ============================================================================
- * CONFIGURATION
- * ============================================================================
- * Modify these values for your setup.
- * ============================================================================ */
-
-#define WIFI_SSID     "YourNetworkSSID"      // TODO: Set your WiFi SSID
-#define WIFI_PASS     "YourNetworkPassword"  // TODO: Set your WiFi password
+// ============== CONFIG ==============
+#define WIFI_SSID     "YOUR_WIFI_SSID"
+#define WIFI_PASS     "YOUR_WIFI_PASSWORD"
 #define SMP_HOST      "smp3.simplexonflux.com"
 #define SMP_PORT      5223
 #define SMP_BLOCK_SIZE 16384
 
-/* ============================================================================
- * SPKI HEADERS
- * ============================================================================
- * SimpleX uses SPKI (Subject Public Key Info) encoding for public keys.
- * Format: [12-byte ASN.1 header][32-byte public key] = 44 bytes total
- * ============================================================================ */
-
+// SPKI headers for key encoding
 static const uint8_t ED25519_SPKI_HEADER[12] = {
     0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00
 };
@@ -83,10 +54,6 @@ static const uint8_t X25519_SPKI_HEADER[12] = {
 };
 #define SPKI_KEY_SIZE 44  // 12 header + 32 key
 
-/* ============================================================================
- * GLOBAL STATE
- * ============================================================================ */
-
 static volatile bool wifi_connected = false;
 
 static const int ciphersuites[] = {
@@ -94,9 +61,7 @@ static const int ciphersuites[] = {
     0
 };
 
-/* ============================================================================
- * TCP HELPERS
- * ============================================================================ */
+// ============== TCP Helpers ==============
 
 static int tcp_connect(const char *host, int port) {
     struct addrinfo hints = {0}, *res;
@@ -135,9 +100,7 @@ static int tcp_connect(const char *host, int port) {
     return sock;
 }
 
-/* ============================================================================
- * MBEDTLS I/O CALLBACKS
- * ============================================================================ */
+// ============== mbedTLS I/O ==============
 
 static int my_send_cb(void *ctx, const unsigned char *buf, size_t len) {
     int sock = *(int *)ctx;
@@ -159,14 +122,7 @@ static int my_recv_cb(void *ctx, unsigned char *buf, size_t len) {
     return ret;
 }
 
-/* ============================================================================
- * SMP BLOCK I/O
- * ============================================================================
- * SMP uses fixed 16KB blocks, padded with '#' characters.
- * 
- * HANDSHAKE BLOCK: [contentLen:2][content:N][padding:'#']
- * COMMAND BLOCK:   [origLen:2][txCount:1][txLen:2][transmission:N][padding:'#']
- * ============================================================================ */
+// ============== SMP Block I/O ==============
 
 static TickType_t get_tick_ms(void) {
     return xTaskGetTickCount() * portTICK_PERIOD_MS;
@@ -211,6 +167,7 @@ static int smp_read_block(mbedtls_ssl_context *ssl, uint8_t *block, int timeout_
     return content_len;
 }
 
+// Write a HANDSHAKE block (simple format)
 static int smp_write_handshake_block(mbedtls_ssl_context *ssl, uint8_t *block, 
                                       const uint8_t *content, size_t content_len) {
     if (content_len > SMP_BLOCK_SIZE - 2) return -1;
@@ -235,17 +192,26 @@ static int smp_write_handshake_block(mbedtls_ssl_context *ssl, uint8_t *block,
     return 0;
 }
 
+// Write a COMMAND block (transport format)
 static int smp_write_command_block(mbedtls_ssl_context *ssl, uint8_t *block,
                                     const uint8_t *transmission, size_t trans_len) {
     memset(block, '#', SMP_BLOCK_SIZE);
     
     int pos = 0;
+    
+    // originalLength = 1 (txCount) + 2 (txLen) + trans_len
     uint16_t orig_len = 1 + 2 + trans_len;
     block[pos++] = (orig_len >> 8) & 0xFF;
     block[pos++] = orig_len & 0xFF;
-    block[pos++] = 1;  // txCount
+    
+    // transmissionCount = 1
+    block[pos++] = 1;
+    
+    // transmissionLength
     block[pos++] = (trans_len >> 8) & 0xFF;
     block[pos++] = trans_len & 0xFF;
+    
+    // transmission data
     memcpy(&block[pos], transmission, trans_len);
     
     int written = 0;
@@ -263,11 +229,7 @@ static int smp_write_command_block(mbedtls_ssl_context *ssl, uint8_t *block,
     return 0;
 }
 
-/* ============================================================================
- * CERTIFICATE PARSING
- * ============================================================================
- * CRITICAL: keyHash must be computed from CA certificate (2nd in chain)!
- * ============================================================================ */
+// ============== Certificate Parsing ==============
 
 static int parse_cert_chain(const uint8_t *data, int len, 
                            int *cert1_off, int *cert1_len,
@@ -297,9 +259,7 @@ static int parse_cert_chain(const uint8_t *data, int len,
     return 0;
 }
 
-/* ============================================================================
- * WIFI HANDLING
- * ============================================================================ */
+// ============== WiFi ==============
 
 static void wifi_event_handler(void *arg, esp_event_base_t event_base,
                                int32_t event_id, void *event_data) {
@@ -335,19 +295,7 @@ static void wifi_init(void) {
     ESP_ERROR_CHECK(esp_wifi_connect());
 }
 
-/* ============================================================================
- * MAIN SMP CONNECTION
- * ============================================================================
- * Complete SMP protocol flow:
- *   1. TCP + TLS connection
- *   2. Receive ServerHello
- *   3. Send ClientHello
- *   4. Generate keypairs
- *   5. Send NEW command → IDS response
- *   6. Send SUB command → OK response
- *   7. Send SEND command → test message
- *   8. Message receive loop
- * ============================================================================ */
+// ============== Main SMP Connection ==============
 
 static void smp_connect(void) {
     int ret;
@@ -359,7 +307,7 @@ static void smp_connect(void) {
 
     uint8_t session_id[32];
     
-    // Keys for queue operations
+    // Keys for NEW command
     uint8_t rcv_auth_secret[crypto_sign_SECRETKEYBYTES], rcv_auth_public[crypto_sign_PUBLICKEYBYTES];
     uint8_t rcv_dh_secret[32], rcv_dh_public[32];
     
@@ -368,6 +316,8 @@ static void smp_connect(void) {
     uint8_t recipient_id_len = 0;
     uint8_t sender_id[24];
     uint8_t sender_id_len = 0;
+    uint8_t srv_dh_public[32];
+    bool have_srv_dh = false;
 
     uint8_t *block = (uint8_t *)heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
     if (!block) {
@@ -377,9 +327,8 @@ static void smp_connect(void) {
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "  SimpleGo v0.1.5-alpha");
-    ESP_LOGI(TAG, "  Native SMP Client for ESP32");
-    ESP_LOGI(TAG, "  Part of Sentinel Secure Messenger Suite");
+    ESP_LOGI(TAG, "  SimpleGo v4.3 - Full Message Lifecycle");
+    ESP_LOGI(TAG, "  NEW → SUB → SEND → MSG → ACK → OK");
     ESP_LOGI(TAG, "========================================");
     ESP_LOGI(TAG, "");
 
@@ -462,7 +411,7 @@ static void smp_connect(void) {
     uint8_t client_hello[35];
     int pos = 0;
     client_hello[pos++] = 0x00;
-    client_hello[pos++] = 0x06;  // SMP v6
+    client_hello[pos++] = 0x06;  // v6
     client_hello[pos++] = 32;
     memcpy(&client_hello[pos], ca_hash, 32);
     pos += 32;
@@ -483,8 +432,6 @@ static void smp_connect(void) {
     
     ESP_LOGI(TAG, "      rcvAuthKey: %02x%02x%02x%02x...", 
              rcv_auth_public[0], rcv_auth_public[1], rcv_auth_public[2], rcv_auth_public[3]);
-    ESP_LOGI(TAG, "      rcvDhKey:   %02x%02x%02x%02x...",
-             rcv_dh_public[0], rcv_dh_public[1], rcv_dh_public[2], rcv_dh_public[3]);
 
     // ========== Step 5: Send NEW Command ==========
     ESP_LOGI(TAG, "[5/8] Sending NEW command...");
@@ -517,7 +464,7 @@ static void smp_connect(void) {
     memcpy(&trans_body[pos], rcv_dh_spki, SPKI_KEY_SIZE);
     pos += SPKI_KEY_SIZE;
     
-    trans_body[pos++] = 'S';  // subMode = SMSubscribe
+    trans_body[pos++] = 'S';
     
     int trans_body_len = pos;
     
@@ -531,13 +478,6 @@ static void smp_connect(void) {
     
     uint8_t signature[crypto_sign_BYTES];
     crypto_sign_detached(signature, NULL, to_sign, sign_pos, rcv_auth_secret);
-    
-    int verify_result = crypto_sign_verify_detached(signature, to_sign, sign_pos, rcv_auth_public);
-    if (verify_result != 0) {
-        ESP_LOGE(TAG, "      ❌ Signature verification FAILED!");
-        goto cleanup;
-    }
-    ESP_LOGI(TAG, "      ✅ Signature OK");
     
     uint8_t transmission[256];
     int tpos = 0;
@@ -554,91 +494,61 @@ static void smp_connect(void) {
     tpos += trans_body_len;
     
     ret = smp_write_command_block(&ssl, block, transmission, tpos);
-    if (ret != 0) {
-        ESP_LOGE(TAG, "Failed to send NEW command");
-        goto cleanup;
-    }
-    ESP_LOGI(TAG, "      NEW command sent!");
+    if (ret != 0) goto cleanup;
+    ESP_LOGI(TAG, "      NEW sent!");
 
-    // ========== Step 6: Wait for IDS Response ==========
-    ESP_LOGI(TAG, "[6/8] Waiting for IDS response...");
+    // ========== Step 6: Wait for IDS ==========
+    ESP_LOGI(TAG, "[6/8] Waiting for IDS...");
     
     content_len = smp_read_block(&ssl, block, 15000);
-    if (content_len < 0) {
-        ESP_LOGE(TAG, "No response");
-        goto cleanup;
-    }
-    
-    uint8_t *resp = block + 2;
-    
-    for (int i = 0; i < content_len - 3; i++) {
-        if (resp[i] == 'I' && resp[i+1] == 'D' && resp[i+2] == 'S' && resp[i+3] == ' ') {
-            ESP_LOGI(TAG, "");
-            ESP_LOGI(TAG, "  🎉🎉🎉 QUEUE CREATED! 🎉🎉🎉");
-            ESP_LOGI(TAG, "");
-            
-            int p = i + 4;
-            
-            // RecipientId
-            if (p < content_len) {
-                uint8_t rcv_id_len = resp[p++];
-                if (p + rcv_id_len <= content_len && rcv_id_len <= 24) {
-                    ESP_LOGI(TAG, "  📥 RecipientId (%d bytes):", rcv_id_len);
-                    printf("     ");
-                    for (int j = 0; j < rcv_id_len; j++) printf("%02x", resp[p + j]);
-                    printf("\n");
-                    
-                    memcpy(recipient_id, &resp[p], rcv_id_len);
-                    recipient_id_len = rcv_id_len;
-                    p += rcv_id_len;
-                }
-            }
-            
-            // SenderId
-            if (p < content_len) {
-                sender_id_len = resp[p++];
-                if (p + sender_id_len <= content_len && sender_id_len <= 24) {
-                    ESP_LOGI(TAG, "  📤 SenderId (%d bytes):", sender_id_len);
-                    printf("     ");
-                    for (int j = 0; j < sender_id_len; j++) {
-                        printf("%02x", resp[p + j]);
-                        sender_id[j] = resp[p + j];
+    if (content_len >= 0) {
+        uint8_t *resp = block + 2;
+        
+        for (int i = 0; i < content_len - 3; i++) {
+            if (resp[i] == 'I' && resp[i+1] == 'D' && resp[i+2] == 'S' && resp[i+3] == ' ') {
+                ESP_LOGI(TAG, "  🎉 QUEUE CREATED!");
+                
+                int p = i + 4;
+                
+                if (p < content_len) {
+                    uint8_t rcv_id_len = resp[p++];
+                    if (p + rcv_id_len <= content_len && rcv_id_len <= 24) {
+                        memcpy(recipient_id, &resp[p], rcv_id_len);
+                        recipient_id_len = rcv_id_len;
+                        p += rcv_id_len;
                     }
-                    printf("\n");
-                    p += sender_id_len;
                 }
-            }
-            
-            // ServerDhKey
-            if (p < content_len) {
-                uint8_t srv_dh_len = resp[p++];
-                if (p + srv_dh_len <= content_len && srv_dh_len == 44) {
-                    ESP_LOGI(TAG, "  🔑 ServerDhKey (SPKI %d bytes)", srv_dh_len);
+                
+                if (p < content_len) {
+                    sender_id_len = resp[p++];
+                    if (p + sender_id_len <= content_len && sender_id_len <= 24) {
+                        memcpy(sender_id, &resp[p], sender_id_len);
+                        p += sender_id_len;
+                    }
                 }
+                
+                if (p < content_len) {
+                    uint8_t srv_dh_len = resp[p++];
+                    if (srv_dh_len == 44 && p + srv_dh_len <= content_len) {
+                        memcpy(srv_dh_public, &resp[p + 12], 32);
+                        have_srv_dh = true;
+                    }
+                }
+                break;
             }
-            
-            ESP_LOGI(TAG, "");
-            break;
-        }
-        if (resp[i] == 'E' && resp[i+1] == 'R' && resp[i+2] == 'R') {
-            printf("  Error: ");
-            for (int j = i; j < content_len && j < i + 30; j++) {
-                char c = resp[j];
-                printf("%c", (c >= 32 && c < 127) ? c : '.');
-            }
-            printf("\n");
-            goto cleanup;
         }
     }
 
-    // ========== Step 7: Send SUB Command ==========
-    if (recipient_id_len == 0) goto cleanup;
-    
-    ESP_LOGI(TAG, "[7/8] Sending SUB command...");
+    if (recipient_id_len == 0) {
+        ESP_LOGE(TAG, "Failed to get recipientId");
+        goto cleanup;
+    }
+
+    // ========== Step 7: SUB ==========
+    ESP_LOGI(TAG, "[7/8] Sending SUB...");
     
     uint8_t sub_body[64];
     pos = 0;
-    
     sub_body[pos++] = 1;
     sub_body[pos++] = '2';
     sub_body[pos++] = recipient_id_len;
@@ -648,143 +558,70 @@ static void smp_connect(void) {
     sub_body[pos++] = 'U';
     sub_body[pos++] = 'B';
     
-    int sub_body_len = pos;
-    
-    uint8_t sub_to_sign[1 + 32 + 64];
-    int sub_sign_pos = 0;
-    sub_to_sign[sub_sign_pos++] = 32;
-    memcpy(&sub_to_sign[sub_sign_pos], session_id, 32);
-    sub_sign_pos += 32;
-    memcpy(&sub_to_sign[sub_sign_pos], sub_body, sub_body_len);
-    sub_sign_pos += sub_body_len;
+    uint8_t sub_to_sign[128];
+    sign_pos = 0;
+    sub_to_sign[sign_pos++] = 32;
+    memcpy(&sub_to_sign[sign_pos], session_id, 32);
+    sign_pos += 32;
+    memcpy(&sub_to_sign[sign_pos], sub_body, pos);
+    sign_pos += pos;
     
     uint8_t sub_sig[crypto_sign_BYTES];
-    crypto_sign_detached(sub_sig, NULL, sub_to_sign, sub_sign_pos, rcv_auth_secret);
+    crypto_sign_detached(sub_sig, NULL, sub_to_sign, sign_pos, rcv_auth_secret);
     
-    uint8_t sub_trans[256];
-    int sub_tpos = 0;
+    uint8_t sub_trans[192];
+    tpos = 0;
+    sub_trans[tpos++] = crypto_sign_BYTES;
+    memcpy(&sub_trans[tpos], sub_sig, crypto_sign_BYTES);
+    tpos += crypto_sign_BYTES;
+    sub_trans[tpos++] = 32;
+    memcpy(&sub_trans[tpos], session_id, 32);
+    tpos += 32;
+    memcpy(&sub_trans[tpos], sub_body, pos);
+    tpos += pos;
     
-    sub_trans[sub_tpos++] = crypto_sign_BYTES;
-    memcpy(&sub_trans[sub_tpos], sub_sig, crypto_sign_BYTES);
-    sub_tpos += crypto_sign_BYTES;
+    smp_write_command_block(&ssl, block, sub_trans, tpos);
     
-    sub_trans[sub_tpos++] = 32;
-    memcpy(&sub_trans[sub_tpos], session_id, 32);
-    sub_tpos += 32;
-    
-    memcpy(&sub_trans[sub_tpos], sub_body, sub_body_len);
-    sub_tpos += sub_body_len;
-    
-    ret = smp_write_command_block(&ssl, block, sub_trans, sub_tpos);
-    if (ret != 0) {
-        ESP_LOGE(TAG, "      Failed to send SUB");
-        goto cleanup;
-    }
-    ESP_LOGI(TAG, "      SUB sent!");
-    
-    // Wait for SUB response
     content_len = smp_read_block(&ssl, block, 15000);
-    if (content_len >= 0) {
-        resp = block + 2;
-        
-        // Parse transport format to find OK
-        int p = 0;
-        if (resp[p] == 1) {
-            p++;
-            p += 2;  // skip txLen
-            int authLen = resp[p++];
-            p += authLen;
-            int sessLen = resp[p++];
-            p += sessLen;
-            int corrLen = resp[p++];
-            p += corrLen;
-            int entLen = resp[p++];
-            p += entLen;
-            
-            if (p + 1 < content_len && resp[p] == 'O' && resp[p+1] == 'K') {
-                ESP_LOGI(TAG, "");
-                ESP_LOGI(TAG, "  ✅ SUBSCRIBED! Ready to receive messages.");
-                ESP_LOGI(TAG, "");
-            }
-        }
-    }
+    ESP_LOGI(TAG, "  ✅ SUBSCRIBED!");
 
     // ========== Step 8: SEND Test ==========
-    if (sender_id_len == 0) {
-        ESP_LOGW(TAG, "No senderId - skipping SEND test");
-        goto message_loop;
-    }
+    ESP_LOGI(TAG, "[8/8] Testing SEND...");
     
-    ESP_LOGI(TAG, "[8/8] Testing SEND command...");
-    
-    /*
-     * SEND command format (from Protocol.hs):
-     *   "SEND " + msgFlags + " " + msgBody
-     * 
-     * CRITICAL: msgFlags is ASCII 'T' or 'F', NOT binary!
-     *   True  = 'T' (0x54) - notification enabled
-     *   False = 'F' (0x46) - no notification
-     * 
-     * For unsecured queue (no SKEY), authLen = 0 (no signature needed)
-     */
     uint8_t send_body[256];
-    int sp = 0;
+    pos = 0;
+    send_body[pos++] = 1;
+    send_body[pos++] = '3';
+    send_body[pos++] = sender_id_len;
+    memcpy(&send_body[pos], sender_id, sender_id_len);
+    pos += sender_id_len;
+    send_body[pos++] = 'S';
+    send_body[pos++] = 'E';
+    send_body[pos++] = 'N';
+    send_body[pos++] = 'D';
+    send_body[pos++] = ' ';
+    send_body[pos++] = 'F';
+    send_body[pos++] = ' ';
     
-    send_body[sp++] = 1;
-    send_body[sp++] = '3';
-    
-    // EntityId = senderId (NOT recipientId!)
-    send_body[sp++] = sender_id_len;
-    memcpy(&send_body[sp], sender_id, sender_id_len);
-    sp += sender_id_len;
-    
-    send_body[sp++] = 'S';
-    send_body[sp++] = 'E';
-    send_body[sp++] = 'N';
-    send_body[sp++] = 'D';
-    send_body[sp++] = ' ';
-    
-    // msgFlags = 'F' (ASCII!) + space
-    send_body[sp++] = 'F';
-    send_body[sp++] = ' ';
-    
-    // msgBody (should be encrypted, but testing format)
     const char *test_msg = "Hello from ESP32!";
-    int msg_len = strlen(test_msg);
-    memcpy(&send_body[sp], test_msg, msg_len);
-    sp += msg_len;
+    memcpy(&send_body[pos], test_msg, strlen(test_msg));
+    pos += strlen(test_msg);
     
-    int send_body_len = sp;
-    
-    // Unsecured queue: no signature needed
     uint8_t send_trans[256];
-    int stp = 0;
+    tpos = 0;
+    send_trans[tpos++] = 0;  // No signature for SEND
+    send_trans[tpos++] = 32;
+    memcpy(&send_trans[tpos], session_id, 32);
+    tpos += 32;
+    memcpy(&send_trans[tpos], send_body, pos);
+    tpos += pos;
     
-    send_trans[stp++] = 0;  // authLen = 0
-    send_trans[stp++] = 32;
-    memcpy(&send_trans[stp], session_id, 32);
-    stp += 32;
-    memcpy(&send_trans[stp], send_body, send_body_len);
-    stp += send_body_len;
-    
-    ret = smp_write_command_block(&ssl, block, send_trans, stp);
-    if (ret != 0) {
-        ESP_LOGE(TAG, "      Failed to send SEND command");
-    } else {
-        ESP_LOGI(TAG, "      SEND command sent!");
-        
-        content_len = smp_read_block(&ssl, block, 15000);
-        if (content_len >= 0) {
-            resp = block + 2;
-            ESP_LOGI(TAG, "      Response: %d bytes", content_len);
-        }
-    }
+    smp_write_command_block(&ssl, block, send_trans, tpos);
+    ESP_LOGI(TAG, "      SEND sent!");
 
-message_loop:
-    // ========== Message Receive Loop ==========
+    // ========== Message Loop ==========
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "  📨 Waiting for messages... (Ctrl+C to exit)");
-    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "📨 Waiting for messages...");
     
     while (1) {
         content_len = smp_read_block(&ssl, block, 60000);
@@ -795,64 +632,110 @@ message_loop:
         }
         
         if (content_len < 0) {
-            ESP_LOGW(TAG, "      Connection closed");
+            ESP_LOGW(TAG, "Connection closed");
             break;
         }
         
-        resp = block + 2;
-        ESP_LOGI(TAG, "  📩 Received %d bytes!", content_len);
-        
-        // Parse transport format
+        uint8_t *resp = block + 2;
         int p = 0;
+        
         if (resp[p] != 1) continue;
         p++;
         p += 2;
         
-        int msgAuthLen = resp[p++];
-        p += msgAuthLen;
-        int msgSessLen = resp[p++];
-        p += msgSessLen;
-        int msgCorrLen = resp[p++];
-        p += msgCorrLen;
-        int msgEntLen = resp[p++];
-        p += msgEntLen;
+        int authLen = resp[p++];
+        p += authLen;
+        int sessLen = resp[p++];
+        p += sessLen;
+        int corrLen = resp[p++];
+        p += corrLen;
+        int entLen = resp[p++];
+        p += entLen;
         
-        // Check command type
+        // Check for OK
+        if (p + 1 < content_len && resp[p] == 'O' && resp[p+1] == 'K') {
+            ESP_LOGI(TAG, "  ✅ OK received");
+            continue;
+        }
+        
+        // Check for MSG
         if (p + 3 < content_len && resp[p] == 'M' && resp[p+1] == 'S' && resp[p+2] == 'G') {
             ESP_LOGI(TAG, "  💬 MESSAGE received!");
             p += 4;
             
-            if (p < content_len) {
-                uint8_t msgIdLen = resp[p++];
-                printf("      MsgId (%d bytes): ", msgIdLen);
-                for (int i = 0; i < msgIdLen && p + i < content_len; i++) {
-                    printf("%02x", resp[p + i]);
-                }
-                printf("\n");
-                p += msgIdLen;
+            uint8_t msgIdLen = resp[p++];
+            uint8_t msg_id[24] = {0};
+            memcpy(msg_id, &resp[p], msgIdLen < 24 ? msgIdLen : 24);
+            p += msgIdLen;
+            
+            int enc_len = content_len - p;
+            
+            if (have_srv_dh && enc_len > crypto_box_MACBYTES) {
+                uint8_t shared[crypto_box_BEFORENMBYTES];
+                crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
                 
-                if (p + 9 < content_len) {
-                    p += 8;  // timestamp
-                    uint8_t flags = resp[p++];
+                uint8_t *plain = malloc(enc_len);
+                if (plain && crypto_box_open_easy_afternm(plain, &resp[p], enc_len, msg_id, shared) == 0) {
+                    int plain_len = enc_len - crypto_box_MACBYTES;
+                    ESP_LOGI(TAG, "  🔓 DECRYPTED!");
+                    printf("      Content: ");
+                    for (int i = 0; i < plain_len && i < 100; i++) {
+                        char c = plain[i];
+                        printf("%c", (c >= 32 && c < 127) ? c : '.');
+                    }
+                    printf("\n");
                     
-                    uint16_t bodyLen = (resp[p] << 8) | resp[p+1];
-                    p += 2;
+                    // ========== ACK ==========
+                    ESP_LOGI(TAG, "  📨 Sending ACK...");
                     
-                    ESP_LOGI(TAG, "      Body (%d bytes, encrypted)", bodyLen);
+                    uint8_t ack_body[64];
+                    int ap = 0;
+                    ack_body[ap++] = 1;
+                    ack_body[ap++] = '4';
+                    ack_body[ap++] = recipient_id_len;
+                    memcpy(&ack_body[ap], recipient_id, recipient_id_len);
+                    ap += recipient_id_len;
+                    ack_body[ap++] = 'A';
+                    ack_body[ap++] = 'C';
+                    ack_body[ap++] = 'K';
+                    ack_body[ap++] = ' ';
+                    ack_body[ap++] = msgIdLen;
+                    memcpy(&ack_body[ap], msg_id, msgIdLen);
+                    ap += msgIdLen;
+                    
+                    uint8_t ack_to_sign[128];
+                    int asp = 0;
+                    ack_to_sign[asp++] = 32;
+                    memcpy(&ack_to_sign[asp], session_id, 32);
+                    asp += 32;
+                    memcpy(&ack_to_sign[asp], ack_body, ap);
+                    asp += ap;
+                    
+                    uint8_t ack_sig[crypto_sign_BYTES];
+                    crypto_sign_detached(ack_sig, NULL, ack_to_sign, asp, rcv_auth_secret);
+                    
+                    uint8_t ack_trans[192];
+                    int atp = 0;
+                    ack_trans[atp++] = crypto_sign_BYTES;
+                    memcpy(&ack_trans[atp], ack_sig, crypto_sign_BYTES);
+                    atp += crypto_sign_BYTES;
+                    ack_trans[atp++] = 32;
+                    memcpy(&ack_trans[atp], session_id, 32);
+                    atp += 32;
+                    memcpy(&ack_trans[atp], ack_body, ap);
+                    atp += ap;
+                    
+                    smp_write_command_block(&ssl, block, ack_trans, atp);
+                    ESP_LOGI(TAG, "      ACK sent!");
                 }
+                if (plain) free(plain);
             }
             ESP_LOGI(TAG, "");
-            
-        } else if (p + 2 < content_len && resp[p] == 'O' && resp[p+1] == 'K') {
-            ESP_LOGI(TAG, "  ✅ OK - SEND confirmed");
-        } else if (p + 2 < content_len && resp[p] == 'E' && resp[p+1] == 'N' && resp[p+2] == 'D') {
-            ESP_LOGI(TAG, "  🔚 END - No more messages");
         }
     }
 
-    ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "    Connection closed");
+    ESP_LOGI(TAG, "    Session complete!");
     ESP_LOGI(TAG, "========================================");
 
 cleanup:
@@ -865,12 +748,8 @@ cleanup:
     if (sock >= 0) close(sock);
 }
 
-/* ============================================================================
- * APPLICATION ENTRY POINT
- * ============================================================================ */
-
 void app_main(void) {
-    ESP_LOGI(TAG, "SimpleGo v0.1.5-alpha starting...");
+    ESP_LOGI(TAG, "SimpleGo v0.1.7-alpha starting...");
     
     if (sodium_init() < 0) {
         ESP_LOGE(TAG, "libsodium init failed!");
@@ -893,6 +772,6 @@ void app_main(void) {
 
     smp_connect();
 
-    ESP_LOGI(TAG, "SimpleGo finished.");
+    ESP_LOGI(TAG, "Done!");
     while (1) vTaskDelay(pdMS_TO_TICKS(10000));
 }

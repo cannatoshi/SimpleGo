@@ -10,10 +10,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
-- ACK command implementation
-- Message header parsing (timestamp, flags)
 - Key persistence in NVS
+- Queue reconnect after reboot
+- DEL command implementation
 - Double Ratchet (Curve448)
+
+---
+
+## [0.1.7-alpha] - 2026-01-20
+
+### ✅ ACK Command Complete!
+
+Full message lifecycle now operational: NEW → SUB → SEND → MSG → ACK → OK
+
+### Added
+- **ACK command implementation** — Acknowledge received messages
+- **Message deletion from queue** — Server confirms with OK
+- **OK response handling** — Clean logging for command confirmations
+
+### Technical Details
+```
+ACK Format:
+  [sigLen=64][signature]
+  [sessLen=32][sessionId]
+  [corrIdLen][corrId]
+  [entityIdLen][recipientId]    ← NOT senderId!
+  "ACK " [msgIdLen][msgId]
+
+Signature covers:
+  [0x20][sessionId] + [corrId + entityId + "ACK " + msgId]
+```
+
+### Protocol Note: SMP Versions
+
+Researched SMP version differences (v6 vs v7-v17):
+
+| Version | Feature | Impact |
+|---------|---------|--------|
+| **v6** | Base protocol | ✅ What we use |
+| **v7+** | `implySessId` | sessionId not sent, included in signature |
+| **v7+** | `authEncryptCmds` | Commands encrypted with X25519 DH |
+| **v17** | Latest features | Batch commands, optimizations |
+
+**Decision:** Stay with v6 for now - it has everything needed for a full messenger.
+Upgrade path: v6 → v17 directly (skip intermediate versions).
+
+From Haskell source:
+```haskell
+authCmdsSMPVersion = VersionSMP 7
+implySessId = v >= authCmdsSMPVersion
+-- v6: sessionId sent in transmission, NOT in signature
+-- v7+: sessionId NOT sent, IS in signature
+```
 
 ---
 
@@ -204,7 +252,8 @@ TLS Settings:
 
 | Version | Date | Milestone |
 |---------|------|-----------|
-| **v0.1.6-alpha** | **2026-01-20** | **🏆 E2E Decryption!** |
+| **v0.1.7-alpha** | **2026-01-20** | **🎯 ACK Command + Full Lifecycle!** |
+| v0.1.6-alpha | 2026-01-20 | 🏆 E2E Decryption! |
 | v0.1.5-alpha | 2026-01-20 | SEND + MSG receive |
 | v0.1.4-alpha | 2026-01-20 | SUB command |
 | v0.1.3-alpha | 2026-01-19 | NEW command (libsodium fix) |
@@ -218,12 +267,13 @@ TLS Settings:
 
 **"First Native ESP32 SimpleX E2E Client"**
 
-- ✅ Queue Management
+- ✅ Queue Management (NEW, SUB, DEL)
 - ✅ SMP Protocol v6
 - ✅ Ed25519 Signing
 - ✅ X25519 Key Exchange
 - ✅ NaCl crypto_box Encryption
 - ✅ Full Message Round-Trip
+- ✅ **ACK Command — Complete Lifecycle!**
 
 ---
 

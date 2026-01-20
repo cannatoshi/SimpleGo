@@ -5,24 +5,23 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-green.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
 [![Framework: ESP-IDF 5.5](https://img.shields.io/badge/Framework-ESP--IDF%205.5-red.svg)](https://docs.espressif.com/projects/esp-idf/)
-[![Version: v0.1.6-alpha](https://img.shields.io/badge/Version-v0.1.6--alpha-orange.svg)]()
-[![Status: E2E Working](https://img.shields.io/badge/Status-E2E%20Working-brightgreen.svg)]()
+[![Version: v0.1.7-alpha](https://img.shields.io/badge/Version-v0.1.7--alpha-orange.svg)]()
+[![Status: Full Lifecycle](https://img.shields.io/badge/Status-Full%20Lifecycle-brightgreen.svg)]()
 
 ---
 
-## 🏆 Achievement: First Native ESP32 SimpleX E2E Client!
+## 🏆 Achievement: Full Message Lifecycle Complete!
 
-**As of v0.1.6-alpha (January 20, 2026)**, SimpleGo has achieved a historic milestone:
+**As of v0.1.7-alpha (January 20, 2026)**, SimpleGo has achieved complete SMP message handling:
 
 ```
-I (7789) SMP:       📬 Got our MSG back!
-      MsgId: 354c3cd4a96d8510f1ac5965378e0f18edd2a73c662e1dff
-I (7799) SMP:       Encrypted: 16122 bytes
-I (7859) SMP:   🔓 DECRYPTED (16106 bytes):
-      ......io..F Hello from ESP32!###############
+NEW → IDS (queue created)
+SUB → OK (subscribed)  
+SEND → MSG (echo back) + OK
+MSG → Decrypt → ACK → OK (message confirmed & deleted)
 ```
 
-**"Hello from ESP32!"** — Successfully sent, received, and **decrypted**! 🎉
+**Full round-trip with E2E encryption and acknowledgment!** 🎉
 
 ---
 
@@ -51,8 +50,9 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 | SUB Command | ✅ Complete | Queue subscription |
 | SEND Command | ✅ Complete | Message transmission |
 | MSG Receive | ✅ Complete | Message parsing |
-| **E2E Decryption** | ✅ **Complete** | **X25519 DH + XSalsa20-Poly1305** |
-| ACK Command | 📋 Planned | Message acknowledgment |
+| E2E Decryption | ✅ Complete | X25519 DH + XSalsa20-Poly1305 |
+| **ACK Command** | ✅ **Complete** | **Message acknowledgment** |
+| DEL Command | 📋 Planned | Queue deletion |
 
 ### Cryptography
 
@@ -61,7 +61,7 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 | Ed25519 Signatures | ✅ Complete | libsodium, SPKI encoding |
 | X25519 Key Exchange | ✅ Complete | DH shared secret |
 | SHA-256 Hashing | ✅ Complete | Certificate fingerprints |
-| **XSalsa20-Poly1305** | ✅ **Complete** | **Message decryption** |
+| XSalsa20-Poly1305 | ✅ Complete | Message decryption |
 | Double Ratchet | 📋 Planned | Full E2E (Agent-level) |
 
 ---
@@ -96,10 +96,13 @@ memcpy(nonce, msg_id, msgIdLen);
 crypto_box_open_easy_afternm(plaintext, ciphertext, cipher_len, nonce, shared);
 ```
 
-### Protocol Reference (Server.hs:2024)
-```haskell
-encrypt body = RcvMessage msgId' . EncRcvMsgBody $ 
-  C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
+### ACK Command (v0.1.7)
+
+```c
+// ACK is a Recipient command (like SUB)
+// EntityId = recipientId (NOT senderId!)
+ack_body = [corrId] + [recipientId] + "ACK " + [msgIdLen][msgId]
+signature = sign([0x20][sessionId] + ack_body)
 ```
 
 ---
@@ -209,6 +212,21 @@ See [LICENSE](LICENSE) for full terms.
 - **[Espressif](https://www.espressif.com/)** — ESP32 platform and ESP-IDF
 - **[LilyGo](https://lilygo.cc/)** — T-Deck hardware
 - **[libsodium](https://libsodium.org/)** — Cryptographic primitives
+
+---
+
+## Version History
+
+| Version | Date | Milestone |
+|---------|------|-----------|
+| **v0.1.7-alpha** | **2026-01-20** | **🎯 ACK Command + Full Lifecycle!** |
+| v0.1.6-alpha | 2026-01-20 | 🏆 E2E Decryption! |
+| v0.1.5-alpha | 2026-01-20 | SEND + MSG receive |
+| v0.1.4-alpha | 2026-01-20 | SUB command |
+| v0.1.3-alpha | 2026-01-19 | NEW command (libsodium fix) |
+| v0.1.2-alpha | 2026-01-18 | Handshake (keyHash fix) |
+| v0.1.1-alpha | 2026-01-17 | TLS 1.3 |
+| v0.1.0-alpha | 2026-01-16 | Initial |
 
 ---
 
