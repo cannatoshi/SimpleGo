@@ -1,6 +1,6 @@
 # SimpleGo Technical Documentation
 
-> Key learnings, discoveries, and implementation decisions
+> Key learnings, discoveries, and implementation decisions from developing the first native SMP client
 
 ---
 
@@ -8,10 +8,10 @@
 
 1. [Project Background](#project-background)
 2. [Critical Discoveries](#critical-discoveries)
-3. [Architecture Decisions](#architecture-decisions)
-4. [SMP Version Analysis](#smp-version-analysis)
-5. [NVS Persistence](#nvs-persistence)
-6. [Debugging Journey](#debugging-journey)
+3. [Debugging Journey](#debugging-journey)
+4. [Architecture Decisions](#architecture-decisions)
+5. [Cryptographic Considerations](#cryptographic-considerations)
+6. [Protocol Reverse Engineering](#protocol-reverse-engineering)
 7. [Lessons Learned](#lessons-learned)
 
 ---
@@ -20,7 +20,7 @@
 
 ### The Challenge
 
-All existing SimpleX clients use the same architecture:
+All existing SimpleX clients (iOS, Android, Desktop, CLI) share a common architecture:
 
 ```
 ┌─────────────────┐     ┌─────────────────┐
@@ -30,15 +30,15 @@ All existing SimpleX clients use the same architecture:
 └─────────────────┘     └─────────────────┘
 ```
 
-**Problems**:
-- Heavy runtime (~50MB+ for Haskell)
+This means:
+- Heavy runtime dependency (~50MB+ for Haskell runtime)
 - Complex FFI bindings
 - Not portable to embedded systems
-- No standalone implementation documentation
+- No existing documentation for standalone implementation
 
 ### The Goal
 
-**Native C implementation** for resource-constrained hardware:
+Build a **native C implementation** that can run on resource-constrained hardware:
 
 ```
 ┌─────────────────┐
@@ -55,8 +55,8 @@ All existing SimpleX clients use the same architecture:
 
 1. **First of its kind** — No known native SMP implementation exists
 2. **Embedded privacy** — Secure messaging on dedicated hardware
-3. **Documentation** — Reference for future implementations
-4. **Independence** — No Haskell ecosystem dependency
+3. **Documentation** — Creates reference for future implementations
+4. **Independence** — No reliance on Haskell ecosystem
 
 ---
 
@@ -66,21 +66,34 @@ All existing SimpleX clients use the same architecture:
 
 **Date**: January 18, 2026
 
-**Problem**: ClientHello rejected despite correct format.
+**Problem**: ClientHello was rejected despite correct format.
 
-**Finding**: keyHash in SMP URLs = **CA certificate** fingerprint, NOT server certificate.
-
+**Investigation**:
+```bash
+# In WSL, analyzing Haskell source
+grep -r "keyHash" ~/simplexmq/src --include="*.hs"
 ```
-ServerHello certificates:
-  [Server Certificate] ← NOT this
-  [CA Certificate]     ← Use THIS for keyHash!
+
+**Finding**: The keyHash in SMP URLs refers to the **CA certificate** fingerprint, not the server certificate.
+
+**ServerHello certificate structure**:
+```
+[Server Certificate (online cert)]
+[CA Certificate] ← Use THIS for keyHash!
 ```
 
 **Solution**:
 ```c
-// Hash the CA certificate (2nd in chain)
+// Parse both certificates
+parse_cert_chain(hello, content_len, 
+    &cert1_off, &cert1_len,   // Server cert
+    &cert2_off, &cert2_len);  // CA cert
+
+// Hash the CA certificate
 mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
 ```
+
+**Impact**: Handshake started succeeding after this fix.
 
 ---
 
@@ -88,32 +101,157 @@ mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
 
 **Date**: January 19, 2026
 
-**Problem**: Persistent `ERR AUTH` with correct signature format.
+**Problem**: Persistent `ERR AUTH` errors despite correct signature format.
 
-**Root Cause**: Ed25519 has implementation variations. Monocypher and libsodium produce **different signatures** for same input!
+**Investigation**:
 
-**SimpleX Server Uses**: `crypton` library (Haskell) = libsodium-compatible
+Created test to verify signature locally:
+```c
+// Sign data
+crypto_sign_detached(signature, NULL, data, data_len, secret_key);
 
-**Solution**: Switch to ESP-IDF's libsodium component.
+// Verify locally
+int result = crypto_sign_verify_detached(signature, data, data_len, public_key);
+// Result: PASS - but server still rejects!
+```
+
+**Hypothesis**: Different Ed25519 implementations produce different signatures?
+
+**Testing**:
+```c
+// Same seed, same data
+// Monocypher: signature = 0x1a2b3c4d...
+// libsodium:  signature = 0x5e6f7g8h... (DIFFERENT!)
+```
+
+**Root Cause**: Ed25519 has implementation variations:
+- Different handling of scalar clamping
+- Different internal reduction methods
+- Both produce "valid" signatures, but only one matches what the server expects
+
+**SimpleX Server Uses**: `crypton` library (Haskell), which is libsodium-compatible.
+
+**Solution**: Switch from Monocypher to ESP-IDF's libsodium component:
+
+```yaml
+# idf_component.yml
+dependencies:
+  espressif/libsodium: "^1.0.20"
+```
+
+**Impact**: `ERR AUTH` → `QUEUE CREATED!` 🎉
 
 ---
 
-### Discovery #3: Block Format Differentiation
+### Discovery #3: Command vs Handshake Block Format
 
 **Date**: January 19, 2026
 
-**Problem**: `ERR BLOCK` when sending NEW command.
+**Problem**: `ERR BLOCK` when sending NEW command after successful handshake.
+
+**Investigation**:
+```bash
+grep -r "tPutBlock\|TransportBlock" ~/simplexmq/src --include="*.hs"
+```
 
 **Finding**: SMP uses two different block formats:
 
-| Type | Format |
-|------|--------|
-| Handshake | `[Len 2B][Content][Padding]` |
-| Command | `[OrigLen 2B][TxCount 1B][TxLen 2B][Transmission][Padding]` |
+**Handshake Block** (ServerHello, ClientHello):
+```
+┌─────────┬─────────────────────────┬─────────┐
+│ Length  │ Content                 │ Padding │
+│ 2 bytes │ variable                │ '#'     │
+└─────────┴─────────────────────────┴─────────┘
+```
+
+**Command Block** (NEW, SUB, SEND, etc.):
+```
+┌─────────┬─────────┬─────────┬──────────────┬─────────┐
+│ OrigLen │ TxCount │ TxLen   │ Transmission │ Padding │
+│ 2 bytes │ 1 byte  │ 2 bytes │ variable     │ '#'     │
+└─────────┴─────────┴─────────┴──────────────┴─────────┘
+
+OrigLen = 1 + 2 + TxLen (total of TxCount + TxLen + Transmission)
+TxCount = Number of transmissions (always 1 for client)
+TxLen = Length of transmission data
+```
+
+**Solution**: Implement separate functions:
+```c
+smp_write_handshake_block()  // For handshake messages
+smp_write_command_block()    // For commands
+```
 
 ---
 
-### Discovery #4: MsgFlags Must Be ASCII
+### Discovery #4: SubMode Parameter Required
+
+**Date**: January 19, 2026
+
+**Problem**: `ERR CMD SYNTAX` on NEW command.
+
+**Investigation**:
+```bash
+grep -r "subMode\|SMSubscribe" ~/simplexmq/src --include="*.hs"
+```
+
+**Finding**: SMP v6+ requires a `subMode` parameter after the DH key:
+
+```haskell
+-- From Protocol.hs
+data SMPSubscribeMode = SMSubscribe | SMOnlyCreate
+```
+
+**Solution**: Append `'S'` (SMSubscribe) to NEW command:
+```c
+// After rcvDhKey SPKI
+trans_body[pos++] = 'S';  // subMode = SMSubscribe
+```
+
+---
+
+### Discovery #5: Signed Data Format
+
+**Date**: January 19, 2026
+
+**Problem**: `ERR AUTH` with correct signature algorithm.
+
+**Investigation**:
+```bash
+grep -r "signSMP\|smpEncode" ~/simplexmq/src --include="*.hs"
+```
+
+**Finding**: The signed data isn't just `sessionId + body`. It's `smpEncode(sessionId) + body`:
+
+```haskell
+signSMP sk sessId body = sign sk (smpEncode sessId <> body)
+-- smpEncode adds length prefix!
+```
+
+**Correct signed data format**:
+```
+[0x20]           ← Length prefix (32 in decimal)
+[sessionId]      ← 32 bytes
+[trans_body]     ← Variable length
+```
+
+**Solution**:
+```c
+uint8_t to_sign[256];
+int pos = 0;
+
+to_sign[pos++] = 32;  // LENGTH PREFIX - this was missing!
+memcpy(&to_sign[pos], session_id, 32);
+pos += 32;
+memcpy(&to_sign[pos], trans_body, trans_body_len);
+pos += trans_body_len;
+
+crypto_sign_detached(signature, NULL, to_sign, pos, secret_key);
+```
+
+---
+
+### Discovery #6: MsgFlags Must Be ASCII
 
 **Date**: January 20, 2026
 
@@ -129,29 +267,28 @@ False = "F" (ASCII 0x46)
 
 ---
 
-### Discovery #5: ACK Uses recipientId
+### Discovery #7: ACK/DEL Use recipientId
 
 **Date**: January 20, 2026
 
-**Problem**: `ERR AUTH` on ACK command.
+**Problem**: `ERR AUTH` on ACK and DEL commands.
 
-**Finding**: ACK is a **Recipient command** (like SUB), not Sender command.
+**Finding**: ACK and DEL are **Recipient commands** (like SUB), not Sender commands.
 
 | Command | Type | EntityId |
 |---------|------|----------|
 | SUB | Recipient | recipientId |
 | SEND | Sender | senderId |
 | ACK | Recipient | recipientId ← NOT senderId! |
+| DEL | Recipient | recipientId ← NOT senderId! |
 
 ---
 
-### Discovery #6: DEL is Parameter-less
+### Discovery #8: DEL is Parameter-less
 
 **Date**: January 20, 2026
 
-**Problem**: Understanding DEL command format.
-
-**Finding**: DEL is a **Recipient command** with NO parameters.
+**Finding**: DEL command has NO parameters.
 
 ```haskell
 -- From Haskell source
@@ -159,11 +296,66 @@ DEL :: Command Recipient    -- Recipient Command
 DEL -> e DEL_               -- Format: just "DEL", no params
 ```
 
-**Key Points**:
-- EntityId = recipientId (like SUB, ACK)
-- Command = "DEL" (no space, no parameters)
-- Response = "OK" (queue + messages deleted)
-- After OK: Clear local NVS keys
+---
+
+## Debugging Journey
+
+### Error State Progression
+
+The path from "nothing works" to "full SMP client":
+
+```
+Timeline:
+──────────────────────────────────────────────────────────────────────────────────>
+
+[TLS FAIL] [ERR BLOCK] [ERR CMD] [ERR AUTH] [DECRYPT] [ACK OK] [NVS] [DEL] [FULL!]
+    │          │          │          │          │         │       │     │      │
+    ▼          ▼          ▼          ▼          ▼         ▼       ▼     ▼      ▼
+  TLS 1.3   Block     SubMode   libsodium    E2E      Full    Keys  Queue  🏆
+  + ALPN    format    + flags   signatures   works    cycle   save  delete
+  fixed     fixed     added     working
+```
+
+### Detailed Error Analysis
+
+| Error | Symptom | Root Cause | Fix |
+|-------|---------|------------|-----|
+| TLS handshake fail | -0x7780 | TLS version mismatch | Force TLS 1.3 only |
+| No ServerHello | Timeout | Wrong ALPN | Set ALPN to "smp/1" |
+| ERR BLOCK | After ClientHello | Wrong block format for commands | Use command block format |
+| ERR CMD SYNTAX | After NEW | Missing subMode | Add 'S' parameter |
+| ERR CMD SYNTAX | SEND | Binary msgFlags | ASCII 'T'/'F' |
+| ERR AUTH | After adding subMode | Wrong signature | Switch to libsodium |
+| ERR AUTH | ACK/DEL | Wrong entityId | Use recipientId |
+| ERR SESSION | Testing variant | Missing sessionId | Add with length prefix |
+
+### Debugging Techniques Used
+
+1. **Haskell Source Analysis**
+   ```bash
+   # WSL terminal
+   grep -r "pattern" ~/simplexmq/src --include="*.hs"
+   ```
+
+2. **Hex Dump Everything**
+   ```c
+   void hex_dump(const char *label, uint8_t *data, int len) {
+       printf("%s: ", label);
+       for (int i = 0; i < len; i++) printf("%02x", data[i]);
+       printf("\n");
+   }
+   ```
+
+3. **Local Signature Verification**
+   ```c
+   // Verify signature works locally before blaming server
+   int result = crypto_sign_verify_detached(sig, data, len, pubkey);
+   ```
+
+4. **PING Test Isolation**
+   - When authentication failed, tested with PING (no auth required)
+   - Confirmed block format was correct
+   - Isolated problem to signature generation
 
 ---
 
@@ -180,148 +372,119 @@ DEL -> e DEL_               -- Format: just "DEL", no params
 | RTOS features | Hidden | Exposed |
 | Production ready | Hobby | Yes |
 
-### Why libsodium?
+**Decision**: ESP-IDF provides the control needed for protocol implementation.
+
+### Why libsodium over mbedTLS Crypto?
 
 | Aspect | mbedTLS | libsodium |
 |--------|---------|-----------|
 | Ed25519 | ⚠️ Optional | ✅ Native |
 | X25519 | ⚠️ Limited | ✅ Native |
 | crypto_box | ❌ No | ✅ Yes |
+| API simplicity | Complex | Simple |
 | SimpleX compatible | Unknown | ✅ Yes |
 
----
+**Decision**: libsodium matches SimpleX server's crypton library.
 
-## SMP Version Analysis
+### Why SMP v6?
 
-### Version Comparison
+| Version | Support | Risk |
+|---------|---------|------|
+| v6 | All servers | Low |
+| v7 | Most servers | Low |
+| v8 | Newest only | Higher |
 
-| Version | Key Feature | Impact |
-|---------|-------------|--------|
-| **v6** | Base protocol | ✅ What SimpleGo uses |
-| **v7+** | `implySessId` | sessionId not sent, included in signature |
-| **v7+** | `authEncryptCmds` | Commands encrypted with X25519 DH |
-| **v17** | Batch commands | Multiple commands per block |
-
-### Why v6?
-
-v6 has **everything** needed:
-- ✅ Queue management (NEW, SUB, DEL)
-- ✅ Message sending (SEND)
-- ✅ Message receiving (MSG)
-- ✅ Acknowledgment (ACK)
-- ✅ E2E encryption
-
-v7+ adds **optimizations**, not critical features.
-
-### Haskell Source Reference
-
-```haskell
--- Transport.hs
-authCmdsSMPVersion = VersionSMP 7
-
-implySessId = v >= authCmdsSMPVersion
--- v6: sessionId sent in transmission, NOT in signature
--- v7+: sessionId NOT sent, IS in signature
-```
-
-### Upgrade Path
-
-```
-v6 (current) ────────► v17 (when stable)
-             direct upgrade, skip v7-v16
-```
+**Decision**: v6 provides broadest compatibility with minimal feature loss.
 
 ---
 
-## NVS Persistence
+## Cryptographic Considerations
 
-### Overview (v0.1.8)
-
-Keys and queue IDs survive reboots using ESP32's Non-Volatile Storage.
-
-### Why NVS?
-
-| Storage | Pros | Cons |
-|---------|------|------|
-| **NVS** | Simple API, wear-leveling | ~16KB limit |
-| SPIFFS | Larger files | Overkill for keys |
-| SD Card | Large storage | Hardware needed |
-
-### Persisted Data
-
-| Key | Size | Description |
-|-----|------|-------------|
-| rcv_auth_sk | 64 bytes | Ed25519 Secret Key |
-| rcv_auth_pk | 32 bytes | Ed25519 Public Key |
-| rcv_dh_sk | 32 bytes | X25519 Secret Key |
-| rcv_dh_pk | 32 bytes | X25519 Public Key |
-| rcv_id | 24 bytes | Recipient ID |
-| rcv_id_len | 1 byte | Length |
-| snd_id | 24 bytes | Sender ID |
-| snd_id_len | 1 byte | Length |
-| srv_dh_pk | 32 bytes | Server DH Key |
-| have_srv_dh | 1 byte | Flag |
-
-### API Functions
-
-```c
-bool have_saved_keys()      // Check if keys exist
-bool load_keys_from_nvs()   // Load all keys
-void save_keys_to_nvs()     // Save after IDS
-void clear_saved_keys()     // Delete all (reset)
-```
-
-### Flow
+### Key Management
 
 ```
-Start
-  │
-  ▼
-TLS + Handshake
-  │
-  ▼
-load_keys_from_nvs()
-  │
-  ├── Keys found? ──► Skip NEW ──► SUB directly
-  │
-  └── No keys? ──► NEW ──► save_keys_to_nvs() ──► SUB
+┌─────────────────────────────────────────────────────────┐
+│ Per-Queue Keys                                          │
+├─────────────────────────────────────────────────────────┤
+│ rcvAuthKey (Ed25519)  ─── Signs commands to server      │
+│ rcvDhKey (X25519)     ─── Key exchange with sender      │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│ From Server (IDS Response)                              │
+├─────────────────────────────────────────────────────────┤
+│ recipientId (24 bytes) ─── Queue identifier for SUB     │
+│ senderId (24 bytes)    ─── For sender identification    │
+│ serverDhKey (X25519)   ─── Server's DH public key       │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### DEL + NVS Clear (v0.1.9)
+### Security Properties
 
-When DEL command succeeds:
-1. Server deletes queue + messages
-2. Server responds with OK
-3. Client calls `clear_saved_keys()` to wipe local NVS
+| Property | Implementation |
+|----------|----------------|
+| Forward secrecy | X25519 per-queue keys |
+| Authentication | Ed25519 signatures |
+| Key isolation | Separate keys per queue |
+| Randomness | ESP32 hardware RNG |
+
+### Future: Double Ratchet
+
+```
+Current (v0.1.9):
+  Client ──[E2E encrypted]──> Queue ──[E2E encrypted]──> Recipient
+          └── XSalsa20-Poly1305 ──┘
+
+Future (with Double Ratchet):
+  Client ──[DR encrypted]──> Queue ──[DR encrypted]──> Recipient
+          └── X3DH + Double Ratchet ──┘
+```
 
 ---
 
-## Debugging Journey
+## Protocol Reverse Engineering
 
-### Error Progression
+### Information Sources
+
+| Source | Usefulness | Notes |
+|--------|------------|-------|
+| Protocol spec | 70% | Missing implementation details |
+| Haskell source | 95% | Authoritative but complex |
+| simplexmq-js | 30% | Outdated protocol version |
+| Wireshark | 50% | TLS 1.3 makes inspection hard |
+| Trial & error | 100% | Essential for edge cases |
+
+### Haskell Code Navigation
+
+Key files in `simplexmq/src/Simplex/Messaging/`:
 
 ```
-Timeline:
-─────────────────────────────────────────────────────────────────────────>
-
-[TLS FAIL] [ERR BLOCK] [ERR CMD] [ERR AUTH] [DECRYPT] [ACK OK] [NVS] [DEL]
-    │          │           │         │          │         │       │     │
-    ▼          ▼           ▼         ▼          ▼         ▼       ▼     ▼
-  TLS 1.3   Block      SubMode   libsodium   E2E      Full    Keys  Full
-  + ALPN    format     + flags   signatures  works    cycle   save  SMP!
+Protocol.hs      ─── Command definitions, parsing
+Transport.hs     ─── Block framing, TLS handling
+Client.hs        ─── Client-side logic
+Server.hs        ─── Server-side (for understanding errors)
+Crypto.hs        ─── Cryptographic operations
+Encoding.hs      ─── Binary encoding helpers
 ```
 
-### Error Analysis
+### Useful grep Patterns
 
-| Error | Symptom | Root Cause | Fix |
-|-------|---------|------------|-----|
-| TLS fail | -0x7780 | TLS version | Force TLS 1.3 |
-| No ServerHello | Timeout | Wrong ALPN | Set "smp/1" |
-| ERR BLOCK | After ClientHello | Wrong block format | Command block format |
-| ERR CMD SYNTAX | After NEW | Missing subMode | Add 'S' |
-| ERR CMD SYNTAX | SEND | Binary msgFlags | ASCII 'T'/'F' |
-| ERR AUTH | NEW | Wrong signature | libsodium |
-| ERR AUTH | ACK | Wrong entityId | Use recipientId |
+```bash
+# Find encoding logic
+grep -r "smpEncode\|Encoding" --include="*.hs"
+
+# Find signature handling
+grep -r "signSMP\|verifySMP" --include="*.hs"
+
+# Find command format
+grep -r "pattern NEW\|pattern SUB\|pattern DEL" --include="*.hs"
+
+# Find error types
+grep -r "ErrorType\|ERR" --include="*.hs"
+
+# Find version handling
+grep -r "implySessId\|authCmdsSMPVersion" --include="*.hs"
+```
 
 ---
 
@@ -329,39 +492,61 @@ Timeline:
 
 ### 1. Test Assumptions Early
 
-**Assumption**: "Ed25519 is Ed25519"  
-**Reality**: Implementation differences exist  
-**Lesson**: Verify crypto library compatibility first
+**Assumption**: "Ed25519 is Ed25519"
+**Reality**: Implementation differences exist
+**Lesson**: Verify crypto library compatibility before committing
 
 ### 2. Incremental Debugging
 
+**Approach that worked**:
 ```
-1. TLS working (isolated)
-2. Handshake working (isolated)
-3. NEW working (full auth)
-4. SUB working
-5. SEND working
-6. MSG decrypt working
-7. ACK working
-8. NVS persistence working
-9. DEL working ← Full SMP Client!
+1. Get TLS working (isolated test)
+2. Get handshake working (isolated test)
+3. Get PING working (no auth)
+4. Get NEW working (full auth)
+5. Get SUB working
+6. Get SEND working
+7. Get MSG decrypt working
+8. Get ACK working
+9. Get DEL working
+→ Full SMP Client!
 ```
+
+**Why**: Each step isolated one failure mode.
 
 ### 3. The Source is Truth
 
-When in doubt, read the Haskell source. Complex but correct.
+**Documentation**: Helpful but incomplete
+**Source code**: Definitive
+
+When in doubt, read the Haskell source. It's complex but correct.
 
 ### 4. Error Messages are Clues
 
 ```
-ERR BLOCK   → Block format
-ERR CMD     → Command format
-ERR AUTH    → Signature or entityId
+ERR BLOCK   → Block format problem
+ERR CMD     → Command format problem
+ERR AUTH    → Signature problem
+ERR SESSION → SessionId problem
 ERR NO_MSG  → Already ACK'd
 ERR NO_QUEUE → Queue deleted or doesn't exist
 ```
 
-### 5. Persist Early, Clear on Delete
+Each error pointed to a specific layer.
+
+### 5. Preserve Debug Code
+
+```c
+#ifdef DEBUG_PROTOCOL
+    hex_dump("Transmission", transmission, trans_len);
+    hex_dump("Signature", signature, 64);
+    hex_dump("Signed data", to_sign, to_sign_len);
+#endif
+```
+
+Commented debug code is invaluable when issues resurface.
+
+### 6. Persist Early, Clear on Delete
 
 - Save keys immediately after IDS response
 - Clear keys immediately after successful DEL
@@ -369,38 +554,37 @@ ERR NO_QUEUE → Queue deleted or doesn't exist
 
 ---
 
-## Quick Reference
+## Appendix: Quick Reference
 
 ### Block Sizes
 
-| Constant | Value |
-|----------|-------|
-| SMP_BLOCK_SIZE | 16384 |
-| MAX_CONTENT | 16382 |
-| SESSION_ID_LEN | 32 |
-| ED25519_SIG_LEN | 64 |
-| SPKI_KEY_SIZE | 44 |
+| Constant | Value | Usage |
+|----------|-------|-------|
+| SMP_BLOCK_SIZE | 16384 | All blocks |
+| MAX_CONTENT | 16382 | Block - 2 byte header |
+| SESSION_ID_LEN | 32 | Session identifier |
+| ED25519_SIG_LEN | 64 | Signature size |
+| SPKI_KEY_SIZE | 44 | 12 header + 32 key |
 
-### EntityId per Command
+### Key Lengths
 
-| Command | EntityId |
-|---------|----------|
-| NEW | empty |
-| SUB | recipientId |
-| SEND | senderId |
-| ACK | recipientId |
-| DEL | recipientId |
+| Key Type | Secret | Public | SPKI |
+|----------|--------|--------|------|
+| Ed25519 | 64* | 32 | 44 |
+| X25519 | 32 | 32 | 44 |
 
-### Performance (ESP32-S3)
+*libsodium Ed25519 secret key is 64 bytes (seed + public key)
 
-| Operation | Time |
-|-----------|------|
-| Ed25519 keygen | ~8ms |
-| Ed25519 sign | ~8ms |
-| X25519 keygen | ~8ms |
-| crypto_box decrypt | ~1ms |
-| TLS handshake | ~800ms |
-| NVS read/write | ~5ms |
+### Command Identifiers
+
+| Command | EntityId | Auth Required |
+|---------|----------|---------------|
+| NEW | empty | Yes (rcvAuthKey) |
+| SUB | recipientId | Yes (rcvAuthKey) |
+| SEND | senderId | Yes (sndAuthKey) |
+| ACK | recipientId | Yes (rcvAuthKey) |
+| DEL | recipientId | Yes (rcvAuthKey) |
+| PING | empty | No |
 
 ---
 
@@ -418,6 +602,18 @@ As of v0.1.9-alpha, all base SMP commands implemented:
 | DEL | Delete queue | ✅ |
 
 **Achievement Unlocked: "First Complete Native ESP32 SimpleX SMP Client"**
+
+---
+
+## Contributing to Documentation
+
+Found something missing or incorrect? Please:
+
+1. Open an issue with details
+2. Reference the Haskell source if applicable
+3. Include test results if available
+
+This documentation exists because implementing SMP from scratch was hard. Let's make it easier for the next person.
 
 ---
 
