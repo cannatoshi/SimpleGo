@@ -85,13 +85,6 @@ idf.py --list-targets
 # Should include: esp32s3
 ```
 
-#### 3. Set Default Target
-
-```powershell
-# Set ESP32-S3 as default (one-time)
-idf.py set-target esp32s3
-```
-
 ### Linux / macOS
 
 #### 1. Install Dependencies
@@ -124,22 +117,6 @@ alias get_idf='. $HOME/esp/esp-idf/export.sh'
 
 # Activate for current session
 source ~/esp/esp-idf/export.sh
-```
-
-### WSL Setup (Optional - For Haskell Analysis)
-
-WSL is useful for analyzing the SimpleX Haskell source code:
-
-```bash
-# Install WSL2 with Ubuntu
-wsl --install -d Ubuntu
-
-# Inside WSL
-sudo apt update
-sudo apt install git grep ripgrep
-
-# Clone SimpleX for reference
-git clone https://github.com/simplex-chat/simplexmq.git
 ```
 
 ---
@@ -240,11 +217,7 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 ```
 
-### 7. Copy main.c
-
-Copy the SimpleGo v4.1 `main.c` to `main/main.c`.
-
-### 8. Configure WiFi Credentials
+### 7. Configure WiFi Credentials
 
 Edit `main.c` and set your WiFi credentials:
 
@@ -283,20 +256,6 @@ idf.py monitor -p COM5
 
 # Clean build
 idf.py fullclean
-idf.py build
-```
-
-### Build Options
-
-```powershell
-# Verbose build
-idf.py build -v
-
-# Parallel build (faster)
-idf.py build -j 8
-
-# Specific target
-idf.py set-target esp32s3
 idf.py build
 ```
 
@@ -345,20 +304,6 @@ idf.py build flash monitor -p COM5
 | `Ctrl+T, H` | Help |
 | `Ctrl+T, R` | Reset device |
 
-### Menuconfig
-
-Configure project settings via interactive menu:
-
-```powershell
-idf.py menuconfig
-```
-
-Important settings:
-- **Component config → mbedTLS** — TLS settings
-- **Component config → ESP-TLS** — TLS wrapper
-- **Component config → Wi-Fi** — WiFi settings
-- **Serial flasher config** — Flash settings
-
 ---
 
 ## Debugging
@@ -395,123 +340,6 @@ void hex_dump(const char *label, const uint8_t *data, size_t len) {
     printf("\n");
 }
 ```
-
-### Network Debugging
-
-#### Wireshark SSL Key Logging
-
-For TLS traffic analysis (advanced):
-
-1. Set environment variable for key logging
-2. Capture with Wireshark
-3. Configure SSL key log file in Wireshark
-
-Note: SimpleX uses TLS 1.3, which requires different capture techniques than TLS 1.2.
-
-### GDB Debugging (Advanced)
-
-```powershell
-# Start GDB server
-idf.py openocd
-
-# In another terminal
-idf.py gdb
-```
-
----
-
-## Code Structure
-
-### main.c Organization
-
-```c
-// ============== CONFIG ==============
-// WiFi credentials, server settings, constants
-
-// ============== TCP Helpers ==============
-// tcp_connect() - Establish TCP connection
-
-// ============== mbedTLS I/O ==============
-// my_send_cb(), my_recv_cb() - TLS callbacks
-
-// ============== SMP Block I/O ==============
-// read_exact() - Read exact bytes with timeout
-// smp_read_block() - Read 16KB SMP block
-// smp_write_handshake_block() - Write handshake format
-// smp_write_command_block() - Write command format
-
-// ============== Certificate Parsing ==============
-// parse_cert_chain() - Extract certs from ServerHello
-
-// ============== WiFi ==============
-// wifi_event_handler() - WiFi events
-// wifi_init() - Initialize WiFi
-
-// ============== Main SMP Connection ==============
-// smp_connect() - Main protocol logic
-
-// ============== Entry Point ==============
-// app_main() - FreeRTOS entry point
-```
-
-### Key Data Structures
-
-```c
-// Session state
-uint8_t session_id[32];          // From ServerHello
-
-// Recipient keys (for queue)
-uint8_t rcv_auth_secret[64];     // Ed25519 secret (libsodium format)
-uint8_t rcv_auth_public[32];     // Ed25519 public
-uint8_t rcv_dh_secret[32];       // X25519 secret
-uint8_t rcv_dh_public[32];       // X25519 public
-
-// Queue IDs (from IDS response)
-uint8_t recipient_id[24];        // For SUB command
-uint8_t sender_id[24];           // For sender reference
-```
-
-### Protocol Flow
-
-```
-1. TCP Connect
-2. TLS Handshake (ALPN: smp/1)
-3. Receive ServerHello
-4. Send ClientHello (with keyHash)
-5. Generate keypairs
-6. Send NEW command
-7. Receive IDS response
-8. Send SUB command
-9. Receive OK
-10. Ready for messaging
-```
-
----
-
-## Testing
-
-### Unit Testing (Future)
-
-```bash
-# Run unit tests
-idf.py test
-```
-
-### Integration Testing
-
-Current testing is manual via serial output:
-
-1. **TLS Test**: Verify "TLS OK! ALPN: smp/1"
-2. **Handshake Test**: Verify ServerHello/ClientHello exchange
-3. **NEW Test**: Verify "QUEUE CREATED!" message
-4. **SUB Test**: Verify "SUBSCRIBED!" message
-
-### Test Servers
-
-| Server | Host | Status |
-|--------|------|--------|
-| SimpleX Flux 3 | smp3.simplexonflux.com:5223 | ✅ Tested |
-| SimpleX Official | smp.simplex.im:5223 | ✅ Compatible |
 
 ---
 
@@ -558,6 +386,7 @@ idf.py build
 - Signature verification failed
 - Ensure using libsodium (not Monocypher)
 - Check sessionId in signed data
+- For ACK: ensure using recipientId, not senderId
 
 #### "ERR BLOCK"
 
@@ -569,7 +398,7 @@ idf.py build
 
 - Command format incorrect
 - Check parameter encoding
-- Verify subMode parameter present
+- For SEND: msgFlags must be ASCII 'T'/'F'
 
 ### Hardware Issues
 
@@ -602,40 +431,6 @@ idf.py build
 - [simplexmq (Haskell)](https://github.com/simplex-chat/simplexmq) — Protocol reference
 - [ESP-IDF Examples](https://github.com/espressif/esp-idf/tree/master/examples) — ESP-IDF patterns
 
-### Community
-
-- GitHub Issues — Bug reports and questions
-- SimpleX Chat — For protocol questions
-
 ---
 
-## Appendix: Haskell Source Analysis
-
-When debugging protocol issues, the Haskell source is the authoritative reference.
-
-### Useful grep Commands (WSL)
-
-```bash
-cd ~/simplexmq
-
-# Find transmission encoding
-grep -r "tEncodeAuth" --include="*.hs"
-
-# Find signature format
-grep -r "signSMP\|verifySMP" --include="*.hs"
-
-# Find block format
-grep -r "tPutBlock\|tGetBlock" --include="*.hs"
-
-# Find command parsing
-grep -r "NEW\|SUB\|SEND" src/Simplex/Messaging/Protocol.hs
-```
-
-### Key Files
-
-| File | Purpose |
-|------|---------|
-| `Protocol.hs` | Command definitions |
-| `Transport.hs` | Block framing |
-| `Client.hs` | Client-side logic |
-| `Crypto.hs` | Cryptographic operations |
+*Last updated: January 20, 2026 — v0.1.7-alpha*

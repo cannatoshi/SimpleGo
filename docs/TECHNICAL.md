@@ -64,15 +64,9 @@ Build a **native C implementation** that can run on resource-constrained hardwar
 
 ### Discovery #1: keyHash Must Use CA Certificate
 
-**Date**: January 18, 2025
+**Date**: January 18, 2026
 
 **Problem**: ClientHello was rejected despite correct format.
-
-**Investigation**:
-```bash
-# In WSL, analyzing Haskell source
-grep -r "keyHash" ~/simplexmq/src --include="*.hs"
-```
 
 **Finding**: The keyHash in SMP URLs refers to the **CA certificate** fingerprint, not the server certificate.
 
@@ -93,161 +87,67 @@ parse_cert_chain(hello, content_len,
 mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
 ```
 
-**Impact**: Handshake started succeeding after this fix.
-
 ---
 
 ### Discovery #2: Monocypher vs libsodium Incompatibility
 
-**Date**: January 19, 2025
+**Date**: January 19, 2026
 
 **Problem**: Persistent `ERR AUTH` errors despite correct signature format.
 
-**Investigation**:
-
-Created test to verify signature locally:
-```c
-// Sign data
-crypto_sign_detached(signature, NULL, data, data_len, secret_key);
-
-// Verify locally
-int result = crypto_sign_verify_detached(signature, data, data_len, public_key);
-// Result: PASS - but server still rejects!
-```
-
-**Hypothesis**: Different Ed25519 implementations produce different signatures?
-
-**Testing**:
-```c
-// Same seed, same data
-// Monocypher: signature = 0x1a2b3c4d...
-// libsodium:  signature = 0x5e6f7g8h... (DIFFERENT!)
-```
-
-**Root Cause**: Ed25519 has implementation variations:
-- Different handling of scalar clamping
-- Different internal reduction methods
-- Both produce "valid" signatures, but only one matches what the server expects
+**Root Cause**: Ed25519 has implementation variations. Monocypher and libsodium produce **different signatures** for identical input!
 
 **SimpleX Server Uses**: `crypton` library (Haskell), which is libsodium-compatible.
 
-**Solution**: Switch from Monocypher to ESP-IDF's libsodium component:
-
-```yaml
-# idf_component.yml
-dependencies:
-  espressif/libsodium: "^1.0.20"
-```
-
-**Impact**: `ERR AUTH` → `QUEUE CREATED!` 🎉
+**Solution**: Switch from Monocypher to ESP-IDF's libsodium component.
 
 ---
 
 ### Discovery #3: Command vs Handshake Block Format
 
-**Date**: January 19, 2025
+**Date**: January 19, 2026
 
 **Problem**: `ERR BLOCK` when sending NEW command after successful handshake.
 
-**Investigation**:
-```bash
-grep -r "tPutBlock\|TransportBlock" ~/simplexmq/src --include="*.hs"
-```
-
 **Finding**: SMP uses two different block formats:
 
-**Handshake Block** (ServerHello, ClientHello):
+**Handshake Block**:
 ```
-┌─────────┬─────────────────────────┬─────────┐
-│ Length  │ Content                 │ Padding │
-│ 2 bytes │ variable                │ '#'     │
-└─────────┴─────────────────────────┴─────────┘
+[Length 2 bytes][Content][Padding '#']
 ```
 
-**Command Block** (NEW, SUB, SEND, etc.):
+**Command Block**:
 ```
-┌─────────┬─────────┬─────────┬──────────────┬─────────┐
-│ OrigLen │ TxCount │ TxLen   │ Transmission │ Padding │
-│ 2 bytes │ 1 byte  │ 2 bytes │ variable     │ '#'     │
-└─────────┴─────────┴─────────┴──────────────┴─────────┘
-
-OrigLen = 1 + 2 + TxLen (total of TxCount + TxLen + Transmission)
-TxCount = Number of transmissions (always 1 for client)
-TxLen = Length of transmission data
-```
-
-**Solution**: Implement separate functions:
-```c
-smp_write_handshake_block()  // For handshake messages
-smp_write_command_block()    // For commands
+[OrigLen 2 bytes][TxCount 1 byte][TxLen 2 bytes][Transmission][Padding '#']
 ```
 
 ---
 
-### Discovery #4: SubMode Parameter Required
+### Discovery #4: MsgFlags Must Be ASCII
 
-**Date**: January 19, 2025
+**Date**: January 20, 2026
 
-**Problem**: `ERR CMD SYNTAX` on NEW command.
+**Problem**: `ERR CMD SYNTAX` on SEND command.
 
-**Investigation**:
-```bash
-grep -r "subMode\|SMSubscribe" ~/simplexmq/src --include="*.hs"
-```
+**Finding**: msgFlags must be ASCII 'T' (0x54) or 'F' (0x46), NOT binary 0x01/0x00!
 
-**Finding**: SMP v6+ requires a `subMode` parameter after the DH key:
-
+From Haskell Encoding.hs:
 ```haskell
--- From Protocol.hs
-data SMPSubscribeMode = SMSubscribe | SMOnlyCreate
-```
-
-**Solution**: Append `'S'` (SMSubscribe) to NEW command:
-```c
-// After rcvDhKey SPKI
-trans_body[pos++] = 'S';  // subMode = SMSubscribe
+True  = "T" (ASCII 0x54)
+False = "F" (ASCII 0x46)
 ```
 
 ---
 
-### Discovery #5: Signed Data Format
+### Discovery #5: ACK Uses recipientId, Not senderId
 
-**Date**: January 19, 2025
+**Date**: January 20, 2026
 
-**Problem**: `ERR AUTH` with correct signature algorithm.
+**Problem**: `ERR AUTH` on ACK command.
 
-**Investigation**:
-```bash
-grep -r "signSMP\|smpEncode" ~/simplexmq/src --include="*.hs"
-```
-
-**Finding**: The signed data isn't just `sessionId + body`. It's `smpEncode(sessionId) + body`:
-
-```haskell
-signSMP sk sessId body = sign sk (smpEncode sessId <> body)
--- smpEncode adds length prefix!
-```
-
-**Correct signed data format**:
-```
-[0x20]           ← Length prefix (32 in decimal)
-[sessionId]      ← 32 bytes
-[trans_body]     ← Variable length
-```
-
-**Solution**:
-```c
-uint8_t to_sign[256];
-int pos = 0;
-
-to_sign[pos++] = 32;  // LENGTH PREFIX - this was missing!
-memcpy(&to_sign[pos], session_id, 32);
-pos += 32;
-memcpy(&to_sign[pos], trans_body, trans_body_len);
-pos += trans_body_len;
-
-crypto_sign_detached(signature, NULL, to_sign, pos, secret_key);
-```
+**Finding**: ACK is a **Recipient command** (like SUB), not a Sender command (like SEND). Therefore:
+- EntityId = recipientId
+- Signed with rcv_auth_secret
 
 ---
 
@@ -255,18 +155,16 @@ crypto_sign_detached(signature, NULL, to_sign, pos, secret_key);
 
 ### Error State Progression
 
-The path from "nothing works" to "queue created":
-
 ```
 Timeline:
-─────────────────────────────────────────────────────────────────>
+─────────────────────────────────────────────────────────────────────────>
 
-[TLS FAIL]     [ERR BLOCK]     [ERR CMD]      [ERR AUTH]     [SUCCESS!]
-    │              │              │               │              │
-    ▼              ▼              ▼               ▼              ▼
-  TLS 1.3       Block         SubMode        libsodium        🎉
-  + ALPN        format        parameter      signatures
-  fixed         fixed         added          working
+[TLS FAIL]  [ERR BLOCK]  [ERR CMD]   [ERR AUTH]  [DECRYPT]   [ACK OK]
+    │           │            │           │           │           │
+    ▼           ▼            ▼           ▼           ▼           ▼
+  TLS 1.3    Block        SubMode    libsodium   E2E works   Full
+  + ALPN     format       + flags    signatures  v0.1.6      lifecycle
+  fixed      fixed        fixed      working                 v0.1.7
 ```
 
 ### Detailed Error Analysis
@@ -277,36 +175,9 @@ Timeline:
 | No ServerHello | Timeout | Wrong ALPN | Set ALPN to "smp/1" |
 | ERR BLOCK | After ClientHello | Wrong block format for commands | Use command block format |
 | ERR CMD SYNTAX | After NEW | Missing subMode | Add 'S' parameter |
+| ERR CMD SYNTAX | SEND command | Binary msgFlags | Use ASCII 'T'/'F' |
 | ERR AUTH | After adding subMode | Wrong signature | Switch to libsodium |
-| ERR SESSION | Testing variant | Missing sessionId in transmission | Add sessionId with length prefix |
-
-### Debugging Techniques Used
-
-1. **Haskell Source Analysis**
-   ```bash
-   # WSL terminal
-   grep -r "pattern" ~/simplexmq/src --include="*.hs"
-   ```
-
-2. **Hex Dump Everything**
-   ```c
-   void hex_dump(const char *label, uint8_t *data, int len) {
-       printf("%s: ", label);
-       for (int i = 0; i < len; i++) printf("%02x", data[i]);
-       printf("\n");
-   }
-   ```
-
-3. **Local Signature Verification**
-   ```c
-   // Verify signature works locally before blaming server
-   int result = crypto_sign_verify_detached(sig, data, len, pubkey);
-   ```
-
-4. **PING Test Isolation**
-   - When authentication failed, tested with PING (no auth required)
-   - Confirmed block format was correct
-   - Isolated problem to signature generation
+| ERR AUTH | ACK command | Wrong entityId | Use recipientId, not senderId |
 
 ---
 
@@ -322,28 +193,25 @@ Timeline:
 | RTOS features | Hidden | Exposed |
 | Production ready | Hobby | Yes |
 
-**Decision**: ESP-IDF provides the control needed for protocol implementation.
-
 ### Why libsodium over mbedTLS Crypto?
 
 | Aspect | mbedTLS | libsodium |
 |--------|---------|-----------|
 | Ed25519 | ⚠️ Optional | ✅ Native |
 | X25519 | ⚠️ Limited | ✅ Native |
-| API simplicity | Complex | Simple |
+| crypto_box | ❌ No | ✅ Yes |
 | SimpleX compatible | Unknown | ✅ Yes |
-
-**Decision**: libsodium matches SimpleX server's crypton library.
 
 ### Why SMP v6?
 
-| Version | Support | Risk |
-|---------|---------|------|
-| v6 | All servers | Low |
-| v7 | Most servers | Low |
-| v8 | Newest only | Higher |
+v6 provides everything needed for a complete messenger:
+- ✅ Queue management (NEW, SUB, DEL)
+- ✅ Message sending (SEND)
+- ✅ Message receiving (MSG)
+- ✅ Acknowledgment (ACK)
+- ✅ E2E encryption
 
-**Decision**: v6 provides broadest compatibility with minimal feature loss.
+v7+ adds optimizations (implySessId, authEncryptCmds) but no critical features.
 
 ---
 
@@ -362,30 +230,25 @@ Timeline:
 ┌─────────────────────────────────────────────────────────┐
 │ From Server (IDS Response)                              │
 ├─────────────────────────────────────────────────────────┤
-│ recipientId (24 bytes) ─── Queue identifier for SUB     │
-│ senderId (24 bytes)    ─── For sender identification    │
+│ recipientId (24 bytes) ─── For SUB, ACK commands        │
+│ senderId (24 bytes)    ─── For SEND command             │
 │ serverDhKey (X25519)   ─── Server's DH public key       │
 └─────────────────────────────────────────────────────────┘
 ```
 
-### Security Properties
-
-| Property | Implementation |
-|----------|----------------|
-| Forward secrecy | X25519 per-queue keys |
-| Authentication | Ed25519 signatures |
-| Key isolation | Separate keys per queue |
-| Randomness | ESP32 hardware RNG |
-
-### Future: Double Ratchet
+### E2E Encryption Flow
 
 ```
-Current (v4.1):
-  Client ──[plaintext]──> Queue ──[plaintext]──> Recipient
+SEND:
+  Client → [plaintext] → Server encrypts → [ciphertext] → Queue
 
-Future:
-  Client ──[E2E encrypted]──> Queue ──[E2E encrypted]──> Recipient
-          └── Double Ratchet ──┘      └── Double Ratchet ──┘
+MSG:
+  Queue → [ciphertext] → Client decrypts with DH shared secret → [plaintext]
+
+Decryption:
+  shared_secret = X25519(srv_dh_public, rcv_dh_secret)
+  nonce = msgId (zero-padded to 24 bytes)
+  plaintext = crypto_box_open(ciphertext, nonce, shared_secret)
 ```
 
 ---
@@ -398,37 +261,31 @@ Future:
 |--------|------------|-------|
 | Protocol spec | 70% | Missing implementation details |
 | Haskell source | 95% | Authoritative but complex |
-| simplexmq-js | 30% | Outdated protocol version |
-| Wireshark | 50% | TLS 1.3 makes inspection hard |
 | Trial & error | 100% | Essential for edge cases |
 
-### Haskell Code Navigation
-
-Key files in `simplexmq/src/Simplex/Messaging/`:
+### Key Haskell Files
 
 ```
-Protocol.hs      ─── Command definitions, parsing
-Transport.hs     ─── Block framing, TLS handling
-Client.hs        ─── Client-side logic
-Server.hs        ─── Server-side (for understanding errors)
-Crypto.hs        ─── Cryptographic operations
-Encoding.hs      ─── Binary encoding helpers
+simplexmq/src/Simplex/Messaging/
+├── Protocol.hs      ─── Command definitions
+├── Transport.hs     ─── Block framing
+├── Client.hs        ─── Client-side logic
+├── Server.hs        ─── Server-side (for understanding errors)
+├── Crypto.hs        ─── Cryptographic operations
+└── Encoding.hs      ─── Binary encoding helpers
 ```
 
 ### Useful grep Patterns
 
 ```bash
+# Find ACK handling
+grep -rn "ACK_\|pattern ACK" src/Simplex/Messaging/Protocol.hs
+
+# Find version differences
+grep -rn "implySessId\|authCmdsSMPVersion" src/Simplex/Messaging/
+
 # Find encoding logic
 grep -r "smpEncode\|Encoding" --include="*.hs"
-
-# Find signature handling
-grep -r "signSMP\|verifySMP" --include="*.hs"
-
-# Find command format
-grep -r "pattern NEW\|pattern SUB" --include="*.hs"
-
-# Find error types
-grep -r "ErrorType\|ERR" --include="*.hs"
 ```
 
 ---
@@ -447,16 +304,14 @@ grep -r "ErrorType\|ERR" --include="*.hs"
 ```
 1. Get TLS working (isolated test)
 2. Get handshake working (isolated test)
-3. Get PING working (no auth)
-4. Get NEW working (full auth)
+3. Get NEW working (full auth)
+4. Get SUB working
+5. Get SEND working
+6. Get MSG decrypt working
+7. Get ACK working
 ```
 
-**Why**: Each step isolated one failure mode.
-
 ### 3. The Source is Truth
-
-**Documentation**: Helpful but incomplete
-**Source code**: Definitive
 
 When in doubt, read the Haskell source. It's complex but correct.
 
@@ -465,23 +320,17 @@ When in doubt, read the Haskell source. It's complex but correct.
 ```
 ERR BLOCK   → Block format problem
 ERR CMD     → Command format problem
-ERR AUTH    → Signature problem
-ERR SESSION → SessionId problem
+ERR AUTH    → Signature or entityId problem
+ERR NO_MSG  → Message already ACK'd
 ```
 
-Each error pointed to a specific layer.
+### 5. EntityId Matters
 
-### 5. Preserve Debug Code
-
-```c
-#ifdef DEBUG_PROTOCOL
-    hex_dump("Transmission", transmission, trans_len);
-    hex_dump("Signature", signature, 64);
-    hex_dump("Signed data", to_sign, to_sign_len);
-#endif
-```
-
-Commented debug code is invaluable when issues resurface.
+Different commands use different entityIds:
+- NEW: empty
+- SUB: recipientId
+- SEND: senderId
+- ACK: recipientId (NOT senderId!)
 
 ---
 
@@ -497,33 +346,16 @@ Commented debug code is invaluable when issues resurface.
 | ED25519_SIG_LEN | 64 | Signature size |
 | SPKI_KEY_SIZE | 44 | 12 header + 32 key |
 
-### Key Lengths
-
-| Key Type | Secret | Public | SPKI |
-|----------|--------|--------|------|
-| Ed25519 | 64* | 32 | 44 |
-| X25519 | 32 | 32 | 44 |
-
-*libsodium Ed25519 secret key is 64 bytes (seed + public key)
-
-### Command Identifiers
+### Command EntityIds
 
 | Command | EntityId | Auth Required |
 |---------|----------|---------------|
 | NEW | empty | Yes (rcvAuthKey) |
 | SUB | recipientId | Yes (rcvAuthKey) |
-| SEND | senderId | Yes (sndAuthKey) |
+| SEND | senderId | No (unsecured queue) |
 | ACK | recipientId | Yes (rcvAuthKey) |
-| PING | empty | No |
+| DEL | recipientId | Yes (rcvAuthKey) |
 
 ---
 
-## Contributing to Documentation
-
-Found something missing or incorrect? Please:
-
-1. Open an issue with details
-2. Reference the Haskell source if applicable
-3. Include test results if available
-
-This documentation exists because implementing SMP from scratch was hard. Let's make it easier for the next person.
+*Last updated: January 20, 2026 — v0.1.7-alpha*

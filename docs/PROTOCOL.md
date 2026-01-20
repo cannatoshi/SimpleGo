@@ -41,10 +41,25 @@ The **SimpleX Messaging Protocol (SMP)** is a transport-agnostic protocol for pr
 | Version | Status | Notes |
 |---------|--------|-------|
 | v6 | ✅ Supported | Current minimum for SimpleGo |
-| v7 | ✅ Compatible | Minor additions |
-| v8 | ✅ Compatible | Current server max |
+| v7 | ✅ Compatible | Adds implySessId, authEncryptCmds |
+| v8-v16 | ✅ Compatible | Incremental features |
+| v17 | ✅ Compatible | Current server max |
 
 SimpleGo uses **v6** as the client version for maximum compatibility.
+
+#### Version Differences (v6 vs v7+)
+
+| Feature | v6 | v7+ |
+|---------|----|----|
+| sessionId in transmission | ✅ Sent | ❌ Not sent (implied) |
+| sessionId in signature | ❌ Not included | ✅ Included |
+| Command encryption | ❌ Plain | ✅ Optional (authEncryptCmds) |
+
+From Haskell source:
+```haskell
+authCmdsSMPVersion = VersionSMP 7
+implySessId = v >= authCmdsSMPVersion
+```
 
 ---
 
@@ -401,33 +416,21 @@ static const uint8_t X25519_SPKI_HEADER[12] = {
 };
 ```
 
-#### Encoding Keys
+### Message Decryption (E2E)
 
 ```c
-#define SPKI_KEY_SIZE 44
+// 1. Compute DH Shared Secret
+uint8_t shared[crypto_box_BEFORENMBYTES];  // 32 bytes
+crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
 
-uint8_t ed25519_spki[SPKI_KEY_SIZE];
-memcpy(ed25519_spki, ED25519_SPKI_HEADER, 12);
-memcpy(ed25519_spki + 12, ed25519_public, 32);
+// 2. Nonce = msgId (24 bytes, zero-padded)
+uint8_t nonce[24] = {0};
+memcpy(nonce, msg_id, msgIdLen < 24 ? msgIdLen : 24);
 
-uint8_t x25519_spki[SPKI_KEY_SIZE];
-memcpy(x25519_spki, X25519_SPKI_HEADER, 12);
-memcpy(x25519_spki + 12, x25519_public, 32);
-```
-
-### Signature Verification
-
-Always verify signatures locally before sending:
-
-```c
-int verify_result = crypto_sign_verify_detached(
-    signature, to_sign, to_sign_len, public_key);
-
-if (verify_result == 0) {
-    ESP_LOGI(TAG, "Signature OK");
-} else {
-    ESP_LOGE(TAG, "Signature FAILED!");
-}
+// 3. Decrypt with NaCl crypto_box (XSalsa20-Poly1305)
+int result = crypto_box_open_easy_afternm(
+    plaintext, ciphertext, ciphertext_len, nonce, shared);
+// result == 0 = success
 ```
 
 ---
@@ -451,41 +454,9 @@ subMode: 'S' for SMSubscribe (required for v6+)
 ```
 "IDS " [len][recipientId] [len][senderId] [len][serverDhKey SPKI]
 
-recipientId: 24 bytes, used for SUB command
-senderId: 24 bytes, for sender identification
+recipientId: 24 bytes, used for SUB/ACK commands
+senderId: 24 bytes, used for SEND command
 serverDhKey: 44 bytes SPKI, for key exchange
-```
-
-**Example Code:**
-```c
-uint8_t trans_body[256];
-int pos = 0;
-
-// CorrId
-trans_body[pos++] = 1;     // Length
-trans_body[pos++] = '1';   // Value
-
-// EntityId (empty for NEW)
-trans_body[pos++] = 0;     // Length = 0
-
-// Command
-trans_body[pos++] = 'N';
-trans_body[pos++] = 'E';
-trans_body[pos++] = 'W';
-trans_body[pos++] = ' ';
-
-// rcvAuthKey (SPKI)
-trans_body[pos++] = 44;    // Length
-memcpy(&trans_body[pos], rcv_auth_spki, 44);
-pos += 44;
-
-// rcvDhKey (SPKI)
-trans_body[pos++] = 44;    // Length
-memcpy(&trans_body[pos], rcv_dh_spki, 44);
-pos += 44;
-
-// subMode
-trans_body[pos++] = 'S';   // SMSubscribe
 ```
 
 ### SUB - Subscribe to Queue
@@ -497,6 +468,7 @@ Subscribe to receive messages from a queue.
 "SUB"
 
 EntityId: recipientId from IDS response
+Auth: Signed with rcvAuthKey
 ```
 
 **Response:**
@@ -505,47 +477,83 @@ EntityId: recipientId from IDS response
 "ERR [code]" - Error
 ```
 
-**Example Code:**
-```c
-uint8_t sub_body[64];
-int pos = 0;
-
-// CorrId
-sub_body[pos++] = 1;
-sub_body[pos++] = '2';
-
-// EntityId = recipientId (from IDS response)
-sub_body[pos++] = recipient_id_len;  // Usually 24
-memcpy(&sub_body[pos], recipient_id, recipient_id_len);
-pos += recipient_id_len;
-
-// Command
-sub_body[pos++] = 'S';
-sub_body[pos++] = 'U';
-sub_body[pos++] = 'B';
-```
-
-### SEND - Send Message (Planned)
+### SEND - Send Message
 
 Send a message to a queue.
 
 **Request:**
 ```
-"SEND " [msgFlags] [msgBody]
+"SEND " [msgFlags] " " [msgBody]
 
-msgFlags: Message flags
-msgBody: Encrypted message content
+EntityId: senderId from IDS response
+msgFlags: 'T' or 'F' (ASCII, NOT binary!)
+msgBody: Message content (encrypted)
+Auth: None for unsecured queues (authLen = 0)
 ```
 
-### ACK - Acknowledge Message (Planned)
+**Response:**
+```
+"OK" - Message delivered
+"MSG " [msgId] [encrypted body] - Echo back to subscriber
+```
 
-Acknowledge receipt of a message.
+### ACK - Acknowledge Message ✅ NEW in v0.1.7
+
+Acknowledge receipt of a message, removing it from the queue.
 
 **Request:**
 ```
-"ACK " [msgId]
+"ACK " [msgIdLen][msgId]
 
-msgId: Message ID from MSG response
+EntityId: recipientId (NOT senderId!)
+Auth: Signed with rcvAuthKey
+```
+
+**Response:**
+```
+"OK" - Message acknowledged and deleted
+"ERR NO_MSG" - Message not found
+```
+
+**Implementation:**
+```c
+uint8_t ack_body[64];
+int ap = 0;
+
+// CorrId
+ack_body[ap++] = 1;
+ack_body[ap++] = '4';
+
+// EntityId = recipientId (CRITICAL: NOT senderId!)
+ack_body[ap++] = recipient_id_len;
+memcpy(&ack_body[ap], recipient_id, recipient_id_len);
+ap += recipient_id_len;
+
+// Command: "ACK " + msgId
+ack_body[ap++] = 'A';
+ack_body[ap++] = 'C';
+ack_body[ap++] = 'K';
+ack_body[ap++] = ' ';
+
+// msgId with length prefix
+ack_body[ap++] = msgIdLen;
+memcpy(&ack_body[ap], msg_id, msgIdLen);
+ap += msgIdLen;
+
+// Sign with rcvAuthKey
+// ... (standard signature process)
+```
+
+### DEL - Delete Queue (Planned)
+
+Delete a queue from the server.
+
+**Request:**
+```
+"DEL"
+
+EntityId: recipientId
+Auth: Signed with rcvAuthKey
 ```
 
 ---
@@ -567,19 +575,8 @@ msgId: Message ID from MSG response
 | `ERR AUTH` | Signature verification failed | Use libsodium, check signed data format |
 | `ERR SESSION` | Invalid sessionId | Include sessionId in transmission |
 | `ERR NO_QUEUE` | Queue doesn't exist | Check recipientId |
+| `ERR NO_MSG` | Message not found | Already ACK'd or expired |
 | `ERR QUOTA` | Server quota exceeded | Try different server |
-
-### Error Debugging Flow
-
-```
-ERR BLOCK
-  └─> Fix block format (16KB, padding, length)
-      └─> ERR CMD SYNTAX
-          └─> Fix command format (subMode, parameters)
-              └─> ERR AUTH
-                  └─> Fix signature (libsodium, signed data format)
-                      └─> SUCCESS!
-```
 
 ---
 
@@ -591,72 +588,31 @@ ERR BLOCK
 
 **Problem**: Connection rejected with invalid keyHash.
 
-**Discovery**: keyHash must be computed from the **CA certificate** (second in chain), not the server certificate.
-
-**Solution**:
-```c
-// Parse certificate chain
-parse_cert_chain(hello, content_len, &cert1_off, &cert1_len, &cert2_off, &cert2_len);
-
-// Hash CA certificate (cert2), not server certificate (cert1)
-if (cert2_off >= 0) {
-    mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
-}
-```
+**Solution**: keyHash must be computed from the **CA certificate** (second in chain), not the server certificate.
 
 #### 2. Ed25519 Library Compatibility
 
 **Problem**: `ERR AUTH` despite correct signature format.
 
-**Discovery**: Monocypher and libsodium produce **different Ed25519 signatures** for identical input! SimpleX servers use crypton (libsodium-compatible).
-
-**Solution**: Use ESP-IDF's libsodium component instead of Monocypher.
-
-```yaml
-# idf_component.yml
-dependencies:
-  espressif/libsodium: "^1.0.20"
-```
+**Solution**: Use libsodium, not Monocypher. SimpleX servers use crypton (libsodium-compatible).
 
 #### 3. Block Format Differentiation
 
 **Problem**: `ERR BLOCK` after successful handshake.
 
-**Discovery**: Handshake messages and commands use different block formats.
+**Solution**: Handshake messages and commands use different block formats.
 
-**Handshake Block**:
-```
-[contentLen 2 bytes][content][padding]
-```
+#### 4. MsgFlags Encoding
 
-**Command Block**:
-```
-[originalLen 2 bytes][txCount 1 byte][txLen 2 bytes][transmission][padding]
-```
+**Problem**: `ERR CMD SYNTAX` on SEND.
 
-#### 4. SubMode Requirement
+**Solution**: msgFlags must be ASCII 'T' or 'F', NOT binary 0x00/0x01.
 
-**Problem**: `ERR CMD SYNTAX` on NEW command.
+#### 5. ACK EntityId
 
-**Discovery**: SMP v6+ requires a `subMode` parameter on NEW command.
+**Problem**: `ERR AUTH` on ACK command.
 
-**Solution**: Append `'S'` (SMSubscribe) after DH key:
-```c
-trans_body[pos++] = 'S';  // subMode = SMSubscribe
-```
-
-#### 5. Signed Data Format
-
-**Problem**: Signature verification failed on server.
-
-**Discovery**: The signed data includes a length-prefixed sessionId, not raw sessionId.
-
-**Correct Format**:
-```
-[0x20][sessionId 32 bytes][transmission_body]
- ^^^^
- Length prefix!
-```
+**Solution**: ACK uses recipientId as EntityId, NOT senderId. ACK is a Recipient command.
 
 ### Performance Considerations
 
@@ -666,6 +622,7 @@ trans_body[pos++] = 'S';  // subMode = SMSubscribe
 | Ed25519 sign | ~8ms |
 | Ed25519 verify | ~21ms |
 | X25519 keygen | ~8ms |
+| crypto_box decrypt | ~1ms |
 | SHA-256 | <1ms |
 | TLS handshake | ~800ms |
 
