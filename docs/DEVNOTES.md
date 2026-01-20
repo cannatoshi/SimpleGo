@@ -4,7 +4,7 @@
 
 ---
 
-## Current Status (20. Januar 2026)
+## Current Status (January 20, 2026)
 
 ### Version: v0.1.9-alpha
 
@@ -20,6 +20,24 @@ All base SMP commands implemented:
 | MSG | Receive + decrypt | ✅ |
 | ACK | Acknowledge | ✅ |
 | DEL | Delete queue | ✅ |
+
+**Latest Output:**
+```
+I (5765) SMP: ========================================
+I (5765) SMP:   SimpleGo v0.1.9 - Full SMP Client
+I (5765) SMP:   Part of Sentinel Secure Messenger Suite
+I (5765) SMP: ========================================
+I (6088) SMP: [1/7] Establishing TCP + TLS connection...
+I (6288) SMP:       TLS OK! ALPN: smp/1
+I (6288) SMP: [2/7] Waiting for ServerHello...
+I (6488) SMP:       Server versions: 6-8
+I (6488) SMP: [3/7] Sending ClientHello...
+I (6598) SMP: [4/7] Loading keys from NVS...
+I (6598) SMP:       NVS: Keys loaded!
+I (6598) SMP: [5-6] Skipping NEW - using saved queue!
+I (6608) SMP: [7/7] Sending SUB command...
+I (6858) SMP:   ✅ SUBSCRIBED! Ready to receive messages.
+```
 
 ---
 
@@ -47,86 +65,62 @@ All base SMP commands implemented:
 
 ---
 
-## Today's Addition: DEL Command (v0.1.9)
+## Build Environment
 
-### New Function
-
-```c
-static void delete_queue(mbedtls_ssl_context *ssl, uint8_t *block,
-                         const uint8_t *session_id,
-                         const uint8_t *recipient_id, uint8_t recipient_id_len,
-                         const uint8_t *rcv_auth_secret);
+**Windows (ESP-IDF 5.5 PowerShell):**
+```powershell
+cd C:\Espressif\projects\simplex_client
+idf.py build flash monitor -p COM5
 ```
 
-### DEL Command Format
-
-```
-[sigLen=64][signature]
-[sessLen=32][sessionId]
-[corrIdLen][corrId]
-[entityIdLen][recipientId]    ← Recipient Command (like SUB, ACK)
-"DEL"                         ← No parameters!
-```
-
-### From Haskell Source
-
-```haskell
-DEL :: Command Recipient    -- Recipient Command
-DEL -> e DEL_               -- Format: just "DEL", no params
-```
-
-### What Happens
-
-1. DEL command sent to server
-2. Server deletes queue + all messages
-3. Server responds with `OK`
-4. Local NVS keys automatically cleared
-
-### Proof - Log Output
-
-```
-I (187810) SMP:   🗑️ Deleting queue...
-I (187930) SMP:   DEL sent!
-I (188170) SMP:   ✅ Queue deleted from server!
-I (188190) SMP:       NVS: Keys cleared!
-I (188190) SMP:   ✅ NVS cleared!
+**WSL (for Haskell source analysis):**
+```bash
+cd ~/simplexmq
+grep -r "pattern" src --include="*.hs"
 ```
 
 ---
 
-## Previous Additions
+## Key Technical References
 
-### v0.1.8 - NVS Persistence
+### Haskell Source Files
 
-```c
-bool have_saved_keys()      // Check if keys exist
-bool load_keys_from_nvs()   // Load all keys
-void save_keys_to_nvs()     // Save after IDS
-void clear_saved_keys()     // Delete all (reset)
+| File | Purpose | Key Functions |
+|------|---------|---------------|
+| Protocol.hs | Command definitions | NEW, SUB, SEND, ACK, DEL patterns |
+| Transport.hs | Block framing | tPutBlock, tGetBlock |
+| Client.hs | Client logic | createSMPQueue |
+| Crypto.hs | Signatures | signSMP, verifySMP |
+| Encoding.hs | Binary encoding | smpEncode, smpDecode |
+
+### Useful grep Commands
+
+```bash
+# Find signature encoding
+grep -r "signSMP\|smpEncode" --include="*.hs"
+
+# Find command structure
+grep -r "pattern NEW\|pattern SUB\|pattern DEL" --include="*.hs"
+
+# Find transmission format
+grep -r "tEncodeAuth" --include="*.hs"
+
+# Find error types
+grep -r "ErrorType\|ERR" --include="*.hs"
+
+# Find DEL command
+grep -r "DEL\|pattern DEL_" --include="*.hs"
 ```
 
-### v0.1.7 - ACK Command
+---
 
-```c
-// ACK is a Recipient command (like SUB)
-// EntityId = recipientId (NOT senderId!)
-ack_body = [corrId] + [recipientId] + "ACK " + [msgIdLen][msgId]
-signature = sign([0x20][sessionId] + ack_body)
-```
+## Test Servers
 
-### v0.1.6 - E2E Decryption
-
-```c
-// DH Shared Secret
-crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
-
-// Nonce = msgId (24 bytes, zero-padded)
-uint8_t nonce[24] = {0};
-memcpy(nonce, msg_id, msgIdLen);
-
-// Decrypt
-crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
-```
+| Server | Host | Port | Status |
+|--------|------|------|--------|
+| SimpleX Flux 3 | smp3.simplexonflux.com | 5223 | ✅ Working |
+| SimpleX Flux 4 | smp4.simplexonflux.com | 5223 | Untested |
+| SimpleX Official | smp.simplex.im | 5223 | Untested |
 
 ---
 
@@ -140,6 +134,82 @@ crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
 | `Ctrl+T, P` | Pause output |
 
 Sehr nützlich für Reboot-Tests! 🔄
+
+---
+
+## Session Updates
+
+### v0.1.9-alpha - DEL Command
+
+**New Function:**
+```c
+static void delete_queue(mbedtls_ssl_context *ssl, uint8_t *block,
+                         const uint8_t *session_id,
+                         const uint8_t *recipient_id, uint8_t recipient_id_len,
+                         const uint8_t *rcv_auth_secret);
+```
+
+**DEL Command Format:**
+```
+[sigLen=64][signature]
+[sessLen=32][sessionId]
+[corrIdLen][corrId]
+[entityIdLen][recipientId]    ← Recipient Command (like SUB, ACK)
+"DEL"                         ← No parameters!
+```
+
+**From Haskell Source:**
+```haskell
+DEL :: Command Recipient    -- Recipient Command
+DEL -> e DEL_               -- Format: just "DEL", no params
+```
+
+**What Happens:**
+1. DEL command sent to server
+2. Server deletes queue + all messages
+3. Server responds with `OK`
+4. Local NVS keys automatically cleared
+
+**Proof - Log Output:**
+```
+I (187810) SMP:   🗑️ Deleting queue...
+I (187930) SMP:   DEL sent!
+I (188170) SMP:   ✅ Queue deleted from server!
+I (188190) SMP:       NVS: Keys cleared!
+I (188190) SMP:   ✅ NVS cleared!
+```
+
+### v0.1.8-alpha - NVS Persistence
+
+```c
+bool have_saved_keys()      // Check if keys exist
+bool load_keys_from_nvs()   // Load all keys
+void save_keys_to_nvs()     // Save after IDS
+void clear_saved_keys()     // Delete all (reset)
+```
+
+### v0.1.7-alpha - ACK Command
+
+```c
+// ACK is a Recipient command (like SUB)
+// EntityId = recipientId (NOT senderId!)
+ack_body = [corrId] + [recipientId] + "ACK " + [msgIdLen][msgId]
+signature = sign([0x20][sessionId] + ack_body)
+```
+
+### v0.1.6-alpha - E2E Decryption
+
+```c
+// DH Shared Secret
+crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
+
+// Nonce = msgId (24 bytes, zero-padded)
+uint8_t nonce[24] = {0};
+memcpy(nonce, msg_id, msgIdLen);
+
+// Decrypt
+crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
+```
 
 ---
 
@@ -178,6 +248,8 @@ Sehr nützlich für Reboot-Tests! 🔄
 | MsgFlags binary | Use ASCII 'T'/'F' | 20.01.2026 |
 | ERR AUTH | Switch to libsodium | 19.01.2026 |
 | Wrong keyHash | Use CA cert (2nd in chain) | 18.01.2026 |
+| ERR BLOCK | Use command block format | 19.01.2026 |
+| ERR CMD SYNTAX | Add subMode parameter | 19.01.2026 |
 
 ### Open
 
@@ -186,6 +258,7 @@ Sehr nützlich für Reboot-Tests! 🔄
 | Multiple queues | TODO | Contact management |
 | Connection recovery | TODO | Auto-reconnect |
 | T-Embed UI | TODO | Display integration |
+| Certificate verification | TODO | Currently VERIFY_NONE |
 
 ---
 
@@ -206,7 +279,7 @@ Sehr nützlich für Reboot-Tests! 🔄
 
 ## Session Log
 
-### 20. Januar 2026 (Heute)
+### January 20, 2026 (Today)
 
 **v0.1.9-alpha - DEL COMMAND + FULL SMP CLIENT! 🗑️**
 - DEL command implementation
@@ -231,24 +304,34 @@ Sehr nützlich für Reboot-Tests! 🔄
 - XSalsa20-Poly1305 decryption
 - Full round-trip: SEND → MSG → Decrypt
 
-### 19. Januar 2026
+**v0.1.5-alpha - SEND + MSG! 📨**
+- SEND command implementation
+- MSG receive parsing
+- MsgFlags must be ASCII!
 
-- NEW command working (v0.1.3-alpha)
+### January 19, 2026
+
+- NEW command working (v0.4.0)
 - libsodium fix for Ed25519
+- PING test (v0.3.3)
+- Block format differentiation
 
-### 18. Januar 2026
+### January 18, 2026
 
-- Handshake complete (v0.1.2-alpha)
+- Handshake complete (v0.3.0)
 - keyHash from CA certificate
+- Ed25519 signature generation
 
-### 17. Januar 2026
+### January 17, 2026
 
-- TLS 1.3 working (v0.1.1-alpha)
+- TLS 1.3 working (v0.2.0)
+- ALPN negotiation
 
-### 16. Januar 2026
+### January 16, 2026
 
-- Initial structure (v0.1.0-alpha)
+- Initial structure (v0.1.0)
+- WiFi + TCP connection
 
 ---
 
-*Last updated: 20. Januar 2026*
+*Last updated: January 20, 2026*
