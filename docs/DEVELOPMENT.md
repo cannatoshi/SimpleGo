@@ -138,6 +138,13 @@ idf.py build flash monitor -p /dev/ttyUSB0
 ┌─────────────────────────────────────────┐
 │           Application Layer             │
 ├─────────────────────────────────────────┤
+│  Invitation Links (v0.1.11+)            │
+│  ├── SMP Queue URI Generation           │
+│  ├── SimpleX Contact Link (Web)         │
+│  ├── Direct App Link (simplex:/)        │
+│  ├── Base64 Standard Encoding           │
+│  └── URL Encoding (double for +/=)      │
+├─────────────────────────────────────────┤
 │  Contact Management (v0.1.10+)          │
 │  ├── contacts_db_t (10 slots)           │
 │  ├── add/remove/list_contacts()         │
@@ -162,27 +169,17 @@ idf.py build flash monitor -p /dev/ttyUSB0
 └─────────────────────────────────────────┘
 ```
 
-### Data Structures (v0.1.10)
+### New Functions (v0.1.11)
 
 ```c
-#define MAX_CONTACTS 10
+// Base64 Standard encoding (+ / = characters)
+void base64_standard_encode(const uint8_t *input, size_t len, char *output);
 
-typedef struct {
-    char name[32];
-    uint8_t rcv_auth_secret[64];  // Ed25519
-    uint8_t rcv_auth_public[32];
-    uint8_t rcv_dh_secret[32];    // X25519
-    uint8_t rcv_dh_public[32];
-    uint8_t recipient_id[24];
-    uint8_t sender_id[24];
-    uint8_t srv_dh_public[32];
-    uint8_t active;
-} contact_t;
+// URL encoding with proper escaping
+void url_encode(const char *input, char *output, size_t max_len);
 
-typedef struct {
-    uint8_t num_contacts;
-    contact_t contacts[MAX_CONTACTS];
-} contacts_db_t;
+// Generate and print all invitation link formats
+void print_invitation_links(void);
 ```
 
 ---
@@ -301,6 +298,14 @@ crypto_scalarmult(shared, secret, public);
 crypto_box_beforenm(shared, public, secret);
 ```
 
+#### Invitation Links Not Working
+
+**Fix**: Check encoding:
+- Base64 Standard (NOT base64url!) for DH key
+- Double URL encode `+` and `=` in Base64 DH key
+- Include `q=c` parameter for queue mode
+- Version ranges: outer `v=2-7`, inner `v=1-4`
+
 ### Hex Dump Helper
 
 ```c
@@ -333,6 +338,31 @@ void hex_dump(const char *label, const uint8_t *data, size_t len) {
 5. Watch for "Loaded 2 contacts"
 6. Watch for "Subscriptions complete: 2/2"
 
+### Invitation Link Test (v0.1.11+)
+
+1. Create a contact with `add_contact("Test")`
+2. Watch for invitation links in output:
+   ```
+   🔗 SIMPLEX CONTACT LINKS ════════════════════════════════
+   📱 [0] Test ──────────────────────────────────────────────
+   📋 SMP Queue URI (raw):
+      smp://1jne...@smp3.simplexonflux.com:5223/XLEV...#/?v=1-4&dh=MCow...&q=c
+   
+   🌐 SimpleX Contact Link (COPY THIS!):
+      https://simplex.chat/contact#/?v=2-7&smp=smp%3A%2F%2F...
+   ```
+3. Copy the 🌐 Web Link
+4. Open in browser → Should show SimpleX landing page
+5. Open link in SimpleX Desktop/Mobile App
+6. Click "Connect" in SimpleX App
+7. Send a message from SimpleX App
+8. Watch ESP32 output for:
+   ```
+   💬 MESSAGE for [Test]!
+   🔓 DECRYPTED: <your message>
+   ✅ ACK OK
+   ```
+
 ### Self-Test (E2E Round-Trip)
 
 The self-test sends a message to your own queue and verifies decryption:
@@ -344,11 +374,6 @@ The self-test sends a message to your own queue and verifies decryption:
 🔓 DECRYPTED: Hello from ESP32!
 ✅ ACK OK
 ```
-
-If decryption fails, check:
-- `crypto_box_beforenm()` vs `crypto_scalarmult()`
-- Server DH key stored correctly from IDS response
-- Nonce = msgId (zero-padded to 24 bytes)
 
 ### NVS Tests
 
@@ -411,14 +436,14 @@ Types: `feat`, `fix`, `docs`, `refactor`, `test`
 
 Examples:
 ```bash
-git commit -m "feat(contacts): add multi-contact support"
-git commit -m "fix(crypto): use crypto_box_beforenm for E2E"
+git commit -m "feat(links): add SimpleX-compatible invitation links"
+git commit -m "fix(encoding): double URL encode Base64 special chars"
 ```
 
 ### Tagging Releases
 
 ```bash
-git tag -a v0.1.10-alpha -m "Multi-Contact + E2E"
+git tag -a v0.1.11-alpha -m "Invitation Links Working"
 git push origin main --tags
 ```
 
@@ -433,4 +458,4 @@ git push origin main --tags
 
 ---
 
-*Last updated: January 20, 2026 — v0.1.10-alpha*
+*Last updated: January 20, 2026 — v0.1.11-alpha*
