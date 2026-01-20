@@ -104,25 +104,6 @@ load_keys_from_nvs()
   └── No keys? ──► NEW ──► IDS ──► save_keys_to_nvs() ──► SUB
 ```
 
-### Proof - Reboot Log
-
-**First Start (NEW + Save):**
-```
-I (6769) SMP:   🎉🎉🎉 QUEUE CREATED! 🎉🎉🎉
-I (6779) SMP:   📥 RecipientId (24 bytes): cb1ab7dfa04183e65fe52aeb7fa7118162b3c76e543284c3
-I (6809) SMP:       NVS: Keys saved!
-```
-
-**After Reboot (Load + Skip NEW):**
-```
-I (6289) SMP:       NVS: Keys loaded!
-I (6289) SMP:       rcvAuthKey: e92b3e5b...
-I (6289) SMP:       recipientId (24 bytes): cb1ab7df...
-I (6289) SMP:   [4-6] Skipping NEW - using saved queue!
-I (6299) SMP:   [7/7] Sending SUB command...
-I (6659) SMP:   ✅ SUBSCRIBED! Ready to receive messages.
-```
-
 ---
 
 ## [0.1.7-alpha] - 2026-01-20
@@ -144,9 +125,6 @@ ACK Format:
   [corrIdLen][corrId]
   [entityIdLen][recipientId]    ← NOT senderId!
   "ACK " [msgIdLen][msgId]
-
-Signature covers:
-  [0x20][sessionId] + [corrId + entityId + "ACK " + msgId]
 ```
 
 ### Protocol Note: SMP Versions
@@ -208,45 +186,132 @@ SEND command working, MSG receive implemented, complete message loop operational
 
 ---
 
-## [0.1.4-alpha] - 2026-01-20
+## [0.4.1] - 2026-01-20
+
+### 🎉 Major Milestone: Full Queue Lifecycle Working!
+
+This release marks a **historic achievement** — the first successful native SMP client implementation outside of the official Haskell codebase.
 
 ### Added
 - **SUB command implementation** — Subscribe to created queues
-- SUB response parsing with transport format handling
-- Queue subscription confirmation
+- Queue subscription confirmation handling
+- RecipientId storage for SUB command usage
+- Complete NEW → IDS → SUB → OK flow
+
+### Technical Details
+```
+NEW command → Server returns IDS with:
+  - RecipientId (24 bytes) — Used for SUB command
+  - SenderId (24 bytes) — For sender identification  
+  - ServerDhKey (44 bytes SPKI) — For key exchange
+
+SUB command → Server returns OK
+  - Queue now active for message reception
+```
 
 ---
 
-## [0.1.3-alpha] - 2026-01-19
+## [0.4.0] - 2026-01-19
 
 ### 🎉 Breakthrough: Queue Creation Working!
 
 ### Added
 - **NEW command with successful IDS response** — First working queue creation!
 - SPKI key encoding for Ed25519 and X25519 keys
-- SubMode parameter ('S' for SMSubscribe)
+- SubMode parameter ('S' for SMSubscribe) — Required for SMP v6
 - Local signature verification before sending
 
 ### Fixed
-- **CRITICAL: Switched from Monocypher to libsodium** — Monocypher Ed25519 signatures incompatible with SimpleX servers
+- **Critical: Switched from Monocypher to libsodium** — Monocypher Ed25519 signatures are incompatible with SimpleX servers (crypton library)
+
+### Technical Discovery
+```
+Monocypher vs libsodium Ed25519 signatures:
+- Same input data
+- Same key material  
+- DIFFERENT signatures!
+- SimpleX uses crypton (libsodium-compatible)
+- Solution: Use ESP-IDF's libsodium component
+```
 
 ---
 
-## [0.1.2-alpha] - 2026-01-18
+## [0.3.3] - 2026-01-19
+
+### Added
+- PING command test implementation
+- Command block format (vs handshake block format)
+- TransmissionCount and TransmissionLength headers
+
+### Fixed
+- Block format differentiation between handshake and commands
+- Proper transport block structure with padding
+
+### Error Progression
+```
+ERR BLOCK → Fixed block format
+ERR CMD SYNTAX → Added subMode parameter
+ERR AUTH → Switched to libsodium (next version)
+```
+
+---
+
+## [0.3.2] - 2026-01-19
+
+### Added
+- Transport block format implementation
+- 16KB block padding with '#' character
+- Content length prefix (2 bytes, big-endian)
+
+---
+
+## [0.3.1] - 2026-01-18
+
+### Added
+- Ed25519 signature generation for transmission authentication
+- SessionId integration in signed data
+- Transmission body structure (corrId, entityId, command)
+
+### Technical Details
+```
+Signed data format:
+  [0x20][sessionId 32 bytes][transmission_body]
+  
+Transmission format:
+  [sigLen][signature 64 bytes]
+  [sessLen][sessionId 32 bytes]
+  [corrIdLen][corrId]
+  [entityIdLen][entityId]
+  [command...]
+```
+
+---
+
+## [0.3.0] - 2026-01-18
 
 ### 🎉 Handshake Complete!
 
 ### Added
-- **ClientHello with correct keyHash** — Handshake succeeds!
+- **ClientHello with correct keyHash** — Handshake now succeeds!
 - Certificate chain parsing (server cert + CA cert)
-- SHA-256 hash computation for keyHash
+- SHA-256 hash of CA certificate for keyHash
 
 ### Fixed
-- **CRITICAL: keyHash must use CA certificate (2nd in chain)**, not server certificate
+- **Critical: keyHash must be computed from CA certificate (2nd in chain), not server certificate**
 
 ---
 
-## [0.1.1-alpha] - 2026-01-17
+## [0.2.5] - 2026-01-18
+
+### Added
+- ServerHello parsing and validation
+- Protocol version extraction (minVer, maxVer)
+- SessionId extraction (32 bytes)
+- Certificate data extraction from ServerHello
+
+---
+
+## [0.2.0] - 2026-01-17
 
 ### 🎉 TLS 1.3 Working!
 
@@ -254,11 +319,11 @@ SEND command working, MSG receive implemented, complete message loop operational
 - **TLS 1.3 connection with ChaCha20-Poly1305**
 - ALPN negotiation for "smp/1"
 - Cipher suite restriction to TLS 1.3 only
-- SNI support
+- SNI (Server Name Indication) support
 
 ---
 
-## [0.1.0-alpha] - 2026-01-16
+## [0.1.0] - 2026-01-16
 
 ### Initial Release
 
@@ -267,6 +332,30 @@ SEND command working, MSG receive implemented, complete message loop operational
 - WiFi connection handling
 - Basic TCP socket connection
 - Initial mbedTLS integration
+
+---
+
+## Version Numbering
+
+- **0.x.x** — Pre-release development
+- **Major.Minor.Patch** — Standard semver after 1.0.0
+- Internal versions (v3.3, v4.1) map to semver releases
+
+### Internal to Semver Mapping
+
+| Internal | Semver | Milestone |
+|----------|--------|-----------|
+| v1.0 | 0.1.0 | Initial structure |
+| v2.0 | 0.2.0 | TLS 1.3 working |
+| v3.0 | 0.3.0 | Handshake complete |
+| v3.3 | 0.3.3 | PING test |
+| v4.0 | 0.4.0 | NEW command working |
+| v4.1 | 0.4.1 | SUB command working |
+| - | 0.1.5-alpha | SEND + MSG |
+| - | 0.1.6-alpha | E2E Encryption |
+| - | 0.1.7-alpha | ACK command |
+| - | 0.1.8-alpha | NVS Persistence |
+| - | 0.1.9-alpha | DEL + Full SMP Client |
 
 ---
 
@@ -279,11 +368,11 @@ SEND command working, MSG receive implemented, complete message loop operational
 | v0.1.7-alpha | 2026-01-20 | 🎯 ACK Command |
 | v0.1.6-alpha | 2026-01-20 | 🏆 E2E Decryption! |
 | v0.1.5-alpha | 2026-01-20 | SEND + MSG receive |
-| v0.1.4-alpha | 2026-01-20 | SUB command |
-| v0.1.3-alpha | 2026-01-19 | NEW command (libsodium fix) |
-| v0.1.2-alpha | 2026-01-18 | Handshake (keyHash fix) |
-| v0.1.1-alpha | 2026-01-17 | TLS 1.3 |
-| v0.1.0-alpha | 2026-01-16 | Initial |
+| v0.4.1 | 2026-01-20 | SUB command |
+| v0.4.0 | 2026-01-19 | NEW command (libsodium fix) |
+| v0.3.0 | 2026-01-18 | Handshake (keyHash fix) |
+| v0.2.0 | 2026-01-17 | TLS 1.3 |
+| v0.1.0 | 2026-01-16 | Initial |
 
 ---
 
