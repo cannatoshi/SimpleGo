@@ -1,14 +1,16 @@
 /**
  * SimpleGo - Native SimpleX SMP Client for ESP32
- * v4.3 - Full message lifecycle: NEW, SUB, SEND, MSG, ACK
+ * v0.1.10-alpha - Multi-Contact Test
+ * github.com/cannatoshi/SimpleGo
+ * Autor: cannatoshi
  * 
  * Features:
  *   - TLS 1.3 with ALPN "smp/1"
  *   - Ed25519 signing (libsodium)
  *   - X25519 DH key exchange
- *   - XSalsa20-Poly1305 decryption
  *   - SMP v6 protocol
- *   - Full message lifecycle with ACK
+ *   - NVS persistent contact storage
+ *   - Multiple contacts over single connection
  */
 
 #include <string.h>
@@ -34,13 +36,13 @@
 #include "mbedtls/error.h"
 #include "mbedtls/sha256.h"
 
-#include "sodium.h"  // libsodium for Ed25519
+#include "sodium.h"  // libsodium for Ed25519 + X25519
 
 static const char *TAG = "SMP";
 
 // ============== CONFIG ==============
-#define WIFI_SSID     "YOUR_WIFI_SSID"
-#define WIFI_PASS     "YOUR_WIFI_PASSWORD"
+#define WIFI_SSID     "SONCLOUD"
+#define WIFI_PASS     "MKwlan1d250e-mured5"
 #define SMP_HOST      "smp3.simplexonflux.com"
 #define SMP_PORT      5223
 #define SMP_BLOCK_SIZE 16384
@@ -60,6 +62,60 @@ static const int ciphersuites[] = {
     MBEDTLS_TLS1_3_CHACHA20_POLY1305_SHA256,
     0
 };
+
+// ============== Base64URL Encoding ==============
+
+static const char base64url_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+static int base64url_encode(const uint8_t *input, int input_len, char *output, int output_max) {
+    int i, j;
+    for (i = 0, j = 0; i < input_len && j < output_max - 4; ) {
+        uint32_t octet_a = i < input_len ? input[i++] : 0;
+        uint32_t octet_b = i < input_len ? input[i++] : 0;
+        uint32_t octet_c = i < input_len ? input[i++] : 0;
+        uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
+        
+        output[j++] = base64url_chars[(triple >> 18) & 0x3F];
+        output[j++] = base64url_chars[(triple >> 12) & 0x3F];
+        output[j++] = base64url_chars[(triple >> 6) & 0x3F];
+        output[j++] = base64url_chars[triple & 0x3F];
+    }
+    
+    // Remove padding
+    int mod = input_len % 3;
+    if (mod == 1) j -= 2;
+    else if (mod == 2) j -= 1;
+    
+    output[j] = '\0';
+    return j;
+}
+
+// ============== Contact Data Structures ==============
+
+#define MAX_CONTACTS 10
+#define NVS_NAMESPACE "simplego"
+
+typedef struct {
+    char name[32];                                    // Contact name
+    uint8_t rcv_auth_secret[crypto_sign_SECRETKEYBYTES]; // 64 bytes
+    uint8_t rcv_auth_public[crypto_sign_PUBLICKEYBYTES]; // 32 bytes
+    uint8_t rcv_dh_secret[32];                        // X25519 secret
+    uint8_t rcv_dh_public[32];                        // X25519 public
+    uint8_t recipient_id[24];                         // Queue recipient ID
+    uint8_t recipient_id_len;
+    uint8_t sender_id[24];                            // Queue sender ID
+    uint8_t sender_id_len;
+    uint8_t srv_dh_public[32];                        // Server DH public key
+    uint8_t have_srv_dh;                              // 1 if srv_dh_public is valid
+    uint8_t active;                                   // 1=active, 0=slot free
+} contact_t;
+
+typedef struct {
+    uint8_t num_contacts;
+    contact_t contacts[MAX_CONTACTS];
+} contacts_db_t;
+
+static contacts_db_t contacts_db;
 
 // ============== TCP Helpers ==============
 
@@ -149,7 +205,7 @@ static int read_exact(mbedtls_ssl_context *ssl, uint8_t *buf, size_t len, int ti
         
         if ((get_tick_ms() - start) > (TickType_t)timeout_ms) {
             if (received > 0) return received;
-            return -2;
+            return -2;  // Timeout
         }
     }
     return received;
@@ -167,7 +223,7 @@ static int smp_read_block(mbedtls_ssl_context *ssl, uint8_t *block, int timeout_
     return content_len;
 }
 
-// Write a HANDSHAKE block (simple format)
+// Write a HANDSHAKE block (simple format: length + content + padding)
 static int smp_write_handshake_block(mbedtls_ssl_context *ssl, uint8_t *block, 
                                       const uint8_t *content, size_t content_len) {
     if (content_len > SMP_BLOCK_SIZE - 2) return -1;
@@ -192,7 +248,7 @@ static int smp_write_handshake_block(mbedtls_ssl_context *ssl, uint8_t *block,
     return 0;
 }
 
-// Write a COMMAND block (transport format)
+// Write a COMMAND block (transport format with txCount + txLen)
 static int smp_write_command_block(mbedtls_ssl_context *ssl, uint8_t *block,
                                     const uint8_t *transmission, size_t trans_len) {
     memset(block, '#', SMP_BLOCK_SIZE);
@@ -237,6 +293,7 @@ static int parse_cert_chain(const uint8_t *data, int len,
     *cert1_off = -1;
     *cert2_off = -1;
     
+    // Find first certificate (0x30 0x82 = ASN.1 SEQUENCE)
     for (int i = 0; i < len - 4; i++) {
         if (data[i] == 0x30 && data[i+1] == 0x82) {
             *cert1_off = i;
@@ -247,6 +304,7 @@ static int parse_cert_chain(const uint8_t *data, int len,
     
     if (*cert1_off < 0) return -1;
     
+    // Find second certificate (CA cert for keyHash)
     int search_start = *cert1_off + *cert1_len;
     for (int i = search_start; i < len - 4; i++) {
         if (data[i] == 0x30 && data[i+1] == 0x82) {
@@ -295,6 +353,635 @@ static void wifi_init(void) {
     ESP_ERROR_CHECK(esp_wifi_connect());
 }
 
+// ============== NVS Functions ==============
+
+static bool load_contacts_from_nvs(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGI(TAG, "NVS: No saved contacts found");
+        memset(&contacts_db, 0, sizeof(contacts_db));
+        return false;
+    }
+    
+    size_t required_size = sizeof(contacts_db_t);
+    err = nvs_get_blob(handle, "contacts", &contacts_db, &required_size);
+    nvs_close(handle);
+    
+    if (err == ESP_OK && contacts_db.num_contacts > 0) {
+        ESP_LOGI(TAG, "NVS: Loaded %d contact(s)!", contacts_db.num_contacts);
+        for (int i = 0; i < MAX_CONTACTS; i++) {
+            if (contacts_db.contacts[i].active) {
+                ESP_LOGI(TAG, "      [%d] %s (rcvId: %02x%02x%02x%02x...)", 
+                         i, contacts_db.contacts[i].name,
+                         contacts_db.contacts[i].recipient_id[0],
+                         contacts_db.contacts[i].recipient_id[1],
+                         contacts_db.contacts[i].recipient_id[2],
+                         contacts_db.contacts[i].recipient_id[3]);
+            }
+        }
+        return true;
+    }
+    
+    ESP_LOGI(TAG, "NVS: No saved contacts found");
+    memset(&contacts_db, 0, sizeof(contacts_db));
+    return false;
+}
+
+static bool save_contacts_to_nvs(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS: Failed to open for writing");
+        return false;
+    }
+    
+    err = nvs_set_blob(handle, "contacts", &contacts_db, sizeof(contacts_db_t));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NVS: Failed to save contacts");
+        nvs_close(handle);
+        return false;
+    }
+    
+    err = nvs_commit(handle);
+    nvs_close(handle);
+    
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "NVS: Contacts saved!");
+        return true;
+    }
+    
+    ESP_LOGE(TAG, "NVS: Commit failed");
+    return false;
+}
+
+static void clear_all_contacts(void) {
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err == ESP_OK) {
+        nvs_erase_key(handle, "contacts");
+        nvs_commit(handle);
+        nvs_close(handle);
+        memset(&contacts_db, 0, sizeof(contacts_db));
+        ESP_LOGI(TAG, "NVS: All contacts cleared!");
+    }
+}
+
+// ============== Contact Management ==============
+
+static int find_contact_by_recipient_id(const uint8_t *recipient_id, uint8_t len) {
+    for (int i = 0; i < MAX_CONTACTS; i++) {
+        if (contacts_db.contacts[i].active && 
+            contacts_db.contacts[i].recipient_id_len == len &&
+            memcmp(contacts_db.contacts[i].recipient_id, recipient_id, len) == 0) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void list_contacts(void) {
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "📋 Contact List (%d active):", contacts_db.num_contacts);
+    ESP_LOGI(TAG, "────────────────────────────────────");
+    for (int i = 0; i < MAX_CONTACTS; i++) {
+        if (contacts_db.contacts[i].active) {
+            contact_t *c = &contacts_db.contacts[i];
+            ESP_LOGI(TAG, "  [%d] %s", i, c->name);
+            ESP_LOGI(TAG, "      rcvId: %02x%02x%02x%02x%02x%02x...", 
+                     c->recipient_id[0], c->recipient_id[1], 
+                     c->recipient_id[2], c->recipient_id[3],
+                     c->recipient_id[4], c->recipient_id[5]);
+            ESP_LOGI(TAG, "      srvDH: %s", c->have_srv_dh ? "✅" : "❌");
+        }
+    }
+    ESP_LOGI(TAG, "────────────────────────────────────");
+    ESP_LOGI(TAG, "");
+}
+
+static void print_invitation_links(const uint8_t *ca_hash) {
+    char hash_b64[64];
+    char dh_b64[64];
+    char snd_b64[64];
+    
+    base64url_encode(ca_hash, 32, hash_b64, sizeof(hash_b64));
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔗 CONNECTION INFO (raw SMP queue data):");
+    ESP_LOGI(TAG, "════════════════════════════════════════");
+    
+    for (int i = 0; i < MAX_CONTACTS; i++) {
+        if (!contacts_db.contacts[i].active) continue;
+        
+        contact_t *c = &contacts_db.contacts[i];
+        
+        base64url_encode(c->rcv_dh_public, 32, dh_b64, sizeof(dh_b64));
+        base64url_encode(c->sender_id, c->sender_id_len, snd_b64, sizeof(snd_b64));
+        
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "📱 [%d] %s:", i, c->name);
+        ESP_LOGI(TAG, "   Server:  %s:%d", SMP_HOST, SMP_PORT);
+        ESP_LOGI(TAG, "   keyHash: %s", hash_b64);
+        ESP_LOGI(TAG, "   dhKey:   %s", dh_b64);
+        ESP_LOGI(TAG, "   sndId:   %s", snd_b64);
+        
+        // Print senderId as hex for SEND command
+        printf("   sndId (hex): ");
+        for (int j = 0; j < c->sender_id_len; j++) {
+            printf("%02x", c->sender_id[j]);
+        }
+        printf("\n");
+    }
+    
+    ESP_LOGI(TAG, "════════════════════════════════════════");
+    ESP_LOGI(TAG, "");
+}
+
+// Self-test: Send a message to our own queue
+static void self_test_send(mbedtls_ssl_context *ssl, uint8_t *block,
+                           const uint8_t *session_id, int contact_idx) {
+    if (contact_idx < 0 || contact_idx >= MAX_CONTACTS || !contacts_db.contacts[contact_idx].active) {
+        ESP_LOGE(TAG, "❌ Invalid contact for self-test");
+        return;
+    }
+    
+    contact_t *c = &contacts_db.contacts[contact_idx];
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🧪 SELF-TEST: Sending message to [%d] %s...", contact_idx, c->name);
+    
+    // Create test message - server will encrypt for receiver!
+    const char *test_msg = "Hello from ESP32!";
+    int msg_len = strlen(test_msg);
+    
+    ESP_LOGI(TAG, "   Message: \"%s\" (%d bytes)", test_msg, msg_len);
+    
+    // Build SEND command
+    // Format: corrId | entityId (senderId) | "SEND " | flags | msgBody
+    // Server encrypts msgBody with receiver's DH key!
+    uint8_t send_body[256];
+    int pos = 0;
+    
+    // CorrId
+    send_body[pos++] = 1;
+    send_body[pos++] = 'S';
+    
+    // EntityId = senderId
+    send_body[pos++] = c->sender_id_len;
+    memcpy(&send_body[pos], c->sender_id, c->sender_id_len);
+    pos += c->sender_id_len;
+    
+    // Command: "SEND "
+    send_body[pos++] = 'S';
+    send_body[pos++] = 'E';
+    send_body[pos++] = 'N';
+    send_body[pos++] = 'D';
+    send_body[pos++] = ' ';
+    
+    // Flags = 'F' (no notification) - ASCII not binary!
+    send_body[pos++] = 'F';
+    
+    // Space after flags
+    send_body[pos++] = ' ';
+    
+    // MsgBody - plaintext! Server encrypts for us.
+    memcpy(&send_body[pos], test_msg, msg_len);
+    pos += msg_len;
+    
+    ESP_LOGI(TAG, "   SEND body: %d bytes", pos);
+    
+    // SEND uses senderId for auth (no signature)
+    uint8_t transmission[256];
+    int tpos = 0;
+    
+    // No signature (auth length = 0)
+    transmission[tpos++] = 0;
+    
+    // SessionId
+    transmission[tpos++] = 32;
+    memcpy(&transmission[tpos], session_id, 32);
+    tpos += 32;
+    
+    // Body
+    memcpy(&transmission[tpos], send_body, pos);
+    tpos += pos;
+    
+    ESP_LOGI(TAG, "   Transmission: %d bytes", tpos);
+    
+    // Send
+    int ret = smp_write_command_block(ssl, block, transmission, tpos);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "   ❌ Failed to send SEND");
+        return;
+    }
+    
+    ESP_LOGI(TAG, "   📤 SEND command sent!");
+    ESP_LOGI(TAG, "   Waiting for MSG echo...");
+}
+
+static int add_contact(mbedtls_ssl_context *ssl, uint8_t *block, 
+                       const uint8_t *session_id, const char *name) {
+    // Find free slot
+    int slot = -1;
+    for (int i = 0; i < MAX_CONTACTS; i++) {
+        if (!contacts_db.contacts[i].active) {
+            slot = i;
+            break;
+        }
+    }
+    
+    if (slot < 0) {
+        ESP_LOGE(TAG, "❌ No free contact slot! Max %d contacts.", MAX_CONTACTS);
+        return -1;
+    }
+    
+    contact_t *c = &contacts_db.contacts[slot];
+    memset(c, 0, sizeof(contact_t));
+    strncpy(c->name, name, sizeof(c->name) - 1);
+    
+    ESP_LOGI(TAG, "➕ Creating contact '%s' in slot %d...", name, slot);
+    
+    // Generate Ed25519 keypair for authentication
+    uint8_t seed[32];
+    esp_fill_random(seed, 32);
+    crypto_sign_seed_keypair(c->rcv_auth_public, c->rcv_auth_secret, seed);
+    
+    // Generate X25519 keypair for DH
+    esp_fill_random(c->rcv_dh_secret, 32);
+    crypto_scalarmult_base(c->rcv_dh_public, c->rcv_dh_secret);
+    
+    ESP_LOGI(TAG, "      Keys generated!");
+    
+    // Build SPKI-encoded keys
+    uint8_t rcv_auth_spki[SPKI_KEY_SIZE];
+    memcpy(rcv_auth_spki, ED25519_SPKI_HEADER, 12);
+    memcpy(rcv_auth_spki + 12, c->rcv_auth_public, 32);
+    
+    uint8_t rcv_dh_spki[SPKI_KEY_SIZE];
+    memcpy(rcv_dh_spki, X25519_SPKI_HEADER, 12);
+    memcpy(rcv_dh_spki + 12, c->rcv_dh_public, 32);
+    
+    // Build NEW command body
+    uint8_t trans_body[256];
+    int pos = 0;
+    
+    // CorrId = slot number as single char
+    trans_body[pos++] = 1;
+    trans_body[pos++] = '0' + slot;
+    
+    // EntityId = empty for NEW
+    trans_body[pos++] = 0;
+    
+    // Command: "NEW "
+    trans_body[pos++] = 'N';
+    trans_body[pos++] = 'E';
+    trans_body[pos++] = 'W';
+    trans_body[pos++] = ' ';
+    
+    // rcvAuthKey (SPKI encoded)
+    trans_body[pos++] = SPKI_KEY_SIZE;
+    memcpy(&trans_body[pos], rcv_auth_spki, SPKI_KEY_SIZE);
+    pos += SPKI_KEY_SIZE;
+    
+    // rcvDhKey (SPKI encoded)
+    trans_body[pos++] = SPKI_KEY_SIZE;
+    memcpy(&trans_body[pos], rcv_dh_spki, SPKI_KEY_SIZE);
+    pos += SPKI_KEY_SIZE;
+    
+    // subMode = 'S' (subscribe)
+    trans_body[pos++] = 'S';
+    
+    int trans_body_len = pos;
+    
+    // Sign: sessionId + transBody
+    uint8_t to_sign[1 + 32 + 256];
+    int sign_pos = 0;
+    to_sign[sign_pos++] = 32;  // sessionId length
+    memcpy(&to_sign[sign_pos], session_id, 32);
+    sign_pos += 32;
+    memcpy(&to_sign[sign_pos], trans_body, trans_body_len);
+    sign_pos += trans_body_len;
+    
+    uint8_t signature[crypto_sign_BYTES];
+    crypto_sign_detached(signature, NULL, to_sign, sign_pos, c->rcv_auth_secret);
+    
+    // Build full transmission
+    uint8_t transmission[256];
+    int tpos = 0;
+    
+    // Signature
+    transmission[tpos++] = crypto_sign_BYTES;
+    memcpy(&transmission[tpos], signature, crypto_sign_BYTES);
+    tpos += crypto_sign_BYTES;
+    
+    // SessionId
+    transmission[tpos++] = 32;
+    memcpy(&transmission[tpos], session_id, 32);
+    tpos += 32;
+    
+    // TransBody
+    memcpy(&transmission[tpos], trans_body, trans_body_len);
+    tpos += trans_body_len;
+    
+    // Send NEW command
+    ESP_LOGI(TAG, "      Sending NEW command...");
+    int ret = smp_write_command_block(ssl, block, transmission, tpos);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "      ❌ Failed to send NEW");
+        return -1;
+    }
+    
+    // Wait for IDS response
+    int content_len = smp_read_block(ssl, block, 15000);
+    if (content_len < 0) {
+        ESP_LOGE(TAG, "      ❌ No response to NEW");
+        return -1;
+    }
+    
+    uint8_t *resp = block + 2;
+    
+    // Parse response - look for IDS or ERR
+    for (int i = 0; i < content_len - 3; i++) {
+        if (resp[i] == 'I' && resp[i+1] == 'D' && resp[i+2] == 'S' && resp[i+3] == ' ') {
+            int p = i + 4;
+            
+            // rcvId (length-prefixed)
+            if (p < content_len) {
+                c->recipient_id_len = resp[p++];
+                if (c->recipient_id_len > 24) c->recipient_id_len = 24;
+                if (p + c->recipient_id_len <= content_len) {
+                    memcpy(c->recipient_id, &resp[p], c->recipient_id_len);
+                    p += c->recipient_id_len;
+                }
+            }
+            
+            // sndId (length-prefixed)
+            if (p < content_len) {
+                c->sender_id_len = resp[p++];
+                if (c->sender_id_len > 24) c->sender_id_len = 24;
+                if (p + c->sender_id_len <= content_len) {
+                    memcpy(c->sender_id, &resp[p], c->sender_id_len);
+                    p += c->sender_id_len;
+                }
+            }
+            
+            // srvDhKey (length-prefixed, SPKI encoded - 44 bytes)
+            if (p < content_len) {
+                uint8_t srv_dh_len = resp[p++];
+                if (srv_dh_len == 44 && p + srv_dh_len <= content_len) {
+                    // Extract raw 32-byte key from SPKI (skip 12-byte header)
+                    memcpy(c->srv_dh_public, &resp[p + 12], 32);
+                    c->have_srv_dh = 1;
+                }
+            }
+            
+            c->active = 1;
+            contacts_db.num_contacts++;
+            save_contacts_to_nvs();
+            
+            ESP_LOGI(TAG, "      ✅ Contact '%s' created!", name);
+            ESP_LOGI(TAG, "      rcvId: %02x%02x%02x%02x%02x%02x...",
+                     c->recipient_id[0], c->recipient_id[1], c->recipient_id[2],
+                     c->recipient_id[3], c->recipient_id[4], c->recipient_id[5]);
+            return slot;
+        }
+        
+        if (resp[i] == 'E' && resp[i+1] == 'R' && resp[i+2] == 'R') {
+            ESP_LOGE(TAG, "      ❌ Server error creating contact");
+            // Log error details
+            ESP_LOGE(TAG, "      Error: %.*s", 
+                     (content_len - i > 20) ? 20 : content_len - i, &resp[i]);
+            return -1;
+        }
+    }
+    
+    ESP_LOGE(TAG, "      ❌ Unexpected response");
+    return -1;
+}
+
+static bool remove_contact(mbedtls_ssl_context *ssl, uint8_t *block,
+                           const uint8_t *session_id, int index) {
+    if (index < 0 || index >= MAX_CONTACTS || !contacts_db.contacts[index].active) {
+        ESP_LOGE(TAG, "❌ Invalid contact index: %d", index);
+        return false;
+    }
+    
+    contact_t *c = &contacts_db.contacts[index];
+    ESP_LOGI(TAG, "🗑️  Removing contact '%s' [%d]...", c->name, index);
+    
+    // Build DEL command body
+    uint8_t del_body[64];
+    int dp = 0;
+    
+    // CorrId
+    del_body[dp++] = 1;
+    del_body[dp++] = 'D';
+    
+    // EntityId = recipientId
+    del_body[dp++] = c->recipient_id_len;
+    memcpy(&del_body[dp], c->recipient_id, c->recipient_id_len);
+    dp += c->recipient_id_len;
+    
+    // Command: "DEL"
+    del_body[dp++] = 'D';
+    del_body[dp++] = 'E';
+    del_body[dp++] = 'L';
+    
+    // Sign
+    uint8_t del_to_sign[128];
+    int dsp = 0;
+    del_to_sign[dsp++] = 32;
+    memcpy(&del_to_sign[dsp], session_id, 32);
+    dsp += 32;
+    memcpy(&del_to_sign[dsp], del_body, dp);
+    dsp += dp;
+    
+    uint8_t del_sig[crypto_sign_BYTES];
+    crypto_sign_detached(del_sig, NULL, del_to_sign, dsp, c->rcv_auth_secret);
+    
+    // Build transmission
+    uint8_t del_trans[192];
+    int dtp = 0;
+    
+    del_trans[dtp++] = crypto_sign_BYTES;
+    memcpy(&del_trans[dtp], del_sig, crypto_sign_BYTES);
+    dtp += crypto_sign_BYTES;
+    
+    del_trans[dtp++] = 32;
+    memcpy(&del_trans[dtp], session_id, 32);
+    dtp += 32;
+    
+    memcpy(&del_trans[dtp], del_body, dp);
+    dtp += dp;
+    
+    int ret = smp_write_command_block(ssl, block, del_trans, dtp);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "      ❌ Failed to send DEL");
+        return false;
+    }
+    
+    int content_len = smp_read_block(ssl, block, 5000);
+    if (content_len >= 0) {
+        uint8_t *resp = block + 2;
+        
+        // Parse transport format to find OK
+        int rp = 0;
+        if (resp[rp] == 1) {
+            rp++;  // txCount
+            rp += 2;  // txLen
+            int rauthLen = resp[rp++]; rp += rauthLen;  // auth
+            int rsessLen = resp[rp++]; rp += rsessLen;  // sessId
+            int rcorrLen = resp[rp++]; rp += rcorrLen;  // corrId
+            int rentLen = resp[rp++]; rp += rentLen;    // entityId
+            
+            if (rp + 1 < content_len && resp[rp] == 'O' && resp[rp+1] == 'K') {
+                c->active = 0;
+                memset(c, 0, sizeof(contact_t));
+                contacts_db.num_contacts--;
+                save_contacts_to_nvs();
+                ESP_LOGI(TAG, "      ✅ Contact removed from server and NVS!");
+                return true;
+            }
+        }
+    }
+    
+    ESP_LOGE(TAG, "      ❌ Failed to remove contact from server");
+    return false;
+}
+
+// ============== Multi-SUB ==============
+
+static void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
+                                   const uint8_t *session_id) {
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "📡 Subscribing to all contacts...");
+    
+    int success_count = 0;
+    
+    for (int i = 0; i < MAX_CONTACTS; i++) {
+        if (!contacts_db.contacts[i].active) continue;
+        
+        contact_t *c = &contacts_db.contacts[i];
+        ESP_LOGI(TAG, "   [%d] %s...", i, c->name);
+        
+        // Build SUB command body
+        uint8_t sub_body[64];
+        int pos = 0;
+        
+        // CorrId = slot number
+        sub_body[pos++] = 1;
+        sub_body[pos++] = '0' + i;
+        
+        // EntityId = recipientId
+        sub_body[pos++] = c->recipient_id_len;
+        memcpy(&sub_body[pos], c->recipient_id, c->recipient_id_len);
+        pos += c->recipient_id_len;
+        
+        // Command: "SUB"
+        sub_body[pos++] = 'S';
+        sub_body[pos++] = 'U';
+        sub_body[pos++] = 'B';
+        
+        int sub_body_len = pos;
+        
+        // Sign
+        uint8_t sub_to_sign[1 + 32 + 64];
+        int sub_sign_pos = 0;
+        sub_to_sign[sub_sign_pos++] = 32;
+        memcpy(&sub_to_sign[sub_sign_pos], session_id, 32);
+        sub_sign_pos += 32;
+        memcpy(&sub_to_sign[sub_sign_pos], sub_body, sub_body_len);
+        sub_sign_pos += sub_body_len;
+        
+        uint8_t sub_sig[crypto_sign_BYTES];
+        crypto_sign_detached(sub_sig, NULL, sub_to_sign, sub_sign_pos, c->rcv_auth_secret);
+        
+        // Build transmission
+        uint8_t sub_trans[256];
+        int sub_tpos = 0;
+        
+        sub_trans[sub_tpos++] = crypto_sign_BYTES;
+        memcpy(&sub_trans[sub_tpos], sub_sig, crypto_sign_BYTES);
+        sub_tpos += crypto_sign_BYTES;
+        
+        sub_trans[sub_tpos++] = 32;
+        memcpy(&sub_trans[sub_tpos], session_id, 32);
+        sub_tpos += 32;
+        
+        memcpy(&sub_trans[sub_tpos], sub_body, sub_body_len);
+        sub_tpos += sub_body_len;
+        
+        int ret = smp_write_command_block(ssl, block, sub_trans, sub_tpos);
+        if (ret != 0) {
+            ESP_LOGE(TAG, "       ❌ Send failed");
+            continue;
+        }
+        
+        int content_len = smp_read_block(ssl, block, 5000);
+        if (content_len >= 0) {
+            uint8_t *resp = block + 2;
+            int rp = 0;
+            
+            if (resp[rp] == 1) {
+                rp++;  // txCount
+                rp += 2;  // txLen
+                int rauthLen = resp[rp++]; rp += rauthLen;
+                int rsessLen = resp[rp++]; rp += rsessLen;
+                int rcorrLen = resp[rp++]; rp += rcorrLen;
+                int rentLen = resp[rp++]; rp += rentLen;
+                
+                if (rp + 1 < content_len && resp[rp] == 'O' && resp[rp+1] == 'K') {
+                    ESP_LOGI(TAG, "       ✅ Subscribed!");
+                    success_count++;
+                } else if (rp + 2 < content_len && resp[rp] == 'E' && resp[rp+1] == 'R' && resp[rp+2] == 'R') {
+                    ESP_LOGW(TAG, "       ⚠️ Server error");
+                } else {
+                    ESP_LOGW(TAG, "       ⚠️ Unknown response");
+                }
+            }
+        } else {
+            ESP_LOGW(TAG, "       ⚠️ No response");
+        }
+    }
+    
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "📡 Subscriptions complete: %d/%d", success_count, contacts_db.num_contacts);
+    ESP_LOGI(TAG, "");
+}
+
+// ============== Message Decryption ==============
+
+static bool decrypt_message(contact_t *c, const uint8_t *encrypted, int enc_len,
+                           const uint8_t *nonce, uint8_t nonce_len,
+                           uint8_t *plain, int *plain_len) {
+    if (!c || !c->have_srv_dh || enc_len <= crypto_box_MACBYTES) {
+        return false;
+    }
+    
+    // Compute shared secret using crypto_box_beforenm
+    // This does X25519 + HSalsa20 key derivation (not just raw X25519!)
+    uint8_t shared[crypto_box_BEFORENMBYTES];
+    if (crypto_box_beforenm(shared, c->srv_dh_public, c->rcv_dh_secret) != 0) {
+        ESP_LOGE(TAG, "      DH key computation failed");
+        return false;
+    }
+    
+    // Prepare nonce (24 bytes, zero-padded if needed)
+    uint8_t full_nonce[crypto_box_NONCEBYTES];
+    memset(full_nonce, 0, crypto_box_NONCEBYTES);
+    int copy_len = (nonce_len < crypto_box_NONCEBYTES) ? nonce_len : crypto_box_NONCEBYTES;
+    memcpy(full_nonce, nonce, copy_len);
+    
+    // Decrypt using crypto_box (XSalsa20 + Poly1305)
+    if (crypto_box_open_easy_afternm(plain, encrypted, enc_len, full_nonce, shared) != 0) {
+        ESP_LOGE(TAG, "      Decryption failed");
+        return false;
+    }
+    
+    *plain_len = enc_len - crypto_box_MACBYTES;
+    return true;
+}
+
 // ============== Main SMP Connection ==============
 
 static void smp_connect(void) {
@@ -306,18 +993,6 @@ static void smp_connect(void) {
     mbedtls_ctr_drbg_context ctr_drbg;
 
     uint8_t session_id[32];
-    
-    // Keys for NEW command
-    uint8_t rcv_auth_secret[crypto_sign_SECRETKEYBYTES], rcv_auth_public[crypto_sign_PUBLICKEYBYTES];
-    uint8_t rcv_dh_secret[32], rcv_dh_public[32];
-    
-    // Queue IDs from IDS response
-    uint8_t recipient_id[24];
-    uint8_t recipient_id_len = 0;
-    uint8_t sender_id[24];
-    uint8_t sender_id_len = 0;
-    uint8_t srv_dh_public[32];
-    bool have_srv_dh = false;
 
     uint8_t *block = (uint8_t *)heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
     if (!block) {
@@ -326,10 +1001,9 @@ static void smp_connect(void) {
     }
 
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "  SimpleGo v4.3 - Full Message Lifecycle");
-    ESP_LOGI(TAG, "  NEW → SUB → SEND → MSG → ACK → OK");
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "╔════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  SimpleGo v0.1.10-alpha Multi-Test ║");
+    ESP_LOGI(TAG, "╚════════════════════════════════════╝");
     ESP_LOGI(TAG, "");
 
     mbedtls_ssl_init(&ssl);
@@ -341,7 +1015,7 @@ static void smp_connect(void) {
     if (ret != 0) goto cleanup;
 
     // ========== Step 1: TCP + TLS ==========
-    ESP_LOGI(TAG, "[1/8] TCP + TLS...");
+    ESP_LOGI(TAG, "[1/5] Connecting to %s:%d...", SMP_HOST, SMP_PORT);
     sock = tcp_connect(SMP_HOST, SMP_PORT);
     if (sock < 0) goto cleanup;
 
@@ -367,17 +1041,17 @@ static void smp_connect(void) {
 
     while ((ret = mbedtls_ssl_handshake(&ssl)) != 0) {
         if (ret != MBEDTLS_ERR_SSL_WANT_READ && ret != MBEDTLS_ERR_SSL_WANT_WRITE) {
-            ESP_LOGE(TAG, "TLS failed: -0x%04X", -ret);
+            ESP_LOGE(TAG, "      TLS failed: -0x%04X", -ret);
             goto cleanup;
         }
     }
-    ESP_LOGI(TAG, "      TLS OK! ALPN: %s", mbedtls_ssl_get_alpn_protocol(&ssl));
+    ESP_LOGI(TAG, "      ✅ TLS OK! ALPN: %s", mbedtls_ssl_get_alpn_protocol(&ssl));
 
     // ========== Step 2: ServerHello ==========
-    ESP_LOGI(TAG, "[2/8] Waiting for ServerHello...");
+    ESP_LOGI(TAG, "[2/5] Waiting for ServerHello...");
     int content_len = smp_read_block(&ssl, block, 30000);
     if (content_len < 0) {
-        ESP_LOGE(TAG, "No ServerHello");
+        ESP_LOGE(TAG, "      ❌ No ServerHello");
         goto cleanup;
     }
 
@@ -387,20 +1061,22 @@ static void smp_connect(void) {
     uint8_t sessIdLen = hello[4];
     
     if (sessIdLen != 32) {
-        ESP_LOGE(TAG, "Unexpected sessionId length: %d", sessIdLen);
+        ESP_LOGE(TAG, "      ❌ Unexpected sessionId length: %d", sessIdLen);
         goto cleanup;
     }
     memcpy(session_id, &hello[5], 32);
     
-    ESP_LOGI(TAG, "      Versions: %d-%d, SessionId: %02x%02x%02x%02x...", 
-             minVer, maxVer, session_id[0], session_id[1], session_id[2], session_id[3]);
+    ESP_LOGI(TAG, "      ✅ Versions: %d-%d", minVer, maxVer);
+    ESP_LOGI(TAG, "      SessionId: %02x%02x%02x%02x...", 
+             session_id[0], session_id[1], session_id[2], session_id[3]);
 
     // ========== Step 3: ClientHello ==========
-    ESP_LOGI(TAG, "[3/8] Sending ClientHello...");
+    ESP_LOGI(TAG, "[3/5] Sending ClientHello...");
     
     int cert1_off, cert1_len, cert2_off, cert2_len;
     parse_cert_chain(hello, content_len, &cert1_off, &cert1_len, &cert2_off, &cert2_len);
     
+    // keyHash = SHA256 of CA cert (second cert in chain)
     uint8_t ca_hash[32];
     if (cert2_off >= 0) {
         mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
@@ -408,335 +1084,240 @@ static void smp_connect(void) {
         mbedtls_sha256(hello + cert1_off, cert1_len, ca_hash, 0);
     }
     
+    // ClientHello: version + keyHash
     uint8_t client_hello[35];
     int pos = 0;
     client_hello[pos++] = 0x00;
     client_hello[pos++] = 0x06;  // v6
-    client_hello[pos++] = 32;
+    client_hello[pos++] = 32;    // keyHash length
     memcpy(&client_hello[pos], ca_hash, 32);
     pos += 32;
     
     ret = smp_write_handshake_block(&ssl, block, client_hello, pos);
     if (ret != 0) goto cleanup;
-    ESP_LOGI(TAG, "      ClientHello sent!");
+    ESP_LOGI(TAG, "      ✅ ClientHello sent!");
 
-    // ========== Step 4: Generate Keys ==========
-    ESP_LOGI(TAG, "[4/8] Generating keypairs...");
+    // ========== Step 4: Load or Create Contacts ==========
+    ESP_LOGI(TAG, "[4/5] Loading contacts...");
+    load_contacts_from_nvs();
     
-    uint8_t seed[32];
-    esp_fill_random(seed, 32);
-    crypto_sign_seed_keypair(rcv_auth_public, rcv_auth_secret, seed);
+    if (contacts_db.num_contacts == 0) {
+        ESP_LOGI(TAG, "      No contacts found - creating default...");
+        int idx = add_contact(&ssl, block, session_id, "Test");
+        if (idx < 0) {
+            ESP_LOGE(TAG, "      ❌ Failed to create contact!");
+            goto cleanup;
+        }
+    } else {
+        ESP_LOGI(TAG, "      ✅ %d contact(s) loaded from NVS", contacts_db.num_contacts);
+    }
     
-    esp_fill_random(rcv_dh_secret, 32);
-    crypto_scalarmult_base(rcv_dh_public, rcv_dh_secret);
-    
-    ESP_LOGI(TAG, "      rcvAuthKey: %02x%02x%02x%02x...", 
-             rcv_auth_public[0], rcv_auth_public[1], rcv_auth_public[2], rcv_auth_public[3]);
-
-    // ========== Step 5: Send NEW Command ==========
-    ESP_LOGI(TAG, "[5/8] Sending NEW command...");
-    
-    uint8_t rcv_auth_spki[SPKI_KEY_SIZE];
-    memcpy(rcv_auth_spki, ED25519_SPKI_HEADER, 12);
-    memcpy(rcv_auth_spki + 12, rcv_auth_public, 32);
-    
-    uint8_t rcv_dh_spki[SPKI_KEY_SIZE];
-    memcpy(rcv_dh_spki, X25519_SPKI_HEADER, 12);
-    memcpy(rcv_dh_spki + 12, rcv_dh_public, 32);
-    
-    uint8_t trans_body[256];
-    pos = 0;
-    
-    trans_body[pos++] = 1;
-    trans_body[pos++] = '1';
-    trans_body[pos++] = 0;
-    
-    trans_body[pos++] = 'N';
-    trans_body[pos++] = 'E';
-    trans_body[pos++] = 'W';
-    trans_body[pos++] = ' ';
-    
-    trans_body[pos++] = SPKI_KEY_SIZE;
-    memcpy(&trans_body[pos], rcv_auth_spki, SPKI_KEY_SIZE);
-    pos += SPKI_KEY_SIZE;
-    
-    trans_body[pos++] = SPKI_KEY_SIZE;
-    memcpy(&trans_body[pos], rcv_dh_spki, SPKI_KEY_SIZE);
-    pos += SPKI_KEY_SIZE;
-    
-    trans_body[pos++] = 'S';
-    
-    int trans_body_len = pos;
-    
-    uint8_t to_sign[1 + 32 + 256];
-    int sign_pos = 0;
-    to_sign[sign_pos++] = 32;
-    memcpy(&to_sign[sign_pos], session_id, 32);
-    sign_pos += 32;
-    memcpy(&to_sign[sign_pos], trans_body, trans_body_len);
-    sign_pos += trans_body_len;
-    
-    uint8_t signature[crypto_sign_BYTES];
-    crypto_sign_detached(signature, NULL, to_sign, sign_pos, rcv_auth_secret);
-    
-    uint8_t transmission[256];
-    int tpos = 0;
-    
-    transmission[tpos++] = crypto_sign_BYTES;
-    memcpy(&transmission[tpos], signature, crypto_sign_BYTES);
-    tpos += crypto_sign_BYTES;
-    
-    transmission[tpos++] = 32;
-    memcpy(&transmission[tpos], session_id, 32);
-    tpos += 32;
-    
-    memcpy(&transmission[tpos], trans_body, trans_body_len);
-    tpos += trans_body_len;
-    
-    ret = smp_write_command_block(&ssl, block, transmission, tpos);
-    if (ret != 0) goto cleanup;
-    ESP_LOGI(TAG, "      NEW sent!");
-
-    // ========== Step 6: Wait for IDS ==========
-    ESP_LOGI(TAG, "[6/8] Waiting for IDS...");
-    
-    content_len = smp_read_block(&ssl, block, 15000);
-    if (content_len >= 0) {
-        uint8_t *resp = block + 2;
-        
-        for (int i = 0; i < content_len - 3; i++) {
-            if (resp[i] == 'I' && resp[i+1] == 'D' && resp[i+2] == 'S' && resp[i+3] == ' ') {
-                ESP_LOGI(TAG, "  🎉 QUEUE CREATED!");
-                
-                int p = i + 4;
-                
-                if (p < content_len) {
-                    uint8_t rcv_id_len = resp[p++];
-                    if (p + rcv_id_len <= content_len && rcv_id_len <= 24) {
-                        memcpy(recipient_id, &resp[p], rcv_id_len);
-                        recipient_id_len = rcv_id_len;
-                        p += rcv_id_len;
-                    }
-                }
-                
-                if (p < content_len) {
-                    sender_id_len = resp[p++];
-                    if (p + sender_id_len <= content_len && sender_id_len <= 24) {
-                        memcpy(sender_id, &resp[p], sender_id_len);
-                        p += sender_id_len;
-                    }
-                }
-                
-                if (p < content_len) {
-                    uint8_t srv_dh_len = resp[p++];
-                    if (srv_dh_len == 44 && p + srv_dh_len <= content_len) {
-                        memcpy(srv_dh_public, &resp[p + 12], 32);
-                        have_srv_dh = true;
-                    }
-                }
-                break;
-            }
+    // Create second contact "Alice" for multi-contact testing
+    if (contacts_db.num_contacts == 1) {
+        ESP_LOGI(TAG, "      ➕ Creating second contact 'Alice' for testing...");
+        int idx = add_contact(&ssl, block, session_id, "Alice");
+        if (idx >= 0) {
+            ESP_LOGI(TAG, "      ✅ Alice created in slot %d!", idx);
         }
     }
-
-    if (recipient_id_len == 0) {
-        ESP_LOGE(TAG, "Failed to get recipientId");
-        goto cleanup;
-    }
-
-    // ========== Step 7: SUB ==========
-    ESP_LOGI(TAG, "[7/8] Sending SUB...");
     
-    uint8_t sub_body[64];
-    pos = 0;
-    sub_body[pos++] = 1;
-    sub_body[pos++] = '2';
-    sub_body[pos++] = recipient_id_len;
-    memcpy(&sub_body[pos], recipient_id, recipient_id_len);
-    pos += recipient_id_len;
-    sub_body[pos++] = 'S';
-    sub_body[pos++] = 'U';
-    sub_body[pos++] = 'B';
+    list_contacts();
     
-    uint8_t sub_to_sign[128];
-    sign_pos = 0;
-    sub_to_sign[sign_pos++] = 32;
-    memcpy(&sub_to_sign[sign_pos], session_id, 32);
-    sign_pos += 32;
-    memcpy(&sub_to_sign[sign_pos], sub_body, pos);
-    sign_pos += pos;
+    // ========== Step 5: Subscribe All Contacts ==========
+    ESP_LOGI(TAG, "[5/5] Subscribing to queues...");
+    subscribe_all_contacts(&ssl, block, session_id);
     
-    uint8_t sub_sig[crypto_sign_BYTES];
-    crypto_sign_detached(sub_sig, NULL, sub_to_sign, sign_pos, rcv_auth_secret);
+    // Print connection info
+    print_invitation_links(ca_hash);
     
-    uint8_t sub_trans[192];
-    tpos = 0;
-    sub_trans[tpos++] = crypto_sign_BYTES;
-    memcpy(&sub_trans[tpos], sub_sig, crypto_sign_BYTES);
-    tpos += crypto_sign_BYTES;
-    sub_trans[tpos++] = 32;
-    memcpy(&sub_trans[tpos], session_id, 32);
-    tpos += 32;
-    memcpy(&sub_trans[tpos], sub_body, pos);
-    tpos += pos;
+    // Self-test: Uncomment to test message round-trip
+    // self_test_send(&ssl, block, session_id, 0);
     
-    smp_write_command_block(&ssl, block, sub_trans, tpos);
-    
-    content_len = smp_read_block(&ssl, block, 15000);
-    ESP_LOGI(TAG, "  ✅ SUBSCRIBED!");
-
-    // ========== Step 8: SEND Test ==========
-    ESP_LOGI(TAG, "[8/8] Testing SEND...");
-    
-    uint8_t send_body[256];
-    pos = 0;
-    send_body[pos++] = 1;
-    send_body[pos++] = '3';
-    send_body[pos++] = sender_id_len;
-    memcpy(&send_body[pos], sender_id, sender_id_len);
-    pos += sender_id_len;
-    send_body[pos++] = 'S';
-    send_body[pos++] = 'E';
-    send_body[pos++] = 'N';
-    send_body[pos++] = 'D';
-    send_body[pos++] = ' ';
-    send_body[pos++] = 'F';
-    send_body[pos++] = ' ';
-    
-    const char *test_msg = "Hello from ESP32!";
-    memcpy(&send_body[pos], test_msg, strlen(test_msg));
-    pos += strlen(test_msg);
-    
-    uint8_t send_trans[256];
-    tpos = 0;
-    send_trans[tpos++] = 0;  // No signature for SEND
-    send_trans[tpos++] = 32;
-    memcpy(&send_trans[tpos], session_id, 32);
-    tpos += 32;
-    memcpy(&send_trans[tpos], send_body, pos);
-    tpos += pos;
-    
-    smp_write_command_block(&ssl, block, send_trans, tpos);
-    ESP_LOGI(TAG, "      SEND sent!");
-
-    // ========== Message Loop ==========
+    // ========== Message Receive Loop ==========
+    ESP_LOGI(TAG, "╔════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║   📨 Waiting for messages...       ║");
+    ESP_LOGI(TAG, "╚════════════════════════════════════╝");
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "📨 Waiting for messages...");
     
     while (1) {
-        content_len = smp_read_block(&ssl, block, 60000);
+        content_len = smp_read_block(&ssl, block, 60000);  // 60s timeout
         
         if (content_len == -2) {
-            ESP_LOGI(TAG, "      ... still waiting");
+            // Timeout - still waiting
+            ESP_LOGI(TAG, "   ... still waiting ...");
             continue;
         }
         
         if (content_len < 0) {
-            ESP_LOGW(TAG, "Connection closed");
+            ESP_LOGW(TAG, "   Connection closed");
             break;
         }
         
         uint8_t *resp = block + 2;
+        
+        // Parse transport format
         int p = 0;
-        
-        if (resp[p] != 1) continue;
-        p++;
-        p += 2;
-        
-        int authLen = resp[p++];
-        p += authLen;
-        int sessLen = resp[p++];
-        p += sessLen;
-        int corrLen = resp[p++];
-        p += corrLen;
-        int entLen = resp[p++];
-        p += entLen;
-        
-        // Check for OK
-        if (p + 1 < content_len && resp[p] == 'O' && resp[p+1] == 'K') {
-            ESP_LOGI(TAG, "  ✅ OK received");
+        if (resp[p] != 1) {
+            ESP_LOGW(TAG, "   Unexpected txCount: %d", resp[p]);
             continue;
         }
+        p++;  // txCount
+        p += 2;  // txLen
         
-        // Check for MSG
-        if (p + 3 < content_len && resp[p] == 'M' && resp[p+1] == 'S' && resp[p+2] == 'G') {
-            ESP_LOGI(TAG, "  💬 MESSAGE received!");
-            p += 4;
+        // Skip auth header
+        int authLen = resp[p++]; p += authLen;
+        int sessLen = resp[p++]; p += sessLen;
+        int corrLen = resp[p++]; p += corrLen;
+        
+        // EntityId - tells us which contact this message is for
+        int entLen = resp[p++];
+        uint8_t entity_id[24];
+        if (entLen > 24) entLen = 24;
+        memcpy(entity_id, &resp[p], entLen);
+        p += entLen;
+        
+        // Find which contact this is for
+        int contact_idx = find_contact_by_recipient_id(entity_id, entLen);
+        contact_t *contact = (contact_idx >= 0) ? &contacts_db.contacts[contact_idx] : NULL;
+        
+        // Parse command
+        if (p + 1 < content_len && resp[p] == 'O' && resp[p+1] == 'K') {
+            ESP_LOGI(TAG, "   ✅ OK");
+        }
+        else if (p + 2 < content_len && resp[p] == 'E' && resp[p+1] == 'N' && resp[p+2] == 'D') {
+            if (contact) {
+                ESP_LOGI(TAG, "   🔚 END [%s] - No more messages", contact->name);
+            } else {
+                ESP_LOGI(TAG, "   🔚 END - No more messages");
+            }
+        }
+        else if (p + 3 < content_len && resp[p] == 'M' && resp[p+1] == 'S' && resp[p+2] == 'G' && resp[p+3] == ' ') {
+            p += 4;  // Skip "MSG "
             
+            // Parse msgId (nonce for decryption)
             uint8_t msgIdLen = resp[p++];
-            uint8_t msg_id[24] = {0};
-            memcpy(msg_id, &resp[p], msgIdLen < 24 ? msgIdLen : 24);
+            uint8_t msg_id[24];
+            memset(msg_id, 0, 24);
+            if (msgIdLen > 24) msgIdLen = 24;
+            memcpy(msg_id, &resp[p], msgIdLen);
             p += msgIdLen;
             
+            // Rest is encrypted body
             int enc_len = content_len - p;
             
-            if (have_srv_dh && enc_len > crypto_box_MACBYTES) {
-                uint8_t shared[crypto_box_BEFORENMBYTES];
-                crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
-                
+            if (contact) {
+                ESP_LOGI(TAG, "");
+                ESP_LOGI(TAG, "   💬 MESSAGE for [%s]!", contact->name);
+            } else {
+                ESP_LOGI(TAG, "");
+                ESP_LOGI(TAG, "   💬 MESSAGE (unknown contact)!");
+            }
+            ESP_LOGI(TAG, "      MsgId: %02x%02x%02x%02x...", msg_id[0], msg_id[1], msg_id[2], msg_id[3]);
+            ESP_LOGI(TAG, "      Encrypted: %d bytes", enc_len);
+            
+            // Try to decrypt
+            if (contact && contact->have_srv_dh && enc_len > crypto_secretbox_MACBYTES) {
                 uint8_t *plain = malloc(enc_len);
-                if (plain && crypto_box_open_easy_afternm(plain, &resp[p], enc_len, msg_id, shared) == 0) {
-                    int plain_len = enc_len - crypto_box_MACBYTES;
-                    ESP_LOGI(TAG, "  🔓 DECRYPTED!");
-                    printf("      Content: ");
-                    for (int i = 0; i < plain_len && i < 100; i++) {
-                        char c = plain[i];
-                        printf("%c", (c >= 32 && c < 127) ? c : '.');
+                if (plain) {
+                    int plain_len = 0;
+                    if (decrypt_message(contact, &resp[p], enc_len, msg_id, msgIdLen, plain, &plain_len)) {
+                        // Strip padding - find actual message length (before '#' padding)
+                        int actual_len = plain_len;
+                        for (int i = plain_len - 1; i >= 0; i--) {
+                            if (plain[i] != '#') {
+                                actual_len = i + 1;
+                                break;
+                            }
+                        }
+                        
+                        // Skip message header (first ~6 bytes are metadata)
+                        int msg_start = 0;
+                        for (int i = 0; i < actual_len && i < 20; i++) {
+                            if (plain[i] == ' ' && i > 0) {
+                                msg_start = i + 1;
+                                break;
+                            }
+                        }
+                        
+                        ESP_LOGI(TAG, "   🔓 DECRYPTED:");
+                        printf("      \"");
+                        for (int i = msg_start; i < actual_len && i < msg_start + 500; i++) {
+                            char c = plain[i];
+                            if (c >= 32 && c < 127) {
+                                printf("%c", c);
+                            }
+                        }
+                        printf("\"\n");
+                        ESP_LOGI(TAG, "      (%d bytes payload)", actual_len - msg_start);
+                        
+                        // Send ACK
+                        ESP_LOGI(TAG, "   📨 Sending ACK...");
+                        
+                        uint8_t ack_body[64];
+                        int ap = 0;
+                        ack_body[ap++] = 1;  // corrId len
+                        ack_body[ap++] = 'A';  // corrId
+                        ack_body[ap++] = contact->recipient_id_len;  // entityId
+                        memcpy(&ack_body[ap], contact->recipient_id, contact->recipient_id_len);
+                        ap += contact->recipient_id_len;
+                        ack_body[ap++] = 'A';
+                        ack_body[ap++] = 'C';
+                        ack_body[ap++] = 'K';
+                        ack_body[ap++] = ' ';
+                        ack_body[ap++] = msgIdLen;
+                        memcpy(&ack_body[ap], msg_id, msgIdLen);
+                        ap += msgIdLen;
+                        
+                        // Sign ACK
+                        uint8_t ack_to_sign[128];
+                        int ack_sign_pos = 0;
+                        ack_to_sign[ack_sign_pos++] = 32;
+                        memcpy(&ack_to_sign[ack_sign_pos], session_id, 32);
+                        ack_sign_pos += 32;
+                        memcpy(&ack_to_sign[ack_sign_pos], ack_body, ap);
+                        ack_sign_pos += ap;
+                        
+                        uint8_t ack_sig[crypto_sign_BYTES];
+                        crypto_sign_detached(ack_sig, NULL, ack_to_sign, ack_sign_pos, contact->rcv_auth_secret);
+                        
+                        // Build ACK transmission
+                        uint8_t ack_trans[192];
+                        int atp = 0;
+                        ack_trans[atp++] = crypto_sign_BYTES;
+                        memcpy(&ack_trans[atp], ack_sig, crypto_sign_BYTES);
+                        atp += crypto_sign_BYTES;
+                        ack_trans[atp++] = 32;
+                        memcpy(&ack_trans[atp], session_id, 32);
+                        atp += 32;
+                        memcpy(&ack_trans[atp], ack_body, ap);
+                        atp += ap;
+                        
+                        smp_write_command_block(&ssl, block, ack_trans, atp);
                     }
-                    printf("\n");
-                    
-                    // ========== ACK ==========
-                    ESP_LOGI(TAG, "  📨 Sending ACK...");
-                    
-                    uint8_t ack_body[64];
-                    int ap = 0;
-                    ack_body[ap++] = 1;
-                    ack_body[ap++] = '4';
-                    ack_body[ap++] = recipient_id_len;
-                    memcpy(&ack_body[ap], recipient_id, recipient_id_len);
-                    ap += recipient_id_len;
-                    ack_body[ap++] = 'A';
-                    ack_body[ap++] = 'C';
-                    ack_body[ap++] = 'K';
-                    ack_body[ap++] = ' ';
-                    ack_body[ap++] = msgIdLen;
-                    memcpy(&ack_body[ap], msg_id, msgIdLen);
-                    ap += msgIdLen;
-                    
-                    uint8_t ack_to_sign[128];
-                    int asp = 0;
-                    ack_to_sign[asp++] = 32;
-                    memcpy(&ack_to_sign[asp], session_id, 32);
-                    asp += 32;
-                    memcpy(&ack_to_sign[asp], ack_body, ap);
-                    asp += ap;
-                    
-                    uint8_t ack_sig[crypto_sign_BYTES];
-                    crypto_sign_detached(ack_sig, NULL, ack_to_sign, asp, rcv_auth_secret);
-                    
-                    uint8_t ack_trans[192];
-                    int atp = 0;
-                    ack_trans[atp++] = crypto_sign_BYTES;
-                    memcpy(&ack_trans[atp], ack_sig, crypto_sign_BYTES);
-                    atp += crypto_sign_BYTES;
-                    ack_trans[atp++] = 32;
-                    memcpy(&ack_trans[atp], session_id, 32);
-                    atp += 32;
-                    memcpy(&ack_trans[atp], ack_body, ap);
-                    atp += ap;
-                    
-                    smp_write_command_block(&ssl, block, ack_trans, atp);
-                    ESP_LOGI(TAG, "      ACK sent!");
+                    free(plain);
                 }
-                if (plain) free(plain);
+            } else {
+                ESP_LOGW(TAG, "      ⚠️ Cannot decrypt - no contact keys");
             }
             ESP_LOGI(TAG, "");
         }
+        else if (p + 2 < content_len && resp[p] == 'E' && resp[p+1] == 'R' && resp[p+2] == 'R') {
+            ESP_LOGE(TAG, "   ❌ ERR: %.*s", 
+                     (content_len - p > 20) ? 20 : content_len - p, &resp[p]);
+        }
+        else {
+            // Unknown command
+            ESP_LOGW(TAG, "   ❓ Unknown: %c%c%c", 
+                     (p < content_len) ? resp[p] : '?',
+                     (p+1 < content_len) ? resp[p+1] : '?',
+                     (p+2 < content_len) ? resp[p+2] : '?');
+        }
     }
 
-    ESP_LOGI(TAG, "========================================");
-    ESP_LOGI(TAG, "    Session complete!");
-    ESP_LOGI(TAG, "========================================");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║       Session ended                ║");
+    ESP_LOGI(TAG, "╚════════════════════════════════════╝");
 
 cleanup:
     free(block);
@@ -749,29 +1330,40 @@ cleanup:
 }
 
 void app_main(void) {
-    ESP_LOGI(TAG, "SimpleGo v0.1.7-alpha starting...");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "SimpleGo starting...");
     
+    // Initialize libsodium
     if (sodium_init() < 0) {
         ESP_LOGE(TAG, "libsodium init failed!");
         return;
     }
+    ESP_LOGI(TAG, "libsodium initialized");
 
+    // Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+    ESP_LOGI(TAG, "NVS initialized");
 
+    // Initialize WiFi
     wifi_init();
 
+    // Wait for WiFi connection
+    ESP_LOGI(TAG, "Waiting for WiFi...");
     while (!wifi_connected) {
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
 
+    // Connect to SMP server
     smp_connect();
 
     ESP_LOGI(TAG, "Done!");
-    while (1) vTaskDelay(pdMS_TO_TICKS(10000));
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(10000));
+    }
 }
