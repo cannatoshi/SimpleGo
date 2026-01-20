@@ -5,7 +5,8 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-green.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
 [![Framework: ESP-IDF 5.5](https://img.shields.io/badge/Framework-ESP--IDF%205.5-red.svg)](https://docs.espressif.com/projects/esp-idf/)
-[![Status: Working](https://img.shields.io/badge/Status-Queue%20Creation%20Working-brightgreen.svg)]()
+[![Version: v0.1.5-alpha](https://img.shields.io/badge/Version-v0.1.5--alpha-orange.svg)]()
+[![Status: SEND Working](https://img.shields.io/badge/Status-SEND%20Working-brightgreen.svg)]()
 
 ---
 
@@ -24,23 +25,32 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 
 ---
 
-## 🏆 Current Achievement: Working SMP Client
+## 🏆 Current Achievement: Full Message Lifecycle
 
-**As of v4.1, SimpleGo successfully:**
+**As of v0.1.5-alpha (January 20, 2026), SimpleGo successfully:**
 
 ✅ Establishes TLS 1.3 connections with ChaCha20-Poly1305  
 ✅ Completes SMP handshake (ServerHello/ClientHello)  
 ✅ Creates message queues on SimpleX servers (NEW command)  
 ✅ Subscribes to queues for message reception (SUB command)  
+✅ **Sends messages to queues (SEND command)**  
+✅ **Receives and parses incoming messages (MSG)**  
 ✅ Generates Ed25519 signatures compatible with SimpleX servers  
 ✅ Implements correct SPKI key encoding  
-✅ Handles SMP v6 protocol format  
 
 ```
-I (6688) SMP:   🎉🎉🎉 QUEUE CREATED! 🎉🎉🎉
-I (6688) SMP:   📥 RecipientId (24 bytes): e1c77e711e254cab7de8fa5db27b433922c9227f5abcd298
-I (6698) SMP:   📤 SenderId (24 bytes): 6ce4d1233896d0243871b897f1657d84d0a2601bf306f365
-I (7158) SMP:   ✅ SUBSCRIBED! Ready to receive messages.
+I (xxxx) SMP: ========================================
+I (xxxx) SMP:   SimpleGo v0.1.5-alpha
+I (xxxx) SMP:   Native SMP Client for ESP32
+I (xxxx) SMP: ========================================
+I (xxxx) SMP: [5/8] Sending NEW command...
+I (xxxx) SMP:   🎉🎉🎉 QUEUE CREATED! 🎉🎉🎉
+I (xxxx) SMP: [7/8] Sending SUB command...
+I (xxxx) SMP:   ✅ SUBSCRIBED! Ready to receive messages.
+I (xxxx) SMP: [8/8] Testing SEND command...
+I (xxxx) SMP:       SEND command sent!
+I (xxxx) SMP:   💬 MESSAGE received!
+I (xxxx) SMP:   ✅ OK - SEND confirmed
 ```
 
 ---
@@ -73,11 +83,10 @@ SimpleGo/
 ├── ROADMAP.md                # Development roadmap
 ├── LICENSE                   # AGPL-3.0
 │
-├── src/
-│   └── main/
-│       ├── main.c            # Main application (SMP client)
-│       ├── CMakeLists.txt    # Component build config
-│       └── idf_component.yml # Component dependencies
+├── main/
+│   ├── main.c                # Main application (SMP client)
+│   ├── CMakeLists.txt        # Component build config
+│   └── idf_component.yml     # Component dependencies
 │
 ├── docs/
 │   ├── DEVELOPMENT.md        # Build & setup guide
@@ -86,8 +95,8 @@ SimpleGo/
 │   └── DEVNOTES.md           # Development session notes
 │
 ├── CMakeLists.txt            # Project build config
-├── sdkconfig                 # ESP-IDF configuration
-└── sdkconfig.defaults        # Default configuration
+├── sdkconfig.defaults        # Default configuration
+└── .gitignore                # Git ignore rules
 ```
 
 ---
@@ -112,22 +121,6 @@ cd ~/esp/simplex_client
 idf.py build flash monitor -p /dev/ttyUSB0
 ```
 
-### Expected Output
-
-```
-I (5765) SMP: ========================================
-I (5765) SMP:   SimpleGo v4.1 - NEW + SUB!
-I (5765) SMP: ========================================
-I (5865) SMP: [1/6] TCP + TLS...
-I (6088) SMP:       TLS OK! ALPN: smp/1
-I (6088) SMP: [2/6] Waiting for ServerHello...
-I (6288) SMP:       Versions: 6-8, SessionId: a1b2c3d4...
-I (6288) SMP: [3/6] Sending ClientHello...
-I (6398) SMP: [4/6] Generating keypairs...
-I (6398) SMP: [5/6] Sending NEW command...
-I (6688) SMP:   🎉🎉🎉 QUEUE CREATED! 🎉🎉🎉
-```
-
 See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed setup instructions.
 
 ---
@@ -143,9 +136,10 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed setup instructions.
 | Transport Blocks | ✅ Complete | 16KB padded blocks |
 | NEW Command | ✅ Complete | Queue creation with IDS response |
 | SUB Command | ✅ Complete | Queue subscription |
-| SEND Command | 🔄 Next | Message transmission |
+| SEND Command | ✅ Complete | Message transmission |
+| MSG Receive | ✅ Complete | Message parsing |
 | ACK Command | 📋 Planned | Message acknowledgment |
-| OFF/DEL Commands | 📋 Planned | Queue management |
+| Message Decryption | 🔄 Next | XSalsa20-Poly1305 |
 
 ### Cryptography
 
@@ -154,17 +148,8 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed setup instructions.
 | Ed25519 Signatures | ✅ Complete | libsodium, SPKI encoding |
 | X25519 Key Exchange | ✅ Complete | DH key generation |
 | SHA-256 Hashing | ✅ Complete | Certificate fingerprints |
+| XSalsa20-Poly1305 | 🔄 Next | Message decryption |
 | Double Ratchet | 📋 Planned | E2E message encryption |
-| Curve448 | 📋 Planned | Extended key exchange |
-
-### User Interface
-
-| Feature | Status | Description |
-|---------|--------|-------------|
-| Serial Console | ✅ Working | Debug output via USB |
-| OLED Status | 📋 Planned | Connection/message indicators |
-| T-Deck LCD | 📋 Planned | Full messaging UI |
-| Physical Keyboard | 📋 Planned | Message composition |
 
 ---
 
@@ -192,20 +177,11 @@ Running on dedicated hardware adds:
 
 See [ROADMAP.md](ROADMAP.md) for detailed plans.
 
-**Phase 1: Protocol Foundation** ✅ Complete
-- TLS 1.3, SMP handshake, NEW/SUB commands
-
-**Phase 2: Full Messaging** 🔄 In Progress
-- SEND command, message reception, ACK handling
-
-**Phase 3: End-to-End Encryption** 📋 Planned
-- Double Ratchet implementation, key management
-
-**Phase 4: User Interface** 📋 Planned
-- T-Deck display, keyboard input, contact management
-
-**Phase 5: Advanced Features** 📋 Future
-- Groups, file transfer, 4G connectivity, Tor support
+**Phase 1: Protocol Foundation** ✅ Complete  
+**Phase 2: Full Messaging** ✅ Complete  
+**Phase 3: Message Encryption** 🔄 In Progress  
+**Phase 4: User Interface** 📋 Planned  
+**Phase 5: Advanced Features** 📋 Future  
 
 ---
 
@@ -219,12 +195,6 @@ SimpleGo is part of the **Sentinel Secure Messenger Suite** and welcomes contrib
 2. **Check the issues** — Look for `good first issue` labels
 3. **Fork & PR** — Standard GitHub workflow
 4. **Test thoroughly** — Protocol bugs can be subtle
-
-### Development Environment
-
-- **Windows**: Recommended for ESP-IDF (native toolchain)
-- **WSL**: Useful for Haskell source analysis
-- **Hardware**: Any ESP32-S3 board for testing
 
 ---
 
@@ -250,14 +220,11 @@ See [LICENSE](LICENSE) for full terms.
 
 ---
 
-## 📞 Contact & Community
-
-- **GitHub Issues** — Bug reports and feature requests
-- **Sentinel Suite** — Part of the broader secure communication ecosystem
-
----
-
 <p align="center">
   <strong>Privacy is not a privilege, it's a right.</strong><br>
   <em>Building the future of hardware-based private communication.</em>
 </p>
+
+---
+
+*Copyright (c) 2026 cannatoshi — Part of the Sentinel Secure Messenger Suite*
