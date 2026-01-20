@@ -59,6 +59,20 @@ As of v0.1.9-alpha, all base SMP commands are implemented:
 | NEW Command | ✅ | Queue creation with IDS response |
 | SUB Command | ✅ | Queue subscription |
 
+### Key Achievements
+
+- First working native SMP client outside Haskell
+- Full TLS 1.3 compliance with SimpleX servers
+- Correct cryptographic signature generation
+- Protocol-compliant message framing
+
+### Critical Discoveries
+
+1. **keyHash Calculation**: Must use CA certificate (2nd in chain), not server certificate
+2. **Ed25519 Compatibility**: Monocypher incompatible with SimpleX; must use libsodium
+3. **Block Format**: Commands require different format than handshake messages
+4. **SubMode Parameter**: Required for SMP v6 NEW command
+
 ---
 
 ## Phase 2: Full Messaging ✅ COMPLETE
@@ -75,6 +89,30 @@ As of v0.1.9-alpha, all base SMP commands are implemented:
 | Message Reception | ✅ | Receive MSG from subscribed queues |
 | ACK Command | ✅ | Acknowledge message delivery |
 | OK Response Handling | ✅ | Command confirmations |
+
+### Technical Requirements Met
+
+#### SEND Command Structure
+```
+SEND [msgFlags] [msgBody]
+  - msgFlags: 'T' or 'F' (ASCII, NOT binary!)
+  - msgBody: message content
+```
+
+#### Message Reception
+```
+MSG [msgId] [timestamp] [msgFlags] [msgBody]
+  - Parse incoming MSG responses
+  - Extract message content
+  - Decrypt with XSalsa20-Poly1305
+```
+
+#### ACK Command
+```
+ACK [msgId]
+  - EntityId = recipientId (NOT senderId!)
+  - Server removes message from queue
+```
 
 ---
 
@@ -93,6 +131,19 @@ As of v0.1.9-alpha, all base SMP commands are implemented:
 | Nonce Handling | ✅ | msgId as nonce (zero-padded) |
 | Server DH Key | ✅ | Extract from IDS response |
 | Full Round-Trip | ✅ | SEND→MSG→Decrypt→ACK |
+
+### Technical Implementation
+```c
+// DH Shared Secret
+crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
+
+// Nonce = msgId (24 bytes, zero-padded)
+uint8_t nonce[24] = {0};
+memcpy(nonce, msg_id, msgIdLen);
+
+// Decrypt
+crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
+```
 
 ---
 
@@ -138,20 +189,6 @@ As of v0.1.9-alpha, all base SMP commands are implemented:
 | NVS Auto-Clear | ✅ | Clear local keys after DEL |
 | Full SMP Client | ✅ | All base commands implemented |
 
-### DEL Command Format
-
-```
-[sigLen=64][signature]
-[sessLen=32][sessionId]
-[corrIdLen][corrId]
-[entityIdLen][recipientId]    ← Recipient Command!
-"DEL"                         ← No parameters
-```
-
-### Server Response
-
-- `OK` = Queue + all messages deleted
-
 ---
 
 ## Phase 4: User Interface 📋 PLANNED
@@ -170,21 +207,82 @@ As of v0.1.9-alpha, all base SMP commands are implemented:
 | LVGL Integration | 📋 | Critical | Graphics library setup |
 | Rotary Encoder | 📋 | High | T-Embed input handling |
 | Main Screen | 📋 | High | Connection status, message count |
-| Message View | 📋 | High | Chat interface |
-| Keyboard Support | 📋 | Medium | T-Deck physical keyboard |
+| Conversation List | 📋 | High | Contact/queue list view |
+| Message View | 📋 | High | Chat bubble interface |
+| Compose Screen | 📋 | High | Text input with keyboard |
+| Keyboard Driver | 📋 | High | T-Deck physical keyboard |
 | Settings Menu | 📋 | Medium | WiFi, server config |
+| Status Bar | 📋 | Medium | Signal, battery, time |
 
-### Target Hardware
+### T-Deck Hardware Specs
 
-**T-Embed (Primary):**
-- 1.9" LCD (170x320)
-- Rotary Encoder
-- Compact form factor
+```
+Display:
+  - 2.8" IPS LCD (320x240)
+  - ST7789 controller
+  - SPI interface
 
-**T-Deck (Secondary):**
-- 2.8" LCD (320x240)
-- Physical QWERTY keyboard
-- LoRa module
+Keyboard:
+  - Physical QWERTY
+  - I2C interface
+  - Backlight control
+
+Additional:
+  - Trackball navigation
+  - Speaker/microphone
+  - LoRa module (SX1262)
+  - GPS module (optional)
+```
+
+### T-Embed Hardware Specs
+
+```
+Display:
+  - 1.9" LCD (170x320)
+  - ST7789 controller
+
+Input:
+  - Rotary Encoder with button
+  - Compact form factor
+```
+
+### UI Design Principles
+
+1. **SimpleX-Style Interface**: Familiar to SimpleX users
+2. **High Contrast**: Readable in various lighting
+3. **Minimal Animations**: Performance over polish
+4. **Keyboard-First**: Optimized for physical input
+
+### Screen Mockups
+
+```
+┌────────────────────────┐
+│ ◉ SimpleGo    ▂▄▆█ 85%│  ← Status bar
+├────────────────────────┤
+│                        │
+│   ┌──────────────┐     │
+│   │ 🔒 Connected │     │  ← Main status
+│   │   to SMP3    │     │
+│   └──────────────┘     │
+│                        │
+│  Conversations: 3      │
+│  Unread: 2             │
+│                        │
+│  [Enter] Open          │
+│  [Menu] Settings       │
+│                        │
+└────────────────────────┘
+```
+
+### Success Criteria
+
+- [ ] Display initializes correctly
+- [ ] LVGL renders without artifacts
+- [ ] Keyboard/Encoder input works reliably
+- [ ] Navigate between screens
+- [ ] Compose and send message via UI
+- [ ] View received messages
+- [ ] Responsive to user input (<100ms)
 
 ---
 
@@ -196,17 +294,96 @@ As of v0.1.9-alpha, all base SMP commands are implemented:
 
 **Target**: Q3-Q4 2026
 
-### Feature Set
+### 5.1 Double Ratchet (Agent-Level E2E)
 
-| Feature | Priority | Description |
-|---------|----------|-------------|
-| Multiple Queues | High | Contact management |
-| Contact Storage | High | Save/load contacts in NVS |
-| WiFi Config | Medium | Credentials in NVS |
-| Connection Recovery | Medium | Auto-reconnect |
-| Double Ratchet | Medium | Agent-level E2E (Curve448) |
-| Group Messaging | Low | Group queues |
-| File Transfer | Low | XFTP integration |
+```
+Components:
+  - Identity Key (IK): Long-term Ed25519/X25519
+  - Signed Pre-Key (SPK): Medium-term, signed by IK
+  - One-Time Pre-Key (OPK): Single-use keys
+  
+X3DH Key Agreement:
+  - Initial key exchange protocol
+  - Output: Shared secret for Double Ratchet initialization
+
+Double Ratchet Algorithm:
+  1. DH Ratchet: New key exchange per message chain
+  2. Symmetric Ratchet: Derive new keys per message
+  
+Properties:
+  - Forward Secrecy: Past messages secure if key compromised
+  - Break-in Recovery: Future messages secure after compromise
+```
+
+### 5.2 Multiple Queues / Contact Management
+
+```
+- Multiple queue handling
+- Contact storage in NVS
+- Queue-to-contact mapping
+- Contact list UI
+```
+
+### 5.3 Group Messaging
+
+```
+- Group queue management
+- Member key distribution
+- Group admin functions
+```
+
+### 5.4 File Transfer
+
+```
+- XFTP protocol integration
+- Chunked file transfer
+- Progress indication
+```
+
+### 5.5 Connectivity Options
+
+```
+- 4G/LTE modem support (SIM7600)
+- WiFi mesh networking
+- LoRa peer-to-peer (local)
+```
+
+### 5.6 Tor Integration
+
+```
+- Optional Tor proxy
+- .onion SMP servers
+- Enhanced metadata protection
+```
+
+### 5.7 Multi-Device Sync
+
+```
+- Linked device protocol
+- Message synchronization
+- Key sharing mechanism
+```
+
+### 5.8 Hardware Security
+
+```
+- Secure boot
+- Flash encryption
+- Hardware key storage (if available)
+```
+
+### Prioritization Matrix
+
+| Feature | Impact | Effort | Priority |
+|---------|--------|--------|----------|
+| Multiple Queues | High | Medium | **High** |
+| Double Ratchet | High | High | Medium |
+| Group Messaging | High | High | Medium |
+| File Transfer | Medium | Medium | Medium |
+| 4G Connectivity | High | Medium | High |
+| Tor Support | Medium | High | Low |
+| Multi-Device | High | Very High | Low |
+| Hardware Security | High | Medium | High |
 
 ---
 
@@ -249,11 +426,40 @@ As of v0.1.9-alpha, all base SMP commands are implemented:
 5. Connection Recovery
 6. T-Deck Keyboard Support
 
+### Medium-term
+
+7. Double Ratchet (Curve448)
+8. Group Messaging
+
+---
+
+## Contributing to Roadmap
+
+### How to Propose Features
+
+1. **Open an Issue**: Describe the feature and use case
+2. **Discussion**: Community feedback and prioritization
+3. **RFC (if major)**: Formal proposal for significant changes
+4. **Implementation**: PR with tests and documentation
+
+### Current Priorities
+
+Looking for contributors in these areas:
+
+1. **Multiple Queue Support** — Immediate need
+2. **Double Ratchet Port** — Cryptography expertise needed
+3. **LVGL UI Development** — Embedded graphics experience
+4. **Documentation** — Protocol analysis and guides
+
 ---
 
 ## References
 
 - [SimpleX Messaging Protocol](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md)
+- [Double Ratchet Algorithm](https://signal.org/docs/specifications/doubleratchet/)
+- [X3DH Key Agreement](https://signal.org/docs/specifications/x3dh/)
+- [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/)
 - [ESP-IDF NVS Documentation](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/storage/nvs_flash.html)
 - [LVGL Documentation](https://docs.lvgl.io/)
 - [LilyGo T-Embed](https://github.com/Xinyuan-LilyGO/T-Embed)
+- [LilyGo T-Deck](https://github.com/Xinyuan-LilyGO/T-Deck)
