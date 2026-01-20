@@ -6,16 +6,16 @@
 
 ## Current Status (January 20, 2026)
 
-### Version: v0.1.10-alpha
+### Version: v0.1.11-alpha
 
-### 🏆 Multi-Contact + E2E Encryption Working!
+### 🔗 Invitation Links Working!
 
-Multiple contacts over ONE TLS connection with full E2E decryption!
+SimpleX Desktop/Mobile Apps can now connect directly to ESP32!
 
 **Latest Output:**
 ```
 I (5765) SMP: ========================================
-I (5765) SMP:   SimpleGo v0.1.10 - Multi-Contact E2E
+I (5765) SMP:   SimpleGo v0.1.11 - Invitation Links
 I (5765) SMP:   Part of Sentinel Secure Messenger Suite
 I (5765) SMP: ========================================
 I (6088) SMP: [1/7] Establishing TCP + TLS connection...
@@ -26,17 +26,29 @@ I (6708) SMP: [4/7] Loading contacts from NVS...
 I (6708) SMP:       Loaded 2 contacts
 I (6718) SMP: [5/7] Subscribing all contacts...
 I (6958) SMP:       📡 Subscriptions complete: 2/2
-I (6968) SMP: 🧪 SELF-TEST: Sending to [0] Test...
-I (7108) SMP:       📤 SEND command sent!
-I (7348) SMP:       💬 MESSAGE for [Test]!
-I (7358) SMP:       🔓 DECRYPTED: Hello from ESP32!
-I (7368) SMP:       ✅ ACK OK
+
+🔗 SIMPLEX CONTACT LINKS ════════════════════════════════════════════
+📱 [0] Test ─────────────────────────────────────────────────────────
+📋 SMP Queue URI (raw):
+   smp://1jne379u7IDJSxAvXbWb_JgoE7iabcslX0LBF22Rej0@smp3.simplexonflux.com:5223/XLEVCxbNocUkdcmSuQJMHQ_efzha0W_R#/?v=1-4&dh=MCowBQYDK2VuAyEA5tJkIGLCSx0fSehiUt5wmL7Pyq8H+VX2Km3ChgGaDRE=&q=c
+
+🌐 SimpleX Contact Link (COPY THIS!):
+   https://simplex.chat/contact#/?v=2-7&smp=smp%3A%2F%2F1jne379u7IDJSxAvXbWb_JgoE7iabcslX0LBF22Rej0%40smp3.simplexonflux.com%3A5223%2FXLEVCxbNocUkdcmSuQJMHQ_efzha0W_R%23%2F%3Fv%3D1-4%26dh%3DMCowBQYDK2VuAyEA5tJkIGLCSx0fSehiUt5wmL7Pyq8H%252BVX2Km3ChgGaDRE%253D%26q%3Dc
+
+══════════════════════════════════════════════════════════════════════
+📝 ANLEITUNG:
+   1. Den 🌐 Web Link kopieren
+   2. In SimpleX Desktop/Mobile App öffnen
+   3. 'Connect' klicken
+   4. Nachricht senden
+   5. ESP32 empfängt MSG!
 ```
 
 ---
 
 ## Working Features
 
+- ✅ **Invitation Links** ← NEU!
 - ✅ Multi-Contact Database (10 slots)
 - ✅ NVS Persistence (contacts_db as blob)
 - ✅ Batch SUB (all contacts, one connection)
@@ -49,7 +61,113 @@ I (7368) SMP:       ✅ ACK OK
 
 ---
 
-## Data Structures (v0.1.10)
+## Link Generation (v0.1.11)
+
+### Three Link Formats
+
+```
+📋 SMP Queue URI (raw):
+smp://keyHash@server:5223/senderId#/?v=1-4&dh=<base64>&q=c
+
+🌐 SimpleX Contact Link:
+https://simplex.chat/contact#/?v=2-7&smp=<URL-ENCODED-SMP-URI>
+
+📲 Direct App Link:
+simplex:/contact#/?v=2-7&smp=<URL-ENCODED-SMP-URI>
+```
+
+### URL-Encoding Rules
+
+```
+Single encoded:
+  :  →  %3A
+  /  →  %2F
+  @  →  %40
+  #  →  %23
+  ?  →  %3F
+  &  →  %26
+  =  →  %3D
+
+Double encoded (Base64 DH-Key only):
+  +  →  %252B
+  =  →  %253D
+```
+
+### Version Ranges
+
+| Layer | Version | Meaning |
+|-------|---------|---------|
+| Contact URI (outer) | `v=2-7` | Agent Version Range |
+| SMP Queue (inner) | `v=1-4` | SMP Client Version Range |
+
+### New Functions
+
+```c
+// Base64 Standard encoding (+ / = characters)
+void base64_standard_encode(const uint8_t *input, size_t len, char *output);
+
+// URL encoding with proper escaping
+void url_encode(const char *input, char *output, size_t max_len);
+
+// Generate and print all link formats
+void print_invitation_links(void);
+```
+
+---
+
+## Key Discoveries (v0.1.11)
+
+### Double Encoding for Base64 Special Characters
+
+```c
+// Im Base64-encoded DH-Key:
++  →  %2B   →  %252B  (doppelt encoded!)
+=  →  %3D   →  %253D  (doppelt encoded!)
+
+// Warum? Der SMP URI wird URL-encoded in den Contact URI eingebettet.
+// Base64 special chars müssen zweimal encoded werden.
+```
+
+### DH Key Format
+
+```
+Base64 Standard (NICHT base64url!)
+  - Mit + / = Zeichen
+  - SPKI Header (44 bytes total)
+  - X25519 Public Key
+```
+
+### Queue Mode Parameter
+
+```
+q=c  →  Contact Queue (für Contact Links)
+q=m  →  Message Queue (für Gruppen, etc.)
+```
+
+### Haskell Source References
+
+| File | Line | Discovery |
+|------|------|-----------|
+| Protocol.hs | 1078-1085 | `crEncode` Contact URI Format |
+| Protocol.hs | SMPQueueUri | `v=1-4&dh=<key>&q=c` Format |
+| ConnectionRequestTests.hs | - | `simplex:/contact#/?v=2-7&smp=` |
+
+---
+
+## Test Results (v0.1.11)
+
+| Test | Result |
+|------|--------|
+| Link in Browser öffnen | ✅ SimpleX Landing Page |
+| Link in SimpleX App öffnen | ✅ "Connect to Contact" Dialog |
+| Connect klicken | ✅ Verbindung hergestellt |
+| Nachricht senden | ✅ ESP32 empfängt MSG |
+| E2E Decryption | ✅ Nachricht entschlüsselt |
+| ACK senden | ✅ OK Response |
+
+---
+
+## Data Structures (v0.1.10+)
 
 ```c
 #define MAX_CONTACTS 10
@@ -77,20 +195,6 @@ typedef struct {
 
 ---
 
-## Key Functions (v0.1.10)
-
-| Function | Description |
-|----------|-------------|
-| `add_contact(name)` | NEW → IDS → save to NVS |
-| `remove_contact(idx)` | DEL → remove from NVS |
-| `list_contacts()` | Show all active contacts |
-| `subscribe_all_contacts()` | SUB for each contact |
-| `find_contact_by_recipient_id()` | MSG routing |
-| `decrypt_message(contact, cipher, plain)` | E2E decryption |
-| `self_test_send()` | Full round-trip test |
-
----
-
 ## Build Environment
 
 **Windows (ESP-IDF 5.5 PowerShell):**
@@ -107,66 +211,23 @@ grep -r "pattern" src --include="*.hs"
 
 ---
 
-## Key Discoveries (v0.1.10)
-
-### E2E Decryption Fix
-
-```c
-// WRONG: Raw X25519 output is NOT a valid crypto_box key!
-crypto_scalarmult(shared, secret, public);
-crypto_secretbox_open_easy(plain, cipher, len, nonce, shared);
-
-// CORRECT: crypto_box_beforenm does HSalsa20 key derivation
-crypto_box_beforenm(shared, public, secret);
-crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
-```
-
-**Why?** `crypto_box` uses HSalsa20 to derive the encryption key from the X25519 shared secret. Raw `crypto_scalarmult` skips this step!
-
-### SEND Command Format
-
-```
-SEND ' ' flags ' ' msgBody
-     ↑    ↑     ↑
-    0x20 ASCII 0x20
-
-flags = 'T' (notification) or 'F' (no notification)
-NOT binary 0x00/0x01!
-```
-
-**Haskell Source:**
-```haskell
--- Protocol.hs line 1697
-SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
-```
-
-### Server-Side Encryption
-
-The **server** encrypts messages for the recipient — the sending client does NOT encrypt:
-
-```haskell
--- Server.hs line 2024
-C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId')
-```
-
-So when we SEND plaintext, the server encrypts it using the recipient's DH key.
-
----
-
-## Haskell Source References
-
-| File | Line | Discovery |
-|------|------|-----------|
-| Protocol.hs | 1697 | SEND format: `SEND_, ' ', flags, ' ', Tail msg` |
-| Protocol.hs | 563 | MsgFlags: `notification :: Bool` |
-| Server.hs | 2024 | Server encrypts with `rcvDhSecret` |
-| Crypto.hs | 1372 | `cbNonce` pads msgId to 24 bytes |
-
----
-
 ## Session Updates
 
-### v0.1.10-alpha - Multi-Contact + E2E (Today!)
+### v0.1.11-alpha - Invitation Links (Today!)
+
+**Major Achievement:**
+- SimpleX-compatible contact links working!
+- SimpleX Desktop/Mobile can connect to ESP32!
+
+**New Functions:**
+- `base64_standard_encode()` — Base64 mit + / =
+- `url_encode()` — Standard URL encoding
+- `print_invitation_links()` — Alle Link-Formate ausgeben
+
+**Key Discovery:**
+- Doppeltes Encoding für + und = im Base64 DH-Key
+
+### v0.1.10-alpha - Multi-Contact + E2E
 
 **Major Changes:**
 - Multi-contact database with NVS persistence
@@ -221,6 +282,13 @@ crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
      │  OK                                     │
      │<────────────────────────────────────────│
      │                                         │
+     │  ═══════════════════════════════════   │
+     │  📋 Generate Invitation Link:          │
+     │  smp://keyHash@server/senderId#/...    │
+     │  ═══════════════════════════════════   │
+     │                                         │
+     │  (SimpleX App connects via Link)       │
+     │                                         │
      │  SEND ' ' 'F' ' ' "Hello!"             │
      │────────────────────────────────────────>│
      │                                         │
@@ -248,22 +316,31 @@ crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
 ### Immediate
 
 1. **T-Embed UI** — Display + Rotary Encoder
-2. **Contact Naming** — Better UX for management
-3. **Connection Recovery** — Auto-reconnect
+2. **Bidirectional Chat** — Two queues per contact
+3. **QR Code Generation** — Display invitation link as QR
 
 ### Short-term
 
-4. **Multiple Servers** — Contact on different SMP servers
-5. **Bidirectional** — Two queues per contact
+4. Multiple Servers — Contact on different SMP servers
+5. Connection Recovery — Auto-reconnect
+6. T-Deck Keyboard Support
 
 ### Medium-term
 
-6. **Double Ratchet** — Full Agent-level E2E
-7. **Group Messaging**
+7. Double Ratchet (Curve448)
+8. Group Messaging
 
 ---
 
 ## Known Issues
+
+### Resolved (v0.1.11)
+
+| Issue | Solution |
+|-------|----------|
+| Links not working | Double encoding for Base64 + and = |
+| Wrong DH key format | Base64 Standard, nicht base64url |
+| Missing queue mode | `q=c` Parameter hinzugefügt |
 
 ### Resolved (v0.1.10)
 
@@ -280,12 +357,13 @@ crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
 | Multi-server | TODO | All contacts on same server |
 | Bidirectional chat | TODO | Need two queues per contact |
 | T-Embed UI | TODO | Display integration |
+| QR Code | TODO | Show link as scannable QR |
 
 ---
 
 ## 🏆 Achievement Unlocked
 
-**"First Native ESP32 Multi-Contact SimpleX Client with E2E Encryption"**
+**"First Native ESP32 SimpleX Client with Working Invitation Links"**
 
 - ✅ Multiple Queues (10 contacts, one connection)
 - ✅ Contact Management (Add/Remove/List)
@@ -293,7 +371,8 @@ crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
 - ✅ XSalsa20-Poly1305 E2E Encryption
 - ✅ Ed25519 Signing + X25519 Key Exchange
 - ✅ NVS Persistent Storage
+- ✅ **SimpleX-Compatible Invitation Links**
 
 ---
 
-*Last updated: January 20, 2026 — v0.1.10-alpha*
+*Last updated: January 20, 2026 — v0.1.11-alpha*
