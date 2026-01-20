@@ -1,6 +1,6 @@
 # SimpleGo Technical Documentation
 
-> Key learnings, discoveries, and implementation decisions from developing the first native SMP client
+> Key learnings, discoveries, and implementation decisions
 
 ---
 
@@ -8,10 +8,10 @@
 
 1. [Project Background](#project-background)
 2. [Critical Discoveries](#critical-discoveries)
-3. [Debugging Journey](#debugging-journey)
-4. [Architecture Decisions](#architecture-decisions)
-5. [Cryptographic Considerations](#cryptographic-considerations)
-6. [Protocol Reverse Engineering](#protocol-reverse-engineering)
+3. [Architecture Decisions](#architecture-decisions)
+4. [SMP Version Analysis](#smp-version-analysis)
+5. [NVS Persistence](#nvs-persistence)
+6. [Debugging Journey](#debugging-journey)
 7. [Lessons Learned](#lessons-learned)
 
 ---
@@ -20,7 +20,7 @@
 
 ### The Challenge
 
-All existing SimpleX clients (iOS, Android, Desktop, CLI) share a common architecture:
+All existing SimpleX clients use the same architecture:
 
 ```
 ┌─────────────────┐     ┌─────────────────┐
@@ -30,15 +30,15 @@ All existing SimpleX clients (iOS, Android, Desktop, CLI) share a common archite
 └─────────────────┘     └─────────────────┘
 ```
 
-This means:
-- Heavy runtime dependency (~50MB+ for Haskell runtime)
+**Problems**:
+- Heavy runtime (~50MB+ for Haskell)
 - Complex FFI bindings
 - Not portable to embedded systems
-- No existing documentation for standalone implementation
+- No standalone implementation documentation
 
 ### The Goal
 
-Build a **native C implementation** that can run on resource-constrained hardware:
+**Native C implementation** for resource-constrained hardware:
 
 ```
 ┌─────────────────┐
@@ -55,8 +55,8 @@ Build a **native C implementation** that can run on resource-constrained hardwar
 
 1. **First of its kind** — No known native SMP implementation exists
 2. **Embedded privacy** — Secure messaging on dedicated hardware
-3. **Documentation** — Creates reference for future implementations
-4. **Independence** — No reliance on Haskell ecosystem
+3. **Documentation** — Reference for future implementations
+4. **Independence** — No Haskell ecosystem dependency
 
 ---
 
@@ -66,24 +66,19 @@ Build a **native C implementation** that can run on resource-constrained hardwar
 
 **Date**: January 18, 2026
 
-**Problem**: ClientHello was rejected despite correct format.
+**Problem**: ClientHello rejected despite correct format.
 
-**Finding**: The keyHash in SMP URLs refers to the **CA certificate** fingerprint, not the server certificate.
+**Finding**: keyHash in SMP URLs = **CA certificate** fingerprint, NOT server certificate.
 
-**ServerHello certificate structure**:
 ```
-[Server Certificate (online cert)]
-[CA Certificate] ← Use THIS for keyHash!
+ServerHello certificates:
+  [Server Certificate] ← NOT this
+  [CA Certificate]     ← Use THIS for keyHash!
 ```
 
 **Solution**:
 ```c
-// Parse both certificates
-parse_cert_chain(hello, content_len, 
-    &cert1_off, &cert1_len,   // Server cert
-    &cert2_off, &cert2_len);  // CA cert
-
-// Hash the CA certificate
+// Hash the CA certificate (2nd in chain)
 mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
 ```
 
@@ -93,33 +88,28 @@ mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
 
 **Date**: January 19, 2026
 
-**Problem**: Persistent `ERR AUTH` errors despite correct signature format.
+**Problem**: Persistent `ERR AUTH` with correct signature format.
 
-**Root Cause**: Ed25519 has implementation variations. Monocypher and libsodium produce **different signatures** for identical input!
+**Root Cause**: Ed25519 has implementation variations. Monocypher and libsodium produce **different signatures** for same input!
 
-**SimpleX Server Uses**: `crypton` library (Haskell), which is libsodium-compatible.
+**SimpleX Server Uses**: `crypton` library (Haskell) = libsodium-compatible
 
-**Solution**: Switch from Monocypher to ESP-IDF's libsodium component.
+**Solution**: Switch to ESP-IDF's libsodium component.
 
 ---
 
-### Discovery #3: Command vs Handshake Block Format
+### Discovery #3: Block Format Differentiation
 
 **Date**: January 19, 2026
 
-**Problem**: `ERR BLOCK` when sending NEW command after successful handshake.
+**Problem**: `ERR BLOCK` when sending NEW command.
 
 **Finding**: SMP uses two different block formats:
 
-**Handshake Block**:
-```
-[Length 2 bytes][Content][Padding '#']
-```
-
-**Command Block**:
-```
-[OrigLen 2 bytes][TxCount 1 byte][TxLen 2 bytes][Transmission][Padding '#']
-```
+| Type | Format |
+|------|--------|
+| Handshake | `[Len 2B][Content][Padding]` |
+| Command | `[OrigLen 2B][TxCount 1B][TxLen 2B][Transmission][Padding]` |
 
 ---
 
@@ -129,55 +119,29 @@ mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
 
 **Problem**: `ERR CMD SYNTAX` on SEND command.
 
-**Finding**: msgFlags must be ASCII 'T' (0x54) or 'F' (0x46), NOT binary 0x01/0x00!
+**Finding**: msgFlags = ASCII 'T' (0x54) or 'F' (0x46), NOT binary!
 
-From Haskell Encoding.hs:
 ```haskell
+-- Encoding.hs
 True  = "T" (ASCII 0x54)
 False = "F" (ASCII 0x46)
 ```
 
 ---
 
-### Discovery #5: ACK Uses recipientId, Not senderId
+### Discovery #5: ACK Uses recipientId
 
 **Date**: January 20, 2026
 
 **Problem**: `ERR AUTH` on ACK command.
 
-**Finding**: ACK is a **Recipient command** (like SUB), not a Sender command (like SEND). Therefore:
-- EntityId = recipientId
-- Signed with rcv_auth_secret
+**Finding**: ACK is a **Recipient command** (like SUB), not Sender command.
 
----
-
-## Debugging Journey
-
-### Error State Progression
-
-```
-Timeline:
-─────────────────────────────────────────────────────────────────────────>
-
-[TLS FAIL]  [ERR BLOCK]  [ERR CMD]   [ERR AUTH]  [DECRYPT]   [ACK OK]
-    │           │            │           │           │           │
-    ▼           ▼            ▼           ▼           ▼           ▼
-  TLS 1.3    Block        SubMode    libsodium   E2E works   Full
-  + ALPN     format       + flags    signatures  v0.1.6      lifecycle
-  fixed      fixed        fixed      working                 v0.1.7
-```
-
-### Detailed Error Analysis
-
-| Error | Symptom | Root Cause | Fix |
-|-------|---------|------------|-----|
-| TLS handshake fail | -0x7780 | TLS version mismatch | Force TLS 1.3 only |
-| No ServerHello | Timeout | Wrong ALPN | Set ALPN to "smp/1" |
-| ERR BLOCK | After ClientHello | Wrong block format for commands | Use command block format |
-| ERR CMD SYNTAX | After NEW | Missing subMode | Add 'S' parameter |
-| ERR CMD SYNTAX | SEND command | Binary msgFlags | Use ASCII 'T'/'F' |
-| ERR AUTH | After adding subMode | Wrong signature | Switch to libsodium |
-| ERR AUTH | ACK command | Wrong entityId | Use recipientId, not senderId |
+| Command | Type | EntityId |
+|---------|------|----------|
+| SUB | Recipient | recipientId |
+| SEND | Sender | senderId |
+| ACK | Recipient | recipientId ← NOT senderId! |
 
 ---
 
@@ -190,10 +154,11 @@ Timeline:
 | TLS 1.3 | ⚠️ Limited | ✅ Full support |
 | mbedTLS access | Wrapped | Direct |
 | Memory control | Limited | Full |
+| NVS access | Limited | Full |
 | RTOS features | Hidden | Exposed |
 | Production ready | Hobby | Yes |
 
-### Why libsodium over mbedTLS Crypto?
+### Why libsodium?
 
 | Aspect | mbedTLS | libsodium |
 |--------|---------|-----------|
@@ -202,91 +167,132 @@ Timeline:
 | crypto_box | ❌ No | ✅ Yes |
 | SimpleX compatible | Unknown | ✅ Yes |
 
-### Why SMP v6?
+---
 
-v6 provides everything needed for a complete messenger:
+## SMP Version Analysis
+
+### Version Comparison
+
+| Version | Key Feature | Impact |
+|---------|-------------|--------|
+| **v6** | Base protocol | ✅ What SimpleGo uses |
+| **v7+** | `implySessId` | sessionId not sent, included in signature |
+| **v7+** | `authEncryptCmds` | Commands encrypted with X25519 DH |
+| **v17** | Batch commands | Multiple commands per block |
+
+### Why v6?
+
+v6 has **everything** needed:
 - ✅ Queue management (NEW, SUB, DEL)
 - ✅ Message sending (SEND)
 - ✅ Message receiving (MSG)
 - ✅ Acknowledgment (ACK)
 - ✅ E2E encryption
 
-v7+ adds optimizations (implySessId, authEncryptCmds) but no critical features.
+v7+ adds **optimizations**, not critical features.
 
----
+### Haskell Source Reference
 
-## Cryptographic Considerations
+```haskell
+-- Transport.hs
+authCmdsSMPVersion = VersionSMP 7
 
-### Key Management
-
-```
-┌─────────────────────────────────────────────────────────┐
-│ Per-Queue Keys                                          │
-├─────────────────────────────────────────────────────────┤
-│ rcvAuthKey (Ed25519)  ─── Signs commands to server      │
-│ rcvDhKey (X25519)     ─── Key exchange with sender      │
-└─────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────┐
-│ From Server (IDS Response)                              │
-├─────────────────────────────────────────────────────────┤
-│ recipientId (24 bytes) ─── For SUB, ACK commands        │
-│ senderId (24 bytes)    ─── For SEND command             │
-│ serverDhKey (X25519)   ─── Server's DH public key       │
-└─────────────────────────────────────────────────────────┘
+implySessId = v >= authCmdsSMPVersion
+-- v6: sessionId sent in transmission, NOT in signature
+-- v7+: sessionId NOT sent, IS in signature
 ```
 
-### E2E Encryption Flow
+### Upgrade Path
 
 ```
-SEND:
-  Client → [plaintext] → Server encrypts → [ciphertext] → Queue
-
-MSG:
-  Queue → [ciphertext] → Client decrypts with DH shared secret → [plaintext]
-
-Decryption:
-  shared_secret = X25519(srv_dh_public, rcv_dh_secret)
-  nonce = msgId (zero-padded to 24 bytes)
-  plaintext = crypto_box_open(ciphertext, nonce, shared_secret)
+v6 (current) ────────► v17 (when stable)
+             direct upgrade, skip v7-v16
 ```
 
 ---
 
-## Protocol Reverse Engineering
+## NVS Persistence
 
-### Information Sources
+### Overview (v0.1.8)
 
-| Source | Usefulness | Notes |
-|--------|------------|-------|
-| Protocol spec | 70% | Missing implementation details |
-| Haskell source | 95% | Authoritative but complex |
-| Trial & error | 100% | Essential for edge cases |
+Keys and queue IDs survive reboots using ESP32's Non-Volatile Storage.
 
-### Key Haskell Files
+### Why NVS?
+
+| Storage | Pros | Cons |
+|---------|------|------|
+| **NVS** | Simple API, wear-leveling | ~16KB limit |
+| SPIFFS | Larger files | Overkill for keys |
+| SD Card | Large storage | Hardware needed |
+
+### Persisted Data
+
+| Key | Size | Description |
+|-----|------|-------------|
+| rcv_auth_sk | 64 bytes | Ed25519 Secret Key |
+| rcv_auth_pk | 32 bytes | Ed25519 Public Key |
+| rcv_dh_sk | 32 bytes | X25519 Secret Key |
+| rcv_dh_pk | 32 bytes | X25519 Public Key |
+| rcv_id | 24 bytes | Recipient ID |
+| rcv_id_len | 1 byte | Length |
+| snd_id | 24 bytes | Sender ID |
+| snd_id_len | 1 byte | Length |
+| srv_dh_pk | 32 bytes | Server DH Key |
+| have_srv_dh | 1 byte | Flag |
+
+### API Functions
+
+```c
+bool have_saved_keys()      // Check if keys exist
+bool load_keys_from_nvs()   // Load all keys
+void save_keys_to_nvs()     // Save after IDS
+void clear_saved_keys()     // Delete all (reset)
+```
+
+### New Flow
 
 ```
-simplexmq/src/Simplex/Messaging/
-├── Protocol.hs      ─── Command definitions
-├── Transport.hs     ─── Block framing
-├── Client.hs        ─── Client-side logic
-├── Server.hs        ─── Server-side (for understanding errors)
-├── Crypto.hs        ─── Cryptographic operations
-└── Encoding.hs      ─── Binary encoding helpers
+Start
+  │
+  ▼
+TLS + Handshake
+  │
+  ▼
+load_keys_from_nvs()
+  │
+  ├── Keys found? ──► Skip NEW ──► SUB directly
+  │
+  └── No keys? ──► NEW ──► save_keys_to_nvs() ──► SUB
 ```
 
-### Useful grep Patterns
+---
 
-```bash
-# Find ACK handling
-grep -rn "ACK_\|pattern ACK" src/Simplex/Messaging/Protocol.hs
+## Debugging Journey
 
-# Find version differences
-grep -rn "implySessId\|authCmdsSMPVersion" src/Simplex/Messaging/
+### Error Progression
 
-# Find encoding logic
-grep -r "smpEncode\|Encoding" --include="*.hs"
 ```
+Timeline:
+────────────────────────────────────────────────────────────────────>
+
+[TLS FAIL] [ERR BLOCK] [ERR CMD] [ERR AUTH] [DECRYPT] [ACK OK] [NVS]
+    │          │           │         │          │         │       │
+    ▼          ▼           ▼         ▼          ▼         ▼       ▼
+  TLS 1.3   Block      SubMode   libsodium   E2E      Full    Keys
+  + ALPN    format     + flags   signatures  works    cycle   persist
+```
+
+### Error Analysis
+
+| Error | Symptom | Root Cause | Fix |
+|-------|---------|------------|-----|
+| TLS fail | -0x7780 | TLS version | Force TLS 1.3 |
+| No ServerHello | Timeout | Wrong ALPN | Set "smp/1" |
+| ERR BLOCK | After ClientHello | Wrong block format | Command block format |
+| ERR CMD SYNTAX | After NEW | Missing subMode | Add 'S' |
+| ERR CMD SYNTAX | SEND | Binary msgFlags | ASCII 'T'/'F' |
+| ERR AUTH | NEW | Wrong signature | libsodium |
+| ERR AUTH | ACK | Wrong entityId | Use recipientId |
 
 ---
 
@@ -294,68 +300,75 @@ grep -r "smpEncode\|Encoding" --include="*.hs"
 
 ### 1. Test Assumptions Early
 
-**Assumption**: "Ed25519 is Ed25519"
-**Reality**: Implementation differences exist
-**Lesson**: Verify crypto library compatibility before committing
+**Assumption**: "Ed25519 is Ed25519"  
+**Reality**: Implementation differences exist  
+**Lesson**: Verify crypto library compatibility first
 
 ### 2. Incremental Debugging
 
-**Approach that worked**:
 ```
-1. Get TLS working (isolated test)
-2. Get handshake working (isolated test)
-3. Get NEW working (full auth)
-4. Get SUB working
-5. Get SEND working
-6. Get MSG decrypt working
-7. Get ACK working
+1. TLS working (isolated)
+2. Handshake working (isolated)
+3. NEW working (full auth)
+4. SUB working
+5. SEND working
+6. MSG decrypt working
+7. ACK working
+8. NVS persistence working
 ```
 
 ### 3. The Source is Truth
 
-When in doubt, read the Haskell source. It's complex but correct.
+When in doubt, read the Haskell source. Complex but correct.
 
 ### 4. Error Messages are Clues
 
 ```
-ERR BLOCK   → Block format problem
-ERR CMD     → Command format problem
-ERR AUTH    → Signature or entityId problem
-ERR NO_MSG  → Message already ACK'd
+ERR BLOCK   → Block format
+ERR CMD     → Command format
+ERR AUTH    → Signature or entityId
+ERR NO_MSG  → Already ACK'd
 ```
 
-### 5. EntityId Matters
+### 5. Persist Early
 
-Different commands use different entityIds:
-- NEW: empty
-- SUB: recipientId
-- SEND: senderId
-- ACK: recipientId (NOT senderId!)
+Save keys immediately after IDS response. Power can fail anytime.
 
 ---
 
-## Appendix: Quick Reference
+## Quick Reference
 
 ### Block Sizes
 
-| Constant | Value | Usage |
-|----------|-------|-------|
-| SMP_BLOCK_SIZE | 16384 | All blocks |
-| MAX_CONTENT | 16382 | Block - 2 byte header |
-| SESSION_ID_LEN | 32 | Session identifier |
-| ED25519_SIG_LEN | 64 | Signature size |
-| SPKI_KEY_SIZE | 44 | 12 header + 32 key |
+| Constant | Value |
+|----------|-------|
+| SMP_BLOCK_SIZE | 16384 |
+| MAX_CONTENT | 16382 |
+| SESSION_ID_LEN | 32 |
+| ED25519_SIG_LEN | 64 |
+| SPKI_KEY_SIZE | 44 |
 
-### Command EntityIds
+### EntityId per Command
 
-| Command | EntityId | Auth Required |
-|---------|----------|---------------|
-| NEW | empty | Yes (rcvAuthKey) |
-| SUB | recipientId | Yes (rcvAuthKey) |
-| SEND | senderId | No (unsecured queue) |
-| ACK | recipientId | Yes (rcvAuthKey) |
-| DEL | recipientId | Yes (rcvAuthKey) |
+| Command | EntityId |
+|---------|----------|
+| NEW | empty |
+| SUB | recipientId |
+| SEND | senderId |
+| ACK | recipientId |
+| DEL | recipientId |
+
+### Performance (ESP32-S3)
+
+| Operation | Time |
+|-----------|------|
+| Ed25519 keygen | ~8ms |
+| Ed25519 sign | ~8ms |
+| X25519 keygen | ~8ms |
+| crypto_box decrypt | ~1ms |
+| TLS handshake | ~800ms |
+| NVS read/write | ~5ms |
 
 ---
 
-*Last updated: January 20, 2026 — v0.1.7-alpha*
+*Last updated: January 20, 2026 — v0.1.8-alpha*
