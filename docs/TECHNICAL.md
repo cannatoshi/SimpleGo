@@ -150,8 +150,6 @@ crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
 C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId')
 ```
 
-The server uses the recipient's DH key (`rcvDhSecret`) to encrypt messages.
-
 ---
 
 ### Discovery #9: ACK/DEL Use recipientId
@@ -160,12 +158,74 @@ The server uses the recipient's DH key (`rcvDhSecret`) to encrypt messages.
 
 **Finding**: ACK and DEL are **Recipient commands** — entityId must be recipientId, not senderId.
 
-| Command | Type | EntityId |
-|---------|------|----------|
-| SUB | Recipient | recipientId |
-| SEND | Sender | senderId |
-| ACK | Recipient | recipientId |
-| DEL | Recipient | recipientId |
+---
+
+### Discovery #10: Double URL Encoding for Base64 Special Characters
+
+**Problem**: Invitation links not working in SimpleX app.
+
+**Finding**: The `+` and `=` characters in the Base64-encoded DH key must be **double URL-encoded** because the SMP URI is embedded inside the Contact URI.
+
+```
+Base64 DH-Key contains:  +  =
+                         ↓  ↓
+First URL encode:       %2B %3D
+                         ↓  ↓
+Second URL encode:      %252B %253D
+```
+
+**Example:**
+```
+Original:  dh=MCowBQYDK2VuAyEA...+...=
+Encoded:   dh%3DMCowBQYDK2VuAyEA...%252B...%253D
+```
+
+---
+
+### Discovery #11: Base64 Standard vs Base64url
+
+**Problem**: DH key not recognized by SimpleX app.
+
+**Finding**: The DH key in invitation links must use **Base64 Standard encoding** (with `+`, `/`, `=` characters), NOT base64url (with `-`, `_`, no padding).
+
+```c
+// ❌ WRONG: base64url
+const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+// ✅ CORRECT: base64 standard
+const char table[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+```
+
+---
+
+### Discovery #12: Queue Mode Parameter
+
+**Problem**: Links missing required parameter.
+
+**Finding**: SMP Queue URI requires `q=c` parameter for contact queues.
+
+```
+smp://...#/?v=1-4&dh=...&q=c
+                        ^^^^
+                        Queue Mode: Contact
+```
+
+---
+
+### Discovery #13: Version Ranges in Links
+
+**Finding**: Invitation links have TWO version ranges at different levels:
+
+| Layer | Parameter | Value | Meaning |
+|-------|-----------|-------|---------|
+| Contact URI (outer) | `v` | `2-7` | Agent Version Range |
+| SMP Queue (inner) | `v` | `1-4` | SMP Client Version Range |
+
+**Haskell Source:**
+```haskell
+-- ConnectionRequestTests.hs
+"simplex:/contact#/?v=2-7&smp=..."
+```
 
 ---
 
@@ -175,13 +235,14 @@ The server uses the recipient's DH key (`rcvDhSecret`) to encrypt messages.
 
 ```
 Timeline:
-──────────────────────────────────────────────────────────────────────────────────>
+──────────────────────────────────────────────────────────────────────────────────────────>
 
-[TLS] [BLOCK] [CMD] [AUTH] [DECRYPT] [SEND] [E2E FIX] [MULTI]
-  │      │      │      │       │        │       │        │
-  ▼      ▼      ▼      ▼       ▼        ▼       ▼        ▼
-TLS    Block  SubMode libsodium First  ASCII  HSalsa20 10 contacts
-1.3    format added   works    decrypt flags   key      working!
+[TLS] [BLOCK] [CMD] [AUTH] [DECRYPT] [SEND] [E2E FIX] [MULTI] [LINKS]
+  │      │      │      │       │        │       │        │       │
+  ▼      ▼      ▼      ▼       ▼        ▼       ▼        ▼       ▼
+TLS    Block  SubMode libsodium First  ASCII  HSalsa20 10      SimpleX
+1.3    format added   works    decrypt flags   key     contacts Apps
+                                                        working  connect!
 ```
 
 ### Detailed Error Analysis
@@ -196,6 +257,8 @@ TLS    Block  SubMode libsodium First  ASCII  HSalsa20 10 contacts
 | ERR AUTH | Wrong crypto lib | Switch to libsodium |
 | ERR AUTH | Wrong entityId | recipientId for ACK/DEL |
 | Decrypt fail | Raw X25519 | Use crypto_box_beforenm |
+| Links broken | Single encoding | Double encode +/= |
+| Links broken | base64url | Use base64 standard |
 
 ---
 
@@ -250,7 +313,7 @@ All contacts share ONE TLS connection but have separate crypto keys.
 ```
 Per-Contact Keys:
 ├── rcvAuthKey (Ed25519) ─── Signs commands
-├── rcvDhKey (X25519)    ─── Key exchange
+├── rcvDhKey (X25519)    ─── Key exchange / Invitation links
 └── srvDhKey (X25519)    ─── From server (IDS response)
 
 Shared:
@@ -275,6 +338,27 @@ Client decrypts:
   3. crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared)
 ```
 
+### Invitation Link Generation
+
+```
+rcvDhKey (X25519 public, 32 bytes)
+     │
+     ▼
+SPKI format (44 bytes = 12 header + 32 key)
+     │
+     ▼
+Base64 Standard encode (NOT base64url!)
+     │
+     ▼
+Embed in SMP Queue URI: dh=MCowBQYDK2VuAyEA...
+     │
+     ▼
+URL encode SMP URI (double encode +/= in Base64)
+     │
+     ▼
+Embed in Contact URI: https://simplex.chat/contact#/?v=2-7&smp=...
+```
+
 ---
 
 ## Protocol Reverse Engineering
@@ -283,10 +367,11 @@ Client decrypts:
 
 | File | Purpose |
 |------|---------|
-| Protocol.hs | Command definitions |
+| Protocol.hs | Command definitions, URI encoding |
 | Transport.hs | Block framing |
 | Server.hs | Server-side logic |
 | Crypto.hs | Cryptographic operations |
+| ConnectionRequestTests.hs | URI format tests |
 
 ### Useful grep Commands
 
@@ -297,8 +382,11 @@ grep -r "pattern SEND\|SEND_" --include="*.hs"
 # Find encryption
 grep -r "cbEncrypt\|rcvDhSecret" --include="*.hs"
 
-# Find nonce handling
-grep -r "cbNonce" --include="*.hs"
+# Find URI encoding
+grep -r "crEncode\|SMPQueueUri" --include="*.hs"
+
+# Find version ranges
+grep -r "v=2-7\|v=1-4" --include="*.hs"
 ```
 
 ---
@@ -325,7 +413,15 @@ ERR AUTH    → Signature/EntityId
 
 ### 4. crypto_box ≠ crypto_scalarmult + crypto_secretbox
 
-The NaCl `crypto_box` functions do HSalsa20 key derivation internally. You can't replicate them with raw primitives!
+The NaCl `crypto_box` functions do HSalsa20 key derivation internally.
+
+### 5. URL Encoding is Tricky
+
+When embedding encoded content inside another encoded string, you need multiple levels of encoding.
+
+### 6. Base64 Standard ≠ Base64url
+
+They use different character sets. SimpleX invitation links require Base64 Standard with `+`, `/`, `=`.
 
 ---
 
@@ -348,19 +444,35 @@ The NaCl `crypto_box` functions do HSalsa20 key derivation internally. You can't
 | Ed25519 | 64 | 32 | 44 |
 | X25519 | 32 | 32 | 44 |
 
+### URL Encoding Quick Reference
+
+| Character | Single Encode | Double Encode |
+|-----------|---------------|---------------|
+| `:` | `%3A` | `%253A` |
+| `/` | `%2F` | `%252F` |
+| `@` | `%40` | `%2540` |
+| `#` | `%23` | `%2523` |
+| `?` | `%3F` | `%253F` |
+| `&` | `%26` | `%2526` |
+| `=` | `%3D` | `%253D` |
+| `+` | `%2B` | `%252B` |
+
 ---
 
-## 🏆 Milestone: Multi-Contact E2E Client
+## 🏆 Milestone: Invitation Links Working!
 
-As of v0.1.10-alpha:
+As of v0.1.11-alpha:
 
 - ✅ Multiple Contacts (10 slots, one connection)
 - ✅ Full Message Lifecycle (NEW→SUB→SEND→MSG→DECRYPT→ACK)
 - ✅ NVS Persistent Storage
 - ✅ E2E Encryption (crypto_box)
+- ✅ **SimpleX-Compatible Invitation Links**
 
-**Achievement: "First Native ESP32 Multi-Contact SimpleX Client with E2E Encryption"**
+**Achievement: "First Native ESP32 SimpleX Client with Working Invitation Links"**
+
+SimpleX Desktop/Mobile Apps can now connect directly to ESP32!
 
 ---
 
-*Last updated: January 20, 2026 — v0.1.10-alpha*
+*Last updated: January 20, 2026 — v0.1.11-alpha*
