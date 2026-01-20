@@ -12,7 +12,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Planned
 - T-Embed UI (Display + Encoder)
 - Double Ratchet (Curve448)
-- Contact naming via UI
+- Bidirectional Chat (two queues per contact)
+
+---
+
+## [0.1.11-alpha] - 2026-01-20
+
+### 🔗 Invitation Links Working!
+
+SimpleX Desktop/Mobile Apps can now connect directly to ESP32!
+
+### Added
+- **SimpleX-Compatible Contact Links** — ESP32 generates working invitation links
+- **Three Link Formats** — SMP Queue URI, Web Link, Direct App Link
+- **Base64 Standard Encoding** — For SPKI X25519 public keys
+- **URL Encoding** — With correct double-encoding for Base64 special chars
+- **Link Generation Functions** — `base64_standard_encode()`, `url_encode()`, `print_invitation_links()`
+
+### Technical Details
+
+**Link Formats Generated:**
+```
+📋 SMP Queue URI (raw):
+smp://keyHash@server:5223/senderId#/?v=1-4&dh=<base64>&q=c
+
+🌐 SimpleX Contact Link:
+https://simplex.chat/contact#/?v=2-7&smp=<URL-ENCODED-SMP-URI>
+
+📲 Direct App Link:
+simplex:/contact#/?v=2-7&smp=<URL-ENCODED-SMP-URI>
+```
+
+**URL-Encoding Rules:**
+```
+Single encoded: : / @ # ? & =
+Double encoded (Base64 DH-Key only): + → %252B, = → %253D
+```
+
+**Version Ranges:**
+- Contact URI (outer): `v=2-7` (Agent Version Range)
+- SMP Queue (inner): `v=1-4` (SMP Client Version Range)
+
+**Parameters:**
+- `dh=` — Base64 Standard encoded SPKI X25519 Public Key
+- `q=c` — Queue Mode: Contact
+
+### Proof - Working Output
+```
+🔗 SIMPLEX CONTACT LINKS ════════════════════════════════════════════
+📱 [0] Test ─────────────────────────────────────────────────────────
+📋 SMP Queue URI (raw):
+   smp://1jne...@smp3.simplexonflux.com:5223/XLEV...#/?v=1-4&dh=MCow...&q=c
+
+🌐 SimpleX Contact Link (COPY THIS!):
+   https://simplex.chat/contact#/?v=2-7&smp=smp%3A%2F%2F...
+
+══════════════════════════════════════════════════════════════════════
+📝 ANLEITUNG:
+   1. Den 🌐 Web Link kopieren
+   2. In SimpleX Desktop/Mobile App öffnen
+   3. 'Connect' klicken
+   4. Nachricht senden
+   5. ESP32 empfängt MSG!
+```
+
+### Test Results
+- ✅ Link in Browser → SimpleX Landing Page
+- ✅ Link in SimpleX App → "Connect to Contact" Dialog
+- ✅ Connect → Works!
+- ✅ Send Message → ESP32 receives MSG!
+
+### Key Discoveries
+
+| Discovery | Details |
+|-----------|---------|
+| Double Encoding | Only `+` and `=` in Base64 DH-Key are double-encoded |
+| Queue Mode | `q=c` for Contact Queue |
+| Version Ranges | Outer: `v=2-7`, Inner: `v=1-4` |
+| DH Key Format | Base64 Standard (NOT base64url!) with SPKI Header |
+
+### Haskell Source References
+
+| File | Line | Discovery |
+|------|------|-----------|
+| Protocol.hs | 1078-1085 | `crEncode` Contact URI Format |
+| Protocol.hs | SMPQueueUri | `v=1-4&dh=<key>&q=c` Format |
+| ConnectionRequestTests.hs | - | `simplex:/contact#/?v=2-7&smp=` |
 
 ---
 
@@ -58,7 +143,7 @@ typedef struct {
 
 **E2E Decryption Fix:**
 ```c
-// WRONG: Raw X25519 produces wrong key format
+// WRONG: Raw X25519 shared secret is NOT a valid encryption key!
 crypto_scalarmult(shared, secret, public);
 crypto_secretbox_open_easy(...);
 
@@ -72,17 +157,6 @@ crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
 SEND ' ' 'F' ' ' msgBody
      ↑    ↑   ↑
     0x20 ASCII 0x20
-```
-
-### Proof - Self-Test Output
-```
-📡 Subscriptions complete: 2/2
-🧪 SELF-TEST: Sending message to [0] Test...
-📤 SEND command sent!
-💬 MESSAGE for [Test]!
-🔓 DECRYPTED: Hello from ESP32!
-📨 Sending ACK...
-✅ OK
 ```
 
 ### Key Discoveries
@@ -235,7 +309,8 @@ First native ESP32 SimpleX client with working E2E encryption!
 
 | Version | Date | Milestone |
 |---------|------|-----------|
-| **v0.1.10-alpha** | **2026-01-20** | **🏆 Multi-Contact + E2E Working!** |
+| **v0.1.11-alpha** | **2026-01-20** | **🔗 Invitation Links Working!** |
+| v0.1.10-alpha | 2026-01-20 | 🏆 Multi-Contact + E2E |
 | v0.1.9-alpha | 2026-01-20 | 🗑️ DEL + Full SMP Client |
 | v0.1.8-alpha | 2026-01-20 | 🔑 NVS Persistence |
 | v0.1.7-alpha | 2026-01-20 | ✅ ACK Command |
@@ -251,7 +326,7 @@ First native ESP32 SimpleX client with working E2E encryption!
 
 ## 🏆 Achievement Unlocked
 
-**"First Native ESP32 Multi-Contact SimpleX Client with E2E Encryption"**
+**"First Native ESP32 SimpleX Client with Working Invitation Links"**
 
 - ✅ Multiple Queues (10 contacts, one connection)
 - ✅ Contact Management (Add/Remove/List)
@@ -259,6 +334,7 @@ First native ESP32 SimpleX client with working E2E encryption!
 - ✅ XSalsa20-Poly1305 E2E Encryption
 - ✅ Ed25519 Signing + X25519 Key Exchange
 - ✅ NVS Persistent Storage
+- ✅ **SimpleX-Compatible Invitation Links**
 
 ---
 
