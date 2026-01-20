@@ -1,12 +1,12 @@
 # SimpleGo
 
-> **The First Native Multi-Contact SimpleX SMP Client for ESP32** — Part of the Sentinel Secure Messenger Suite
+> **The First Native SimpleX SMP Client for ESP32 with Working Invitation Links** — Part of the Sentinel Secure Messenger Suite
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-green.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
 [![Framework: ESP-IDF 5.5](https://img.shields.io/badge/Framework-ESP--IDF%205.5-red.svg)](https://docs.espressif.com/projects/esp-idf/)
-[![Version: v0.1.10-alpha](https://img.shields.io/badge/Version-v0.1.10--alpha-orange.svg)]()
-[![Status: Multi-Contact E2E](https://img.shields.io/badge/Status-Multi--Contact%20E2E-brightgreen.svg)]()
+[![Version: v0.1.11-alpha](https://img.shields.io/badge/Version-v0.1.11--alpha-orange.svg)]()
+[![Status: Invitation Links Working](https://img.shields.io/badge/Status-Invitation%20Links%20Working-brightgreen.svg)]()
 
 ---
 
@@ -16,20 +16,29 @@ SimpleGo brings [SimpleX Chat](https://simplex.chat/) — the first messaging pl
 
 ---
 
-## 🏆 MILESTONE: Multi-Contact + E2E Encryption!
+## 🔗 MILESTONE: Invitation Links Working!
 
-**As of v0.1.10-alpha (January 20, 2026)**, SimpleGo supports multiple contacts with full E2E encryption:
+**As of v0.1.11-alpha (January 20, 2026)**, SimpleGo generates SimpleX-compatible invitation links!
 
 ```
-📡 Subscriptions complete: 2/2
-🧪 SELF-TEST: Sending message to [0] Test...
-📤 SEND command sent!
-💬 MESSAGE for [Test]!
-🔓 DECRYPTED: Hello from ESP32!
-✅ OK
+🔗 SIMPLEX CONTACT LINKS ════════════════════════════════════════════
+📱 [0] Test ─────────────────────────────────────────────────────────
+📋 SMP Queue URI (raw):
+   smp://1jne...@smp3.simplexonflux.com:5223/XLEV...#/?v=1-4&dh=MCow...&q=c
+
+🌐 SimpleX Contact Link (COPY THIS!):
+   https://simplex.chat/contact#/?v=2-7&smp=smp%3A%2F%2F...
+
+══════════════════════════════════════════════════════════════════════
+📝 HOW TO CONNECT:
+   1. Copy the 🌐 Web Link
+   2. Open in SimpleX Desktop/Mobile App
+   3. Click 'Connect'
+   4. Send a message
+   5. ESP32 receives MSG!
 ```
 
-**First native ESP32 multi-contact SimpleX client with working E2E encryption!** 🎉
+**SimpleX Desktop/Mobile Apps can now connect directly to ESP32!** 🎉
 
 ---
 
@@ -56,6 +65,12 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 ├─────────────────────────────────────────────────────────┤
 │  UI Layer                              📋 PLANNED       │
 │  └── OLED/LCD Display (LVGL planned)                    │
+├─────────────────────────────────────────────────────────┤
+│  Invitation Links                      ✅ COMPLETE      │
+│  ├── SMP Queue URI Generation                           │
+│  ├── SimpleX Contact Link (Web)                         │
+│  ├── Direct App Link (simplex:/)                        │
+│  └── Base64 + URL Encoding                              │
 ├─────────────────────────────────────────────────────────┤
 │  Contact Management                    ✅ COMPLETE      │
 │  ├── Multi-Contact Database           - 10 slots        │
@@ -99,12 +114,21 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 
 | Feature | Status | Description |
 |---------|--------|-------------|
+| **Invitation Links** | ✅ **NEW!** | SimpleX-compatible contact links |
 | Multi-Contact | ✅ Complete | Up to 10 contacts, one TLS connection |
 | E2E Encryption | ✅ Complete | X25519 DH + XSalsa20-Poly1305 |
 | NVS Persistence | ✅ Complete | Contacts survive reboots |
 | Message Routing | ✅ Complete | Dispatch by recipientId |
 | Self-Test | ✅ Complete | Verify full E2E round-trip |
 | TLS 1.3 | ✅ Complete | ChaCha20-Poly1305, ALPN "smp/1" |
+
+### Invitation Link Formats
+
+| Format | Usage |
+|--------|-------|
+| SMP Queue URI | Raw protocol URI for debugging |
+| Web Link | `https://simplex.chat/contact#/?v=2-7&smp=...` |
+| App Link | `simplex:/contact#/?v=2-7&smp=...` |
 
 ### Cryptography
 
@@ -113,6 +137,7 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 | Ed25519 Signatures | ✅ Complete | libsodium, SPKI encoding |
 | X25519 Key Exchange | ✅ Complete | Per-contact DH keys |
 | crypto_box | ✅ Complete | HSalsa20 key derivation + XSalsa20-Poly1305 |
+| Base64 Standard | ✅ Complete | For invitation link DH keys |
 | SHA-256 | ✅ Complete | Certificate fingerprints |
 | Double Ratchet | 📋 Planned | Full Agent-level E2E |
 
@@ -140,6 +165,8 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 | Ed25519 Sign | ~8ms | libsodium |
 | X25519 DH | ~8ms | libsodium |
 | crypto_box decrypt | ~1ms | libsodium |
+| Base64 encode | <1ms | custom |
+| URL encode | <1ms | custom |
 | TLS Handshake | ~800ms | mbedTLS |
 | NVS read/write | ~5ms | ESP-IDF |
 
@@ -216,7 +243,8 @@ See [ROADMAP.md](ROADMAP.md) for detailed plans.
 | Phase 2: Full Messaging | ✅ Complete |
 | Phase 3: E2E Encryption | ✅ Complete |
 | Phase 3.5: Persistence | ✅ Complete |
-| Phase 3.6: Multi-Contact | ✅ **Complete!** |
+| Phase 3.6: Multi-Contact | ✅ Complete |
+| Phase 3.7: Invitation Links | ✅ **Complete!** |
 | Phase 4: User Interface | 📋 Planned |
 | Phase 5: Advanced Features | 📋 Future |
 
@@ -243,7 +271,7 @@ SimpleGo inherits SimpleX's privacy-first design:
 
 1. **T-Embed UI** — Display + Rotary Encoder
 2. **Double Ratchet** — Full Agent-level E2E
-3. **Contact Naming UI** — User-friendly management
+3. **Bidirectional Chat** — Two queues per contact
 
 ---
 
@@ -266,7 +294,8 @@ SimpleGo inherits SimpleX's privacy-first design:
 
 | Version | Date | Milestone |
 |---------|------|-----------|
-| **v0.1.10-alpha** | **2026-01-20** | **🏆 Multi-Contact + E2E!** |
+| **v0.1.11-alpha** | **2026-01-20** | **🔗 Invitation Links!** |
+| v0.1.10-alpha | 2026-01-20 | 🏆 Multi-Contact + E2E |
 | v0.1.9-alpha | 2026-01-20 | 🗑️ DEL + Full SMP Client |
 | v0.1.8-alpha | 2026-01-20 | 🔑 NVS Persistence |
 | v0.1.7-alpha | 2026-01-20 | ✅ ACK Command |
@@ -276,7 +305,7 @@ SimpleGo inherits SimpleX's privacy-first design:
 ---
 
 <p align="center">
-  <strong>🏆 First Native ESP32 Multi-Contact SimpleX Client! 🏆</strong><br>
+  <strong>🔗 First Native ESP32 SimpleX Client with Working Invitation Links! 🔗</strong><br>
   <em>Privacy is not a privilege, it's a right.</em>
 </p>
 
