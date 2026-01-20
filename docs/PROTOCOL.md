@@ -13,11 +13,12 @@
 5. [Command Format](#command-format)
 6. [Cryptographic Operations](#cryptographic-operations)
 7. [Command Reference](#command-reference)
-8. [Multi-Contact Architecture](#multi-contact-architecture)
-9. [Key Persistence](#key-persistence)
-10. [Error Handling](#error-handling)
-11. [Implementation Notes](#implementation-notes)
-12. [Performance & Memory](#performance--memory)
+8. [Invitation Links](#invitation-links)
+9. [Multi-Contact Architecture](#multi-contact-architecture)
+10. [Key Persistence](#key-persistence)
+11. [Error Handling](#error-handling)
+12. [Implementation Notes](#implementation-notes)
+13. [Performance & Memory](#performance--memory)
 
 ---
 
@@ -73,15 +74,6 @@ v6 has **everything** needed for a complete messenger:
 - ✅ Acknowledgment (ACK)
 - ✅ E2E encryption (X25519 + XSalsa20-Poly1305)
 
-### v6 vs v7+ Technical Differences
-
-| Feature | v6 | v7+ |
-|---------|----|----|
-| sessionId in transmission | ✅ Sent explicitly | ❌ Not sent (implied) |
-| sessionId in signature | ❌ Not included | ✅ Included |
-| Command encryption | ❌ Plain commands | ✅ Optional (`authEncryptCmds`) |
-| Batch commands | ❌ Single | ✅ Multiple per block |
-
 ---
 
 ## Transport Layer
@@ -135,48 +127,6 @@ Content: Actual data
 Padding: '#' (0x23) characters to fill 16384 bytes
 ```
 
-#### Block Writing (Handshake)
-
-```c
-int smp_write_handshake_block(mbedtls_ssl_context *ssl, uint8_t *block,
-                               const uint8_t *content, size_t content_len) {
-    memset(block, '#', SMP_BLOCK_SIZE);  // Fill with padding
-    block[0] = (content_len >> 8) & 0xFF;  // Length high byte
-    block[1] = content_len & 0xFF;          // Length low byte
-    memcpy(block + 2, content, content_len);
-    
-    return mbedtls_ssl_write(ssl, block, SMP_BLOCK_SIZE);
-}
-```
-
-#### Block Writing (Commands)
-
-Commands use a different format with transmission headers:
-
-```c
-int smp_write_command_block(mbedtls_ssl_context *ssl, uint8_t *block,
-                             const uint8_t *transmission, size_t trans_len) {
-    memset(block, '#', SMP_BLOCK_SIZE);
-    
-    // originalLength = 1 (txCount) + 2 (txLen) + trans_len
-    uint16_t orig_len = 1 + 2 + trans_len;
-    block[0] = (orig_len >> 8) & 0xFF;
-    block[1] = orig_len & 0xFF;
-    
-    // transmissionCount = 1
-    block[2] = 1;
-    
-    // transmissionLength
-    block[3] = (trans_len >> 8) & 0xFF;
-    block[4] = trans_len & 0xFF;
-    
-    // transmission data
-    memcpy(&block[5], transmission, trans_len);
-    
-    return mbedtls_ssl_write(ssl, block, SMP_BLOCK_SIZE);
-}
-```
-
 ---
 
 ## Handshake Sequence
@@ -197,20 +147,6 @@ Client                          Server
    │                               │
 ```
 
-### ServerHello Format
-
-```
-┌────────────────────────────────────────────────────────┐
-│ ServerHello                                            │
-├───────────┬───────────┬───────────┬────────────────────┤
-│ minVer    │ maxVer    │ sessIdLen │ sessionId          │
-│ (2 bytes) │ (2 bytes) │ (1 byte)  │ (32 bytes)         │
-├───────────┴───────────┴───────────┴────────────────────┤
-│ Certificate Chain (DER encoded)                        │
-│ [Server Certificate][CA Certificate]                   │
-└────────────────────────────────────────────────────────┘
-```
-
 ### keyHash Computation
 
 **CRITICAL**: keyHash must be computed from the **CA certificate** (second in chain), not the server certificate.
@@ -219,17 +155,6 @@ Client                          Server
 // keyHash = SHA256(full DER of CA certificate)
 uint8_t ca_hash[32];
 mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
-```
-
-### ClientHello Format (v6)
-
-```
-┌────────────────────────────────────────────┐
-│ ClientHello                                │
-├───────────┬───────────┬────────────────────┤
-│ version   │ keyHashLen│ keyHash            │
-│ (2 bytes) │ (1 byte)  │ (32 bytes)         │
-└───────────┴───────────┴────────────────────┘
 ```
 
 ---
@@ -346,17 +271,6 @@ crypto_box_beforenm(shared, public, secret);
 crypto_box_open_easy_afternm(plain, cipher, len, nonce, shared);
 ```
 
-**Why?** NaCl's `crypto_box` uses HSalsa20 to derive the actual encryption key from the raw X25519 shared secret. Using raw `crypto_scalarmult` output directly as a key will fail decryption!
-
-**Haskell Source Reference:**
-```haskell
--- Server.hs line 2024: Server encrypts for recipient
-C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId')
-
--- Crypto.hs line 1372: cbNonce pads to 24 bytes
-cbNonce :: ByteString -> CbNonce
-```
-
 ---
 
 ## Command Reference
@@ -387,18 +301,13 @@ subMode: 'S' for SMSubscribe (required for v6+)
 "IDS " [len][recipientId] [len][senderId] [len][serverDhKey SPKI]
 
 recipientId: 24 bytes, used for SUB/ACK/DEL commands
-senderId: 24 bytes, used for SEND command
+senderId: 24 bytes, used for SEND command and invitation links
 serverDhKey: 44 bytes SPKI, for E2E decryption
 ```
 
 ### SUB - Subscribe to Queue
 
-**Request:**
-```
-"SUB"
-
-EntityId: recipientId from IDS response
-```
+**Request:** `"SUB"` with EntityId = recipientId
 
 **Response:** `OK` or `ERR [code]`
 
@@ -412,53 +321,160 @@ EntityId: recipientId from IDS response
       0x20           0x20
 
 msgFlags: ASCII 'T' or 'F' (NOT binary 0x00/0x01!)
-  - 'T' = notification enabled
-  - 'F' = no notification
 ```
-
-**Haskell Source Reference:**
-```haskell
--- Protocol.hs line 1697
-SEND flags msg -> e (SEND_, ' ', flags, ' ', Tail msg)
-
--- Protocol.hs line 563
-MsgFlags {notification :: Bool}
-```
-
-**Common Mistake:**
-```c
-// ❌ WRONG: Binary flag
-body[pos++] = 0x00;  // ERR CMD SYNTAX!
-
-// ✅ CORRECT: ASCII flag
-body[pos++] = 'F';   // ASCII 0x46
-```
-
-**EntityId:** senderId  
-**Response:** `OK` or `ERR [code]`
 
 ### ACK - Acknowledge Message
 
-**Request:**
-```
-"ACK " [msgIdLen][msgId]
-
-EntityId: recipientId (NOT senderId!)
-```
+**Request:** `"ACK " [msgIdLen][msgId]` with EntityId = recipientId
 
 **Response:** `OK` or `ERR NO_MSG`
 
 ### DEL - Delete Queue
 
-**Request:**
-```
-"DEL"
+**Request:** `"DEL"` with EntityId = recipientId (no parameters!)
 
-EntityId: recipientId (Recipient Command!)
-No parameters!
+**Response:** `OK`
+
+---
+
+## Invitation Links
+
+### Overview
+
+SimpleGo generates SimpleX-compatible invitation links that work with SimpleX Desktop/Mobile apps.
+
+### Link Formats
+
+```
+📋 SMP Queue URI (raw):
+smp://keyHash@server:5223/senderId#/?v=1-4&dh=<base64>&q=c
+
+🌐 SimpleX Contact Link:
+https://simplex.chat/contact#/?v=2-7&smp=<URL-ENCODED-SMP-URI>
+
+📲 Direct App Link:
+simplex:/contact#/?v=2-7&smp=<URL-ENCODED-SMP-URI>
 ```
 
-**Response:** `OK` — Queue and all messages deleted
+### SMP Queue URI Format
+
+```
+smp://[keyHash]@[server]:[port]/[senderId]#/?v=[smpVersionRange]&dh=[dhKey]&q=[queueMode]
+```
+
+| Component | Description | Example |
+|-----------|-------------|---------|
+| `keyHash` | Base64url SHA256 of CA cert | `1jne379u7IDJSxAvXbWb_JgoE7iabcslX0LBF22Rej0` |
+| `server` | SMP server hostname | `smp3.simplexonflux.com` |
+| `port` | SMP port (default 5223) | `5223` |
+| `senderId` | Base64url sender ID from IDS | `XLEVCxbNocUkdcmSuQJMHQ_efzha0W_R` |
+| `v` | SMP client version range | `1-4` |
+| `dh` | Base64 Standard SPKI X25519 key | `MCowBQYDK2VuAyEA...` |
+| `q` | Queue mode | `c` (contact) |
+
+### Contact URI Format
+
+```
+https://simplex.chat/contact#/?v=[agentVersionRange]&smp=[urlEncodedSmpUri]
+```
+
+| Component | Description | Example |
+|-----------|-------------|---------|
+| `v` | Agent version range | `2-7` |
+| `smp` | URL-encoded SMP Queue URI | `smp%3A%2F%2F...` |
+
+### URL-Encoding Rules
+
+**Single encoded (standard URL encoding):**
+```
+:  →  %3A
+/  →  %2F
+@  →  %40
+#  →  %23
+?  →  %3F
+&  →  %26
+=  →  %3D
+```
+
+**Double encoded (ONLY for + and = in Base64 DH-Key):**
+```
++  →  %2B  →  %252B
+=  →  %3D  →  %253D
+```
+
+**Why double encoding?** The SMP URI is embedded inside the Contact URI. Special characters in the Base64 DH-key would break parsing, so they must be encoded twice.
+
+### Base64 Encoding
+
+**CRITICAL**: Use Base64 Standard encoding (NOT base64url!) for the DH key:
+- Alphabet: `A-Za-z0-9+/`
+- Padding: `=`
+
+```c
+void base64_standard_encode(const uint8_t *input, size_t len, char *output) {
+    static const char table[] = 
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    // ... standard base64 encoding with + / = characters
+}
+```
+
+### Version Ranges
+
+| Layer | Parameter | Range | Meaning |
+|-------|-----------|-------|---------|
+| Contact URI (outer) | `v` | `2-7` | Agent Version Range |
+| SMP Queue (inner) | `v` | `1-4` | SMP Client Version Range |
+
+### Queue Mode
+
+| Value | Meaning |
+|-------|---------|
+| `q=c` | Contact Queue (for contact links) |
+| `q=m` | Message Queue (for groups, etc.) |
+
+### Implementation Example
+
+```c
+void print_invitation_links(contact_t *c) {
+    char dh_base64[64];
+    char smp_uri[512];
+    char contact_link[1024];
+    
+    // 1. Base64 encode SPKI DH key
+    uint8_t spki[44];
+    memcpy(spki, X25519_SPKI_HEADER, 12);
+    memcpy(spki + 12, c->rcv_dh_public, 32);
+    base64_standard_encode(spki, 44, dh_base64);
+    
+    // 2. Build SMP Queue URI
+    snprintf(smp_uri, sizeof(smp_uri),
+        "smp://%s@%s:%s/%s#/?v=1-4&dh=%s&q=c",
+        key_hash_base64url,
+        SMP_HOST,
+        SMP_PORT,
+        sender_id_base64url,
+        dh_base64);
+    
+    // 3. URL-encode SMP URI (with double encoding for +/=)
+    char encoded_smp[1024];
+    url_encode_with_double(smp_uri, encoded_smp, sizeof(encoded_smp));
+    
+    // 4. Build Contact Link
+    snprintf(contact_link, sizeof(contact_link),
+        "https://simplex.chat/contact#/?v=2-7&smp=%s",
+        encoded_smp);
+    
+    printf("🌐 SimpleX Contact Link:\n%s\n", contact_link);
+}
+```
+
+### Haskell Source References
+
+| File | Line | Content |
+|------|------|---------|
+| Protocol.hs | 1078-1085 | `crEncode` Contact URI format |
+| Protocol.hs | SMPQueueUri | `v=1-4&dh=<key>&q=c` format |
+| ConnectionRequestTests.hs | - | `simplex:/contact#/?v=2-7&smp=` |
 
 ---
 
@@ -490,32 +506,6 @@ typedef struct {
 } contacts_db_t;
 ```
 
-### Multi-Contact Flow
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                  Single TLS Connection                   │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│   Contact 0          Contact 1          Contact 2       │
-│   ┌─────────┐        ┌─────────┐        ┌─────────┐    │
-│   │ rcvAuth │        │ rcvAuth │        │ rcvAuth │    │
-│   │ rcvDh   │        │ rcvDh   │        │ rcvDh   │    │
-│   │ srvDh   │        │ srvDh   │        │ srvDh   │    │
-│   │ rcvId   │        │ rcvId   │        │ rcvId   │    │
-│   │ sndId   │        │ sndId   │        │ sndId   │    │
-│   └─────────┘        └─────────┘        └─────────┘    │
-│        │                  │                  │          │
-│        └──────────────────┼──────────────────┘          │
-│                           │                             │
-│                     ┌─────▼─────┐                       │
-│                     │  Session  │                       │
-│                     │  (shared) │                       │
-│                     └───────────┘                       │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
-```
-
 ### Message Routing
 
 When MSG arrives, find contact by recipientId:
@@ -529,7 +519,7 @@ int find_contact_by_recipient_id(const uint8_t *rcv_id, uint8_t len) {
             return i;
         }
     }
-    return -1;  // Not found
+    return -1;
 }
 ```
 
@@ -547,22 +537,6 @@ nvs_set_blob(handle, "contacts_db", &db, sizeof(contacts_db_t));
 
 // Load
 nvs_get_blob(handle, "contacts_db", &db, &size);
-```
-
-### Flow with Persistence
-
-```
-Start
-  │
-  ▼
-TLS + Handshake
-  │
-  ▼
-load_contacts_from_nvs()
-  │
-  ├── Contacts found? ──► subscribe_all_contacts()
-  │
-  └── No contacts? ──► add_contact() ──► save_to_nvs() ──► SUB
 ```
 
 ---
@@ -605,6 +579,8 @@ load_contacts_from_nvs()
 | SEND Format | Two spaces: `SEND ' ' flags ' ' body` |
 | crypto_box | HSalsa20 key derivation required |
 | Server Encryption | Server encrypts for recipient, not sender |
+| Double Encoding | + and = in Base64 DH-key need double URL encoding |
+| Base64 Standard | Use + / = characters, NOT base64url |
 
 ---
 
@@ -617,6 +593,8 @@ load_contacts_from_nvs()
 | Ed25519 sign | ~8ms |
 | X25519 DH | ~8ms |
 | crypto_box decrypt | ~1ms |
+| Base64 encode | <1ms |
+| URL encode | <1ms |
 | TLS handshake | ~800ms |
 | NVS read/write | ~5ms |
 
@@ -627,7 +605,8 @@ load_contacts_from_nvs()
 | TLS context | ~40KB |
 | Block buffer | 16KB |
 | contacts_db (10) | ~3KB |
-| Total | ~60KB |
+| Link buffers | ~2KB |
+| Total | ~62KB |
 
 ---
 
@@ -653,4 +632,4 @@ load_contacts_from_nvs()
 
 ---
 
-*Last updated: January 20, 2026 — v0.1.10-alpha*
+*Last updated: January 20, 2026 — v0.1.11-alpha*
