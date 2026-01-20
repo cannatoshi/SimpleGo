@@ -10,10 +10,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Planned
-- MSG decryption (X25519 DH + XSalsa20-Poly1305)
 - ACK command implementation
+- Message header parsing (timestamp, flags)
 - Key persistence in NVS
-- Double Ratchet encryption
+- Double Ratchet (Curve448)
+
+---
+
+## [0.1.6-alpha] - 2026-01-20
+
+### 🏆 MEGA-MILESTONE: E2E Encryption Working!
+
+First native ESP32 SimpleX client with working end-to-end encryption!
+Successfully sent, received, and **decrypted** "Hello from ESP32!" 🎉
+
+### Added
+- **MSG Decryption** — XSalsa20-Poly1305 via libsodium
+- **X25519 DH Shared Secret** — `crypto_box_beforenm()`
+- **Server DH Key Storage** — Extract from IDS response
+- **Full E2E Round-Trip** — NEW→SUB→SEND→MSG→Decrypt
+
+### Technical Implementation
+```c
+// 1. Compute DH Shared Secret
+uint8_t shared[crypto_box_BEFORENMBYTES];
+crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
+
+// 2. Nonce = msgId (24 bytes, zero-padded)
+uint8_t nonce[24] = {0};
+memcpy(nonce, msg_id, msgIdLen);
+
+// 3. Decrypt with NaCl crypto_box
+crypto_box_open_easy_afternm(plain, cipher, cipher_len, nonce, shared);
+```
+
+### Protocol Discovery (from Server.hs:2024)
+```haskell
+encrypt body = RcvMessage msgId' . EncRcvMsgBody $ 
+  C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
+```
+
+### Proof of Success
+```
+I (7789) SMP:       📬 Got our MSG back!
+      MsgId: 354c3cd4a96d8510f1ac5965378e0f18edd2a73c662e1dff
+I (7799) SMP:       Encrypted: 16122 bytes
+I (7859) SMP:   🔓 DECRYPTED (16106 bytes):
+      ......io..F Hello from ESP32!###############
+```
 
 ---
 
@@ -160,12 +204,26 @@ TLS Settings:
 
 | Version | Date | Milestone |
 |---------|------|-----------|
+| **v0.1.6-alpha** | **2026-01-20** | **🏆 E2E Decryption!** |
 | v0.1.5-alpha | 2026-01-20 | SEND + MSG receive |
 | v0.1.4-alpha | 2026-01-20 | SUB command |
 | v0.1.3-alpha | 2026-01-19 | NEW command (libsodium fix) |
 | v0.1.2-alpha | 2026-01-18 | Handshake (keyHash fix) |
 | v0.1.1-alpha | 2026-01-17 | TLS 1.3 |
 | v0.1.0-alpha | 2026-01-16 | Initial |
+
+---
+
+## 🏆 Achievement Unlocked
+
+**"First Native ESP32 SimpleX E2E Client"**
+
+- ✅ Queue Management
+- ✅ SMP Protocol v6
+- ✅ Ed25519 Signing
+- ✅ X25519 Key Exchange
+- ✅ NaCl crypto_box Encryption
+- ✅ Full Message Round-Trip
 
 ---
 

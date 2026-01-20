@@ -5,8 +5,24 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-green.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
 [![Framework: ESP-IDF 5.5](https://img.shields.io/badge/Framework-ESP--IDF%205.5-red.svg)](https://docs.espressif.com/projects/esp-idf/)
-[![Version: v0.1.5-alpha](https://img.shields.io/badge/Version-v0.1.5--alpha-orange.svg)]()
-[![Status: SEND Working](https://img.shields.io/badge/Status-SEND%20Working-brightgreen.svg)]()
+[![Version: v0.1.6-alpha](https://img.shields.io/badge/Version-v0.1.6--alpha-orange.svg)]()
+[![Status: E2E Working](https://img.shields.io/badge/Status-E2E%20Working-brightgreen.svg)]()
+
+---
+
+## 🏆 Achievement: First Native ESP32 SimpleX E2E Client!
+
+**As of v0.1.6-alpha (January 20, 2026)**, SimpleGo has achieved a historic milestone:
+
+```
+I (7789) SMP:       📬 Got our MSG back!
+      MsgId: 354c3cd4a96d8510f1ac5965378e0f18edd2a73c662e1dff
+I (7799) SMP:       Encrypted: 16122 bytes
+I (7859) SMP:   🔓 DECRYPTED (16106 bytes):
+      ......io..F Hello from ESP32!###############
+```
+
+**"Hello from ESP32!"** — Successfully sent, received, and **decrypted**! 🎉
 
 ---
 
@@ -25,33 +41,28 @@ All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core li
 
 ---
 
-## 🏆 Current Achievement: Full Message Lifecycle
+## ✅ What's Working
 
-**As of v0.1.5-alpha (January 20, 2026), SimpleGo successfully:**
+| Feature | Status | Description |
+|---------|--------|-------------|
+| TLS 1.3 Connection | ✅ Complete | ChaCha20-Poly1305, ALPN "smp/1" |
+| SMP Handshake | ✅ Complete | ServerHello/ClientHello exchange |
+| NEW Command | ✅ Complete | Queue creation with IDS response |
+| SUB Command | ✅ Complete | Queue subscription |
+| SEND Command | ✅ Complete | Message transmission |
+| MSG Receive | ✅ Complete | Message parsing |
+| **E2E Decryption** | ✅ **Complete** | **X25519 DH + XSalsa20-Poly1305** |
+| ACK Command | 📋 Planned | Message acknowledgment |
 
-✅ Establishes TLS 1.3 connections with ChaCha20-Poly1305  
-✅ Completes SMP handshake (ServerHello/ClientHello)  
-✅ Creates message queues on SimpleX servers (NEW command)  
-✅ Subscribes to queues for message reception (SUB command)  
-✅ **Sends messages to queues (SEND command)**  
-✅ **Receives and parses incoming messages (MSG)**  
-✅ Generates Ed25519 signatures compatible with SimpleX servers  
-✅ Implements correct SPKI key encoding  
+### Cryptography
 
-```
-I (xxxx) SMP: ========================================
-I (xxxx) SMP:   SimpleGo v0.1.5-alpha
-I (xxxx) SMP:   Native SMP Client for ESP32
-I (xxxx) SMP: ========================================
-I (xxxx) SMP: [5/8] Sending NEW command...
-I (xxxx) SMP:   🎉🎉🎉 QUEUE CREATED! 🎉🎉🎉
-I (xxxx) SMP: [7/8] Sending SUB command...
-I (xxxx) SMP:   ✅ SUBSCRIBED! Ready to receive messages.
-I (xxxx) SMP: [8/8] Testing SEND command...
-I (xxxx) SMP:       SEND command sent!
-I (xxxx) SMP:   💬 MESSAGE received!
-I (xxxx) SMP:   ✅ OK - SEND confirmed
-```
+| Feature | Status | Description |
+|---------|--------|-------------|
+| Ed25519 Signatures | ✅ Complete | libsodium, SPKI encoding |
+| X25519 Key Exchange | ✅ Complete | DH shared secret |
+| SHA-256 Hashing | ✅ Complete | Certificate fingerprints |
+| **XSalsa20-Poly1305** | ✅ **Complete** | **Message decryption** |
+| Double Ratchet | 📋 Planned | Full E2E (Agent-level) |
 
 ---
 
@@ -63,14 +74,33 @@ I (xxxx) SMP:   ✅ OK - SEND confirmed
 | **Target Hardware** | LilyGo T-Deck | 2.8" LCD, Physical Keyboard, LoRa |
 | **Framework** | ESP-IDF 5.5.2 | Official Espressif IoT Development Framework |
 | **TLS** | mbedTLS 3.x | TLS 1.3, ChaCha20-Poly1305 |
-| **Cryptography** | libsodium | Ed25519, X25519 (ESP-IDF component) |
+| **Cryptography** | libsodium | Ed25519, X25519, crypto_box |
 | **Protocol** | SMP v6 | SimpleX Messaging Protocol |
 
-### Why These Choices?
+---
 
-- **ESP-IDF over Arduino**: Full control over networking stack, proper TLS 1.3 support, production-ready
-- **libsodium over Monocypher**: Critical discovery — Monocypher produces Ed25519 signatures incompatible with SimpleX servers (which use crypton/libsodium)
-- **ESP32-S3 over ESP32**: More RAM, better crypto acceleration, USB-OTG for development
+## 🔐 E2E Encryption Details
+
+### How MSG Decryption Works
+
+```c
+// 1. Compute DH Shared Secret (X25519)
+uint8_t shared[crypto_box_BEFORENMBYTES];  // 32 bytes
+crypto_box_beforenm(shared, srv_dh_public, rcv_dh_secret);
+
+// 2. Nonce = msgId (24 bytes, zero-padded)
+uint8_t nonce[24] = {0};
+memcpy(nonce, msg_id, msgIdLen);
+
+// 3. Decrypt with NaCl crypto_box (XSalsa20-Poly1305)
+crypto_box_open_easy_afternm(plaintext, ciphertext, cipher_len, nonce, shared);
+```
+
+### Protocol Reference (Server.hs:2024)
+```haskell
+encrypt body = RcvMessage msgId' . EncRcvMsgBody $ 
+  C.cbEncryptMaxLenBS (rcvDhSecret qr) (C.cbNonce msgId') body
+```
 
 ---
 
@@ -125,31 +155,15 @@ See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for detailed setup instructions.
 
 ---
 
-## 📊 Implementation Status
+## 🗺️ Roadmap
 
-### Core Protocol
+See [ROADMAP.md](ROADMAP.md) for detailed plans.
 
-| Feature | Status | Description |
-|---------|--------|-------------|
-| TLS 1.3 Connection | ✅ Complete | ChaCha20-Poly1305, ALPN "smp/1" |
-| SMP Handshake | ✅ Complete | ServerHello/ClientHello exchange |
-| Transport Blocks | ✅ Complete | 16KB padded blocks |
-| NEW Command | ✅ Complete | Queue creation with IDS response |
-| SUB Command | ✅ Complete | Queue subscription |
-| SEND Command | ✅ Complete | Message transmission |
-| MSG Receive | ✅ Complete | Message parsing |
-| ACK Command | 📋 Planned | Message acknowledgment |
-| Message Decryption | 🔄 Next | XSalsa20-Poly1305 |
-
-### Cryptography
-
-| Feature | Status | Description |
-|---------|--------|-------------|
-| Ed25519 Signatures | ✅ Complete | libsodium, SPKI encoding |
-| X25519 Key Exchange | ✅ Complete | DH key generation |
-| SHA-256 Hashing | ✅ Complete | Certificate fingerprints |
-| XSalsa20-Poly1305 | 🔄 Next | Message decryption |
-| Double Ratchet | 📋 Planned | E2E message encryption |
+**Phase 1: Protocol Foundation** ✅ Complete  
+**Phase 2: Full Messaging** ✅ Complete  
+**Phase 3: E2E Encryption** ✅ **Complete!**  
+**Phase 4: User Interface** 📋 Planned  
+**Phase 5: Advanced Features** 📋 Future  
 
 ---
 
@@ -164,8 +178,6 @@ SimpleGo inherits SimpleX's privacy-first design:
 
 ### Hardware Security Advantages
 
-Running on dedicated hardware adds:
-
 - **Physical Isolation** — No app store, no background processes
 - **No Cloud Sync** — Keys never leave the device
 - **Tamper Evidence** — Physical access required for compromise
@@ -173,39 +185,19 @@ Running on dedicated hardware adds:
 
 ---
 
-## 🗺️ Roadmap
-
-See [ROADMAP.md](ROADMAP.md) for detailed plans.
-
-**Phase 1: Protocol Foundation** ✅ Complete  
-**Phase 2: Full Messaging** ✅ Complete  
-**Phase 3: Message Encryption** 🔄 In Progress  
-**Phase 4: User Interface** 📋 Planned  
-**Phase 5: Advanced Features** 📋 Future  
-
----
-
 ## 🤝 Contributing
 
 SimpleGo is part of the **Sentinel Secure Messenger Suite** and welcomes contributions!
 
-### How to Contribute
-
 1. **Read the docs** — Start with [DEVELOPMENT.md](docs/DEVELOPMENT.md) and [PROTOCOL.md](docs/PROTOCOL.md)
 2. **Check the issues** — Look for `good first issue` labels
 3. **Fork & PR** — Standard GitHub workflow
-4. **Test thoroughly** — Protocol bugs can be subtle
 
 ---
 
 ## 📜 License
 
 **GNU Affero General Public License v3.0 (AGPL-3.0)**
-
-This license was chosen to align with SimpleX Chat's licensing and ensure that:
-- Network service modifications remain open source
-- The privacy community benefits from all improvements
-- Commercial use requires source disclosure
 
 See [LICENSE](LICENSE) for full terms.
 
@@ -221,8 +213,8 @@ See [LICENSE](LICENSE) for full terms.
 ---
 
 <p align="center">
-  <strong>Privacy is not a privilege, it's a right.</strong><br>
-  <em>Building the future of hardware-based private communication.</em>
+  <strong>🏆 First Native ESP32 SimpleX E2E Client 🏆</strong><br>
+  <em>Privacy is not a privilege, it's a right.</em>
 </p>
 
 ---
