@@ -10,9 +10,8 @@
 2. [Environment Setup](#environment-setup)
 3. [Building & Flashing](#building--flashing)
 4. [Architecture Overview](#architecture-overview)
-5. [Development Workflow](#development-workflow)
-6. [Debugging](#debugging)
-7. [Testing](#testing)
+5. [Debugging](#debugging)
+6. [Testing](#testing)
 
 ---
 
@@ -20,47 +19,34 @@
 
 ### Hardware
 
-| Component | Recommended | Notes |
-|-----------|-------------|-------|
-| **MCU** | ESP32-S3 | Dual-core, 8MB PSRAM preferred |
-| **Dev Board** | LilyGo T-Deck or T-Embed | Display + input included |
-| **USB Cable** | USB-C data cable | Not charge-only! |
+| Component | Recommended |
+|-----------|-------------|
+| **MCU** | ESP32-S3 |
+| **Dev Board** | LilyGo T-Deck or T-Embed |
+| **USB Cable** | USB-C data cable |
 
 ### Software
 
-| Component | Version | Notes |
-|-----------|---------|-------|
-| **ESP-IDF** | 5.5.2+ | Official Espressif framework |
-| **Python** | 3.8+ | Required by ESP-IDF |
-| **Git** | Any recent | Version control |
+| Component | Version |
+|-----------|---------|
+| **ESP-IDF** | 5.5.2+ |
+| **Python** | 3.8+ |
+| **Git** | Any recent |
 
 ---
 
 ## Environment Setup
 
-### ESP-IDF Installation
+### Windows
 
-#### Windows
+```powershell
+# Use ESP-IDF PowerShell from Start Menu
+C:\Espressif\idf_cmd_init.ps1
+```
 
-1. **Download ESP-IDF Installer**
-   - https://docs.espressif.com/projects/esp-idf/en/latest/esp32/get-started/windows-setup.html
-
-2. **Launch Environment**
-   ```powershell
-   # Use ESP-IDF PowerShell from Start Menu
-   C:\Espressif\idf_cmd_init.ps1
-   ```
-
-#### Linux / macOS
+### Linux / macOS
 
 ```bash
-mkdir -p ~/esp
-cd ~/esp
-git clone -b v5.5.2 --recursive https://github.com/espressif/esp-idf.git
-cd esp-idf
-./install.sh esp32s3
-
-# Add to .bashrc/.zshrc
 . ~/esp/esp-idf/export.sh
 ```
 
@@ -68,26 +54,9 @@ cd esp-idf
 
 ## Building & Flashing
 
-### Set Target
-
 ```bash
 idf.py set-target esp32s3
-```
-
-### Build
-
-```bash
-idf.py build
-```
-
-### Flash & Monitor
-
-```bash
-# Windows
-idf.py build flash monitor -p COM5
-
-# Linux
-idf.py build flash monitor -p /dev/ttyUSB0
+idf.py build flash monitor -p /dev/ttyUSB0  # or COM5 on Windows
 ```
 
 ### Monitor Shortcuts
@@ -96,112 +65,69 @@ idf.py build flash monitor -p /dev/ttyUSB0
 |-----|--------|
 | `Ctrl+]` | Exit monitor |
 | `Ctrl+T, R` | Reboot device |
-| `Ctrl+T, H` | Help menu |
 
 ---
 
 ## Architecture Overview
 
-### System Stack (v0.1.12)
+### System Stack (v0.1.13)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │           Application Layer                                     │
 ├─────────────────────────────────────────────────────────────────┤
-│  Agent Protocol Layer                           ✅ NEW!         │
-│  ├── parse_agent_message()                                      │
-│  ├── AgentInvitation Parser (Type 'I')                          │
-│  ├── Reply Queue URI Extraction                                 │
-│  └── Peer Profile Parsing                                       │
+│  Connection Handler                             🔧 IN PROGRESS  │
+│  ├── peer_queue_t Structure                     ✅ NEW!         │
+│  ├── Peer Server Extraction                     ✅ NEW!         │
+│  ├── Queue ID Extraction                        ✅ NEW!         │
+│  └── DH Key Extraction                          🔧 In Progress  │
 ├─────────────────────────────────────────────────────────────────┤
-│  Message Decryption Stack                                       │
+│  Agent Protocol Layer                           ✅ FIXED!       │
+│  ├── '_' Delimiter Search                       ✅ NEW!         │
+│  ├── Version Parse (BE uint16)                  ✅ FIXED!       │
+│  ├── Type Parse at +3                           ✅ FIXED!       │
+│  └── url_decode_inplace()                       ✅ NEW!         │
+├─────────────────────────────────────────────────────────────────┤
+│  Message Decryption Stack                       ✅ COMPLETE     │
 │  ├── Layer 3: SMP E2E (server DH)                               │
-│  ├── Layer 5: Contact DH (decrypt_client_msg())   ✅ NEW!       │
-│  └── Layer 6: Agent Protocol Parsing              ✅ NEW!       │
+│  ├── Layer 5: Client DH (contact DH)                            │
+│  └── Layer 6: Agent Protocol Parsing                            │
 ├─────────────────────────────────────────────────────────────────┤
-│  Invitation Links                                               │
-│  ├── Base64URL Encoding                                         │
-│  └── Double-encoded = padding (%253D)                           │
+│  Contact Management                             ✅ COMPLETE     │
+│  └── Multi-Contact + NVS Persistence                            │
 ├─────────────────────────────────────────────────────────────────┤
-│  Contact Management                                             │
-│  ├── contacts_db_t (10 slots)                                   │
-│  ├── add/remove/list_contacts()                                 │
-│  └── NVS Blob Persistence                                       │
-├─────────────────────────────────────────────────────────────────┤
-│  Crypto Stack                                                   │
-│  ├── Ed25519 (libsodium)                                        │
-│  ├── X25519 (libsodium)                                         │
-│  ├── crypto_box (XSalsa20-Poly1305)                             │
-│  └── SHA-256 (mbedTLS HW)                                       │
-├─────────────────────────────────────────────────────────────────┤
-│  SMP Protocol Layer                                             │
-│  ├── NEW, SUB, SEND, MSG, ACK, DEL                              │
-│  ├── 16KB Block Framing                                         │
-│  └── Multi-Contact over one TLS                                 │
-├─────────────────────────────────────────────────────────────────┤
-│  Network Stack                                                  │
-│  ├── TLS 1.3 (mbedTLS)                                          │
-│  ├── WiFi (ESP32)                                               │
-│  └── TCP/IP                                                     │
+│  Crypto + SMP Protocol                          ✅ COMPLETE     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### New Functions (v0.1.12)
+### New Functions (v0.1.13)
 
 ```c
-// Layer 5: Contact DH Decryption
-static int decrypt_client_msg(
-    const uint8_t *enc, int enc_len,
-    const uint8_t *sender_dh_pub,   // 32 bytes raw X25519
-    const uint8_t *our_dh_secret,   // 32 bytes
-    uint8_t *plain
-);
+// URL decode (in-place, call repeatedly!)
+static void url_decode_inplace(char *str);
 
-// Layer 6: Agent Protocol Parser
-static void parse_agent_message(contact_t *contact, const uint8_t *plain, int plain_len);
+// Message type finding with '_' delimiter
+int toff = -1;
+for (int i = 0; i < 10 && i < dec_len - 3; i++) {
+    if (decrypted[i] == '_') { toff = i; break; }
+}
+uint16_t ver = (decrypted[toff + 1] << 8) | decrypted[toff + 2];
+char type = decrypted[toff + 3];
 ```
 
-### Removed Functions (v0.1.12)
+### New Structure (v0.1.13)
 
 ```c
-// Replaced/Refactored:
-- base64_pre_encode()
-- base64_std_encode()
-- parse_smp_client_header()
-- parse_agent_envelope()
-```
-
----
-
-## Development Workflow
-
-### Project Structure
-
-```
-SimpleGo/
-├── main/
-│   ├── main.c              # Main application
-│   ├── CMakeLists.txt
-│   └── idf_component.yml   # Dependencies (libsodium)
-├── docs/
-│   ├── DEVELOPMENT.md      # This file
-│   ├── PROTOCOL.md         # SMP protocol details
-│   ├── TECHNICAL.md        # Implementation notes
-│   └── DEVNOTES.md         # Session notes
-├── CMakeLists.txt
-├── sdkconfig.defaults
-├── CHANGELOG.md
-├── README.md
-└── ROADMAP.md
-```
-
-### Configure WiFi
-
-Edit `main/main.c`:
-
-```c
-#define WIFI_SSID "YourNetworkName"
-#define WIFI_PASS "YourPassword"
+typedef struct {
+    char host[64];           // Peer Server
+    int port;                // Port (default 5223)
+    uint8_t key_hash[32];    // Server Key Hash
+    uint8_t queue_id[32];    // Queue ID
+    int queue_id_len;
+    uint8_t dh_public[32];   // Peer's DH Public Key
+    int has_dh;
+    int valid;
+} peer_queue_t;
 ```
 
 ---
@@ -215,52 +141,46 @@ esp_log_level_set("*", ESP_LOG_INFO);
 esp_log_level_set("SMP", ESP_LOG_DEBUG);
 ```
 
-### Common Issues
+### Common Issues (v0.1.13)
 
-#### TLS Handshake Fails
+#### Message Type Always Shows '_' or Wrong Character
 
-```
-E (1234) esp-tls-mbedtls: mbedtls_ssl_handshake returned -0x7780
-```
-**Fix**: Check WiFi, server hostname, TLS 1.3 config.
+**Cause**: Type searched at fixed offset instead of after '_' delimiter.
 
-#### ERR AUTH
-
-```
-Server response: ERR AUTH
-```
-**Fix**:
-- Using libsodium (not Monocypher)?
-- Correct entityId? (ACK/DEL use recipientId!)
-
-#### Invalid Link
-
-```
-SimpleX App shows: "Invalid link"
-```
-**Fix**:
-- Use Base64URL for DH key (not Standard Base64!)
-- Double-encode `=` padding: `=` → `%3D` → `%253D`
-
-#### Layer 3 Decryption Produces Garbage
-
-**Check**: Is this an initial message (AgentInvitation)?  
-**Fix**: Apply Layer 5 Contact DH decryption first!
+**Fix**: Search for '_' first, then read type at +3:
 
 ```c
-// Look for SPKI header at offset 14
-if (memcmp(&decrypted[14], SPKI_HEADER, 12) == 0) {
-    // This is Layer 5 encrypted! Extract sender's DH and decrypt again
+int toff = -1;
+for (int i = 0; i < 10 && i < dec_len - 3; i++) {
+    if (decrypted[i] == '_') { toff = i; break; }
 }
+char type = decrypted[toff + 3];
 ```
 
-#### Agent Message Type Unknown
+#### URL Parameters Not Found (dh=, smp=, etc.)
 
-**Fix**: Check 2-byte BE version at offset 0, then type at offset 2.
+**Cause**: Multi-level URL encoding.
+
+**Fix**: Decode in loop until stable:
 
 ```c
-uint16_t agent_version = (plain[0] << 8) | plain[1];
-char agent_type = plain[2];  // 'C', 'I', 'M', or 'R'
+size_t old_len;
+do {
+    old_len = strlen(uri);
+    url_decode_inplace(uri);
+} while (strlen(uri) < old_len);
+```
+
+#### DH Key Not Found
+
+**Cause**: `dh=` may be encoded as `dh%3D` or `%26dh%3D`.
+
+**Fix**: Search multiple patterns:
+
+```c
+char *dh_pos = strstr(uri, "dh=");
+if (!dh_pos) dh_pos = strstr(uri, "dh%3D");
+if (!dh_pos) dh_pos = strstr(uri, "%26dh%3D");
 ```
 
 ### Hex Dump Helper
@@ -269,8 +189,8 @@ char agent_type = plain[2];  // 'C', 'I', 'M', or 'R'
 void hex_dump(const char *label, const uint8_t *data, size_t len) {
     ESP_LOGI("HEX", "%s (%d bytes):", label, len);
     for (size_t i = 0; i < len; i++) {
-        printf("%02x", data[i]);
-        if ((i + 1) % 32 == 0) printf("\n");
+        printf("%02x ", data[i]);
+        if ((i + 1) % 16 == 0) printf("\n");
     }
     printf("\n");
 }
@@ -280,73 +200,47 @@ void hex_dump(const char *label, const uint8_t *data, size_t len) {
 
 ## Testing
 
-### Basic Connection Test
-
-1. Build & Flash
-2. Watch for "TLS OK! ALPN: smp/1"
-3. Watch for "Subscriptions complete"
-
-### Invitation Link Test (v0.1.11+)
+### Message Type Test (v0.1.13)
 
 1. Create a contact with `add_contact("Test")`
-2. Copy the 🌐 Web Link from output
-3. Open in browser → Should show SimpleX landing page
-4. Open link in SimpleX Desktop/Mobile App
-5. Click "Connect" in SimpleX App
+2. Copy the Web Link and scan with SimpleX App
+3. Click "Connect" in SimpleX App
+4. Watch ESP32 output:
 
-### Agent Protocol Test (v0.1.12+)
-
-After SimpleX App sends connection request:
-
-1. Watch for `💬 MESSAGE for [Test]!`
-2. Watch for `🔓 Layer 3 Decrypted: XXXXX bytes`
-3. Watch for `🔓 Layer 5 Decrypted: XXX bytes` ← **NEW!**
-4. Watch for `📋 Agent: Version=X, Type='I'` ← **NEW!**
-5. Watch for `🔗 Reply Queue: ...` ← **NEW!**
-6. Watch for `👤 Peer: <username>` ← **NEW!**
-
-**Expected Output:**
+**Expected:**
 ```
 💬 MESSAGE for [Test]!
-🔓 Layer 3 Decrypted: 16106 bytes (SMP E2E)
-🔓 Layer 5 Decrypted: 847 bytes (Client DH)
-📋 Agent Message: Version=7, Type='I' (Invitation)
-🔗 Reply Queue: simplex:/invitation#/?v=2-7&smp=...@smp10.simplex.im/...
-👤 Peer Profile: {"displayName":"Alice",...}
-✅ ACK OK
+🔓 Layer 3 Decrypted: 16106 bytes
+🔓 Layer 5 Decrypted: 847 bytes
+📋 Agent: Version=7, Type='I' (Invitation)   ← Correct!
+📡 Peer Server: smp15.simplex.im:5223
+📮 Queue ID: ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK
+✅ READY TO SEND CONFIRMATION
 ```
 
-### Message Layer Verification
-
-| Layer | Expected Output |
-|-------|-----------------|
-| Layer 1 | `TLS OK! ALPN: smp/1` |
-| Layer 2 | `Received 16384 bytes` |
-| Layer 3 | `Layer 3 Decrypted: XXXXX bytes` |
-| Layer 4 | (Implicit in Layer 3 output) |
-| Layer 5 | `Layer 5 Decrypted: XXX bytes` |
-| Layer 6 | `Agent: Version=X, Type='X'` |
-
----
-
-## Useful Commands
-
-```bash
-# Check flash size
-idf.py size
-
-# Component sizes
-idf.py size-components
-
-# Open menuconfig
-idf.py menuconfig
-
-# Clean build
-idf.py fullclean
-
-# Erase all flash (including NVS!)
-idf.py erase-flash
+**If Wrong:**
 ```
+📋 Agent: Version=???, Type='_'   ← BUG! Not finding delimiter
+```
+
+### URL Decode Test
+
+```c
+// Test with multi-encoded string
+char test[] = "%253D%2526";
+url_decode_inplace(test);  // → "%3D%26"
+url_decode_inplace(test);  // → "=&"
+```
+
+### Peer Queue Extraction Test
+
+| Field | Expected |
+|-------|----------|
+| Type | `'I'` (Invitation) |
+| Server | `smpXX.simplex.im` |
+| Port | `5223` |
+| Queue ID | 24+ character Base64URL |
+| Status | "READY TO SEND CONFIRMATION" |
 
 ---
 
@@ -358,13 +252,11 @@ idf.py erase-flash
 git commit -m "type(scope): description"
 ```
 
-Types: `feat`, `fix`, `docs`, `refactor`, `test`
-
 Examples:
 ```bash
-git commit -m "feat(agent): implement Layer 5 Contact DH decryption"
-git commit -m "fix(url): use Base64URL encoding for DH key"
-git commit -m "feat(agent): parse AgentInvitation and extract reply queue"
+git commit -m "fix(agent): find message type after '_' delimiter"
+git commit -m "feat(url): add multi-pass url_decode_inplace()"
+git commit -m "feat(peer): add peer_queue_t structure"
 ```
 
 ---
@@ -378,4 +270,4 @@ git commit -m "feat(agent): parse AgentInvitation and extract reply queue"
 
 ---
 
-*Last updated: January 21, 2026 — v0.1.12-alpha*
+*Last updated: January 21, 2026 — v0.1.13-alpha*
