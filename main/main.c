@@ -45,6 +45,37 @@ static const char *TAG = "SMP";
 #define WIFI_PASS     "MKwlan1d250e-mured5"
 #define SMP_HOST      "smp3.simplexonflux.com"
 #define SMP_PORT      5223
+// Peer queue info (from received invitation)
+typedef struct {
+    char host[64];
+    int port;
+    uint8_t key_hash[32];
+    char key_hash_b64[48];
+    uint8_t queue_id[32];
+    int queue_id_len;
+    uint8_t dh_public[32];
+    int has_dh;
+    int valid;
+} peer_queue_t;
+
+static peer_queue_t pending_peer = {0};
+
+// Simple URL decode (in-place, single pass)
+static void url_decode_inplace(char *str) {
+    char *src = str, *dst = str;
+    while (*src) {
+        if (*src == '%' && src[1] && src[2]) {
+            int hi = src[1], lo = src[2];
+            hi = (hi >= 'A') ? (hi & 0xDF) - 'A' + 10 : hi - '0';
+            lo = (lo >= 'A') ? (lo & 0xDF) - 'A' + 10 : lo - '0';
+            *dst++ = (hi << 4) | lo;
+            src += 3;
+        } else {
+            *dst++ = *src++;
+        }
+    }
+    *dst = 0;
+}
 #define SMP_BLOCK_SIZE 16384
 
 // SPKI headers for key encoding
@@ -88,6 +119,17 @@ static int base64url_encode(const uint8_t *input, int input_len, char *output, i
     
     output[j] = '\0';
     return j;
+}
+
+// ============== Base64URL Decoding ==============
+
+static int base64url_decode(const char *input, uint8_t *output, int output_max) {
+    size_t bin_len;
+    if (sodium_base642bin(output, output_max, input, strlen(input),
+                          NULL, &bin_len, NULL, sodium_base64_VARIANT_URLSAFE_NO_PADDING) != 0) {
+        return -1;
+    }
+    return (int)bin_len;
 }
 
 // ============== URL Encoding ==============
@@ -1234,10 +1276,15 @@ static void parse_agent_message(contact_t *contact, const uint8_t *plain, int pl
                 ESP_LOGI(TAG, "      ✅ DH Decryption SUCCESS! (%d bytes)", dec_len);
                 dump_hex("Decrypted", decrypted, dec_len, 100);
                 
-                // Parse agent message
-                if (dec_len >= 3) {
-                    uint16_t ver = (decrypted[0] << 8) | decrypted[1];
-                    char type = decrypted[2];
+                if (dec_len >= 6) {
+                    // Find '_' delimiter, then version (2 bytes), then type
+                    int toff = -1;
+                    for (int i = 0; i < 10 && i < dec_len - 3; i++) {
+                        if (decrypted[i] == '_') { toff = i; break; }
+                    }
+                    if (toff < 0) toff = 2; // fallback
+                    uint16_t ver = (decrypted[toff + 1] << 8) | decrypted[toff + 2];
+                    char type = decrypted[toff + 3];
                     ESP_LOGI(TAG, "");
                     ESP_LOGI(TAG, "      📦 Agent Version: %d", ver);
                     ESP_LOGI(TAG, "      📬 Message Type: '%c' (0x%02x)", 
@@ -1246,6 +1293,178 @@ static void parse_agent_message(contact_t *contact, const uint8_t *plain, int pl
                     if (type == 'C') {
                         ESP_LOGI(TAG, "      🎉 CONFIRMATION received!");
                     }
+                    else if (type == 'I') {
+                        ESP_LOGI(TAG, "      🎉 INVITATION received!");
+                        
+                        // Find smp= parameter in the invitation
+                        for (int j = toff + 4; j < dec_len - 10; j++) {
+                            // Look for "smp=" or "smp%3A" (URL encoded)
+                            if ((decrypted[j] == 's' && decrypted[j+1] == 'm' && 
+                                 decrypted[j+2] == 'p' && (decrypted[j+3] == '=' || decrypted[j+3] == '%'))) {
+                                
+                                // Find start of smp:// URI
+                                int uri_start = j + 4;
+                                if (decrypted[j+3] == '%') uri_start = j; // smp%3A...
+                                
+                                // Find end of URI (& or space or end)
+                                int uri_end = uri_start;
+                                while (uri_end < dec_len && decrypted[uri_end] != '&' && 
+                                       decrypted[uri_end] > 32 && decrypted[uri_end] < 127 &&
+                                       uri_end - uri_start < 600) uri_end++;
+                                
+                                int uri_len = uri_end - uri_start;
+                                if (uri_len > 50 && uri_len < 600) {
+                                    // Copy and decode URI
+                                    char *uri = malloc(uri_len + 1);
+                                    if (uri) {
+                                        memcpy(uri, &decrypted[uri_start], uri_len);
+                                        uri[uri_len] = 0;
+                                        
+                                        // Decode multiple times (can be 2-3x encoded)
+                                        for (int pass = 0; pass < 3; pass++) {
+                                            if (!strchr(uri, '%')) break;
+                                            url_decode_inplace(uri);
+                                        }
+                                        
+                                        ESP_LOGI(TAG, "      📋 Peer SMP URI: %.80s...", uri);
+                                        
+                                        // Parse: smp://KEYHASH@HOST:PORT/QUEUEID#/?...&dh=DHKEY
+                                        char *at = strchr(uri, '@');
+                                        char *slash = at ? strchr(at, '/') : NULL;
+                                        char *hash = slash ? strchr(slash, '#') : NULL;
+                                        
+                                        if (at && slash) {
+                                            // Extract host:port
+                                            int hostlen = slash - at - 1;
+                                            if (hostlen > 0 && hostlen < 63) {
+                                                memcpy(pending_peer.host, at + 1, hostlen);
+                                                pending_peer.host[hostlen] = 0;
+                                                
+                                                // Check for port
+                                                char *colon = strchr(pending_peer.host, ':');
+                                                if (colon) {
+                                                    pending_peer.port = atoi(colon + 1);
+                                                    *colon = 0;
+                                                } else {
+                                                    pending_peer.port = 5223;
+                                                }
+                                                
+                                                ESP_LOGI(TAG, "      🖥️  Peer Server: %s:%d", 
+                                                         pending_peer.host, pending_peer.port);
+                                            }
+                                            
+                                            // Extract queue ID
+                                            char *qend = hash ? hash : (slash + strlen(slash));
+                                            int qlen = qend - slash - 1;
+                                            if (qlen > 0 && qlen < 48) {
+                                                char qid_b64[48] = {0};
+                                                memcpy(qid_b64, slash + 1, qlen);
+                                                // Base64URL decode queue ID
+                                                pending_peer.queue_id_len = base64url_decode(
+                                                    qid_b64, pending_peer.queue_id, 32);
+                                                ESP_LOGI(TAG, "      📮 Queue ID: %s (%d bytes)", 
+                                                         qid_b64, pending_peer.queue_id_len);
+                                            }
+                                        }
+                                        
+                                        // Find dh= parameter (might be deeper in nested URI)
+                                        char *dh = strstr(uri, "dh=");
+                                        if (!dh) {
+                                            // Search in original decrypted data for dh= (various encodings)
+                                            ESP_LOGI(TAG, "      🔍 Searching for dh= in %d bytes...", dec_len - toff);
+                                            for (int d = toff; d < dec_len - 60; d++) {
+                                                // Look for: dh= or dh%3D or %26dh%3D (URL encoded &dh=)
+                                                int found = 0;
+                                                int start = 0;
+                                                
+                                                if (decrypted[d] == 'd' && decrypted[d+1] == 'h' && decrypted[d+2] == '=') {
+                                                    found = 1; start = d + 3;
+                                                }
+                                                else if (decrypted[d] == 'd' && decrypted[d+1] == 'h' && 
+                                                         decrypted[d+2] == '%' && decrypted[d+3] == '3') {
+                                                    found = 1; start = d + 6; // skip dh%3D
+                                                }
+                                                else if (decrypted[d] == '%' && decrypted[d+1] == '2' && 
+                                                         decrypted[d+2] == '6' && decrypted[d+3] == 'd' && 
+                                                         decrypted[d+4] == 'h' && decrypted[d+5] == '%' &&
+                                                         decrypted[d+6] == '3') {
+                                                    found = 1; start = d + 10; // skip %26dh%3D
+                                                }
+                                                
+                                                if (found) {
+                                                    char dh_buf[120] = {0};
+                                                    int di = 0;
+                                                    for (int x = start; x < dec_len && di < 100; x++) {
+                                                        char c = decrypted[x];
+                                                        if (c == '&' || (c == '%' && decrypted[x+1] == '2' && decrypted[x+2] == '6')) break;
+                                                        if (c == ' ' || c < 33) break;
+                                                        dh_buf[di++] = c;
+                                                    }
+                                                    if (di > 40) {
+                                                        url_decode_inplace(dh_buf);
+                                                        url_decode_inplace(dh_buf);
+                                                        url_decode_inplace(dh_buf);
+                                                        ESP_LOGI(TAG, "      🔑 DH (raw): %.50s...", dh_buf);
+                                                        
+                                                        uint8_t spki[48];
+                                                        int spki_len = base64url_decode(dh_buf, spki, 48);
+                                                        if (spki_len >= 44) {
+                                                            memcpy(pending_peer.dh_public, spki + 12, 32);
+                                                            pending_peer.has_dh = 1;
+                                                            ESP_LOGI(TAG, "      🔑 DH Key: %02x%02x%02x%02x... ✅",
+                                                                     pending_peer.dh_public[0], pending_peer.dh_public[1],
+                                                                     pending_peer.dh_public[2], pending_peer.dh_public[3]);
+                                                        }
+                                                    }
+                                                    break;
+                                                }
+                                                if (d < toff + 20 || (d % 200 == 0 && d < 1000)) {
+                                                    ESP_LOGD(TAG, "      byte %d: %02x %02x %02x", d, decrypted[d], decrypted[d+1], decrypted[d+2]);
+                                                }
+                                            }
+                                            if (!pending_peer.has_dh) {
+                                                ESP_LOGW(TAG, "      ⚠️ DH key not found in buffer!");
+                                            } 
+                                        } else {
+                                            dh += 3;
+                                            char *dh_end = dh;
+                                            while (*dh_end && *dh_end != '&' && *dh_end != ' ') dh_end++;
+                                            int dh_len = dh_end - dh;
+                                            
+                                            if (dh_len > 40 && dh_len < 100) {
+                                                char dh_b64[100] = {0};
+                                                memcpy(dh_b64, dh, dh_len);
+                                                
+                                                uint8_t spki[48];
+                                                int spki_len = base64url_decode(dh_b64, spki, 48);
+                                                
+                                                if (spki_len >= 44) {
+                                                    memcpy(pending_peer.dh_public, spki + 12, 32);
+                                                    pending_peer.has_dh = 1;
+                                                    ESP_LOGI(TAG, "      🔑 DH Key: %02x%02x%02x%02x... ✅",
+                                                             pending_peer.dh_public[0], pending_peer.dh_public[1],
+                                                             pending_peer.dh_public[2], pending_peer.dh_public[3]);
+                                                }
+                                            }
+                                        } 
+                                        
+                                        pending_peer.valid = (strlen(pending_peer.host) > 0 && 
+                                                              pending_peer.queue_id_len > 0);
+                                        
+                                        if (pending_peer.valid) {
+                                            ESP_LOGI(TAG, "");
+                                            ESP_LOGI(TAG, "      ╔══════════════════════════════════════╗");
+                                            ESP_LOGI(TAG, "      ║  🎯 READY TO SEND CONFIRMATION!     ║");
+                                            ESP_LOGI(TAG, "      ╚══════════════════════════════════════╝");
+                                        }
+                                        
+                                        free(uri);
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    } 
                 }
                 
                 // Show as text
