@@ -6,244 +6,181 @@
 
 ## Current Status (January 21, 2026)
 
-### Version: v0.1.13-alpha
+### Version: v0.1.14-alpha
 
-### 🔧 Message Type Fix + Peer Queue Parsing!
+### 🏗️ Modular Architecture + Peer Connection!
 
-AgentInvitation properly detected — ESP32 extracts peer server and queue ID!
+Monolithic main.c refactored into 8 modules — Peer server connection working!
 
 **Latest Output:**
 ```
-I (5765) SMP: ========================================
-I (5765) SMP:   SimpleGo v0.1.13 - Peer Queue Parsing
-I (5765) SMP:   Part of Sentinel Secure Messenger Suite
-I (5765) SMP: ========================================
+🔗 SIMPLEX CONTACT LINKS ════════════════════════════════
+📱 [0] Test
+🌐 https://simplex.chat/contact#/?v=2-7&smp=...
+
+[SimpleX App scans link]
 
 💬 MESSAGE for [Test]!
-🔓 Layer 3 Decrypted: 16106 bytes (SMP E2E)
-🔓 Layer 5 Decrypted: 847 bytes (Client DH)
-📋 Agent: Version=7, Type='I' (Invitation)
-📡 Peer Server: smp15.simplex.im:5223
-📮 Queue ID: ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK
-✅ READY TO SEND CONFIRMATION
+📋 Agent: Version=7, Type='I'
+📡 Peer: smp15.simplex.im:5223
+🔑 DH Key extracted (32 bytes)
+🔌 Connecting to peer server...
+✅ Peer TLS OK (ALPN: smp/1)
+✅ Peer Handshake OK
+📤 Sending AgentConfirmation...
+✅ Server: OK
 ```
 
 ---
 
 ## Working Features
 
-- ✅ **Message Type Parsing Fix** ← FIXED!
-- ✅ **Peer Server Extraction** ← NEU!
-- ✅ **Queue ID Extraction** ← NEU!
-- ✅ **url_decode_inplace()** ← NEU!
-- ✅ **peer_queue_t Structure** ← NEU!
-- ✅ Agent Protocol Parsing (Layer 6)
-- ✅ Client DH Decryption (Layer 5)
-- ✅ SMP E2E Decryption (Layer 3)
-- ✅ Multi-Contact Database (10 slots)
-- ✅ All SMP Commands
+- ✅ **Modular Architecture** — 8 modules, ~350 line main.c
+- ✅ **smp_peer.c Module** — Peer connection functions
+- ✅ **peer_connect()** — TLS to peer server
+- ✅ **send_agent_confirmation()** — SEND to peer queue
+- ✅ **Auto-Connect** — Parser triggers on Invitation
+- ✅ **Server Accepts** — "OK" response
+- 🔧 **App "Connected"** — Format issue pending
 
 ---
 
-## Key Discovery: Message Type Position
+## Module Structure
 
-### The Problem
+```
+main/
+├── main.c              (~350 lines)
+├── smp_globals.c       (~25 lines)
+├── smp_utils.c         (~100 lines)
+├── smp_crypto.c        (~80 lines)
+├── smp_network.c       (~160 lines)
+├── smp_contacts.c      (~380 lines)
+├── smp_parser.c        (~260 lines)
+├── smp_peer.c          (~220 lines) ← NEW!
+└── include/
+    ├── smp_types.h
+    ├── smp_utils.h
+    ├── smp_crypto.h
+    ├── smp_network.h
+    ├── smp_contacts.h
+    ├── smp_parser.h
+    └── smp_peer.h      ← NEW!
+```
 
-After DH decryption, the message type was searched at the wrong position:
+---
 
+## Bug Fixes
+
+### 1. tcp_connect Naming Conflict
+
+**Problem:** `multiple definition of tcp_connect`
+
+**Cause:** Collision with lwip's `tcp_connect`
+
+**Solution:** Renamed to `smp_tcp_connect()` everywhere
+
+### 2. DH Key Extraction from Invitation
+
+**Problem:** DH Keys not decoded properly
+
+**Cause:** Invitation URIs use **Standard Base64** (`+`, `/`, `=`), NOT Base64URL!
+
+**Solution:**
 ```c
-// OLD CODE (WRONG!)
-char type = decrypted[2];  // Found '_' instead of 'I'!
-```
+// Strip '=' padding
+while (len > 0 && dh_clean[len - 1] == '=') dh_clean[--len] = '\0';
 
-### The Discovery
-
-The message format after DH decryption:
-
-```
-2a a5 5f 00 07 49 ...
-*  ?  _  ver   I
-0  1  2  3  4  5
-
-Position 2: '_' (Delimiter)
-Position 3-4: Version (Big Endian, 0x0007 = Version 7)
-Position 5: Message Type ('I' = Invitation)
-```
-
-### The Fix
-
-```c
-// NEW CODE (CORRECT!)
-int toff = -1;
-for (int i = 0; i < 10 && i < dec_len - 3; i++) {
-    if (decrypted[i] == '_') { toff = i; break; }
+// Convert +/ to -_ (Standard → URL)
+for (int x = 0; x < len; x++) {
+    if (dh_clean[x] == '+') dh_clean[x] = '-';
+    if (dh_clean[x] == '/') dh_clean[x] = '_';
 }
-if (toff >= 0) {
-    uint16_t ver = (decrypted[toff + 1] << 8) | decrypted[toff + 2];
-    char type = decrypted[toff + 3];  // 'C', 'I', 'M', or 'R'
-}
 ```
 
 ---
 
-## New Structure: peer_queue_t
+## New Discoveries (v0.1.14)
+
+| # | Discovery |
+|---|-----------|
+| 16 | DH Keys in Invitation URIs: Standard Base64, NOT Base64URL |
+| 17 | AgentConfirmation format: `(agentVersion, 'C', e2eEncryption_, Tail encConnInfo)` |
+| 18 | Maybe Encoding: `'0'` = Nothing, `'1'` + data = Just |
+| 19 | Each peer has own SMP server → separate TLS connection required |
+| 20 | SEND to Peer: queue_id as entityId, no signature needed |
+
+---
+
+## smp_peer.c Functions
 
 ```c
-typedef struct {
-    char host[64];           // Peer Server (e.g., smp15.simplex.im)
-    int port;                // Port (default 5223)
-    uint8_t key_hash[32];    // Server Key Hash
-    uint8_t queue_id[32];    // Queue ID (24 bytes typical)
-    int queue_id_len;
-    uint8_t dh_public[32];   // Peer's DH Public Key
-    int has_dh;
-    int valid;
-} peer_queue_t;
+// Connect to peer's SMP server
+bool peer_connect(const char *host, int port);
+
+// Disconnect from peer
+void peer_disconnect(void);
+
+// Perform SMP handshake with peer
+bool peer_handshake(void);
+
+// Send AgentConfirmation to peer's queue
+bool send_agent_confirmation(contact_t *contact);
 ```
 
 ---
 
-## URL Decoding (Multi-Pass Required!)
-
-### The Problem
-
-SimpleX URIs are often 2-3x URL-encoded:
-
-```
-Original:    %253D
-After 1st:   %3D
-After 2nd:   =
-```
-
-### Common Patterns
-
-| Encoded | Once Decoded | Twice Decoded |
-|---------|--------------|---------------|
-| `%253D` | `%3D` | `=` |
-| `%2526` | `%26` | `&` |
-| `%252F` | `%2F` | `/` |
-| `%253A` | `%3A` | `:` |
-| `%2540` | `%40` | `@` |
-
-### Implementation
+## Auto-Connect Flow
 
 ```c
-static void url_decode_inplace(char *str) {
-    char *src = str, *dst = str;
-    while (*src) {
-        if (*src == '%' && src[1] && src[2]) {
-            int val;
-            if (sscanf(src + 1, "%2x", &val) == 1) {
-                *dst++ = (char)val;
-                src += 3;
-                continue;
-            }
-        }
-        *dst++ = *src++;
+// In smp_parser.c after parsing Invitation:
+if (pending_peer.valid && pending_peer.has_dh) {
+    ESP_LOGI(TAG, "🔌 Auto-connecting to peer...");
+    
+    if (peer_connect(pending_peer.host, pending_peer.port)) {
+        send_agent_confirmation(contact);
+        peer_disconnect();
     }
-    *dst = '\0';
 }
-
-// Must call multiple times!
-do {
-    old_len = strlen(uri);
-    url_decode_inplace(uri);
-} while (strlen(uri) < old_len);
 ```
 
 ---
 
-## SMP URI Format
+## Current Issue: App Not "Connected"
 
-### Structure
+### Symptom
 
-```
-smp://keyHash@host:port/queueId#/?v=1-4&dh=base64Key
-```
+Server accepts Confirmation with "OK", but SimpleX App doesn't show "Connected".
 
-### Extracted from Invitation
+### Analysis
 
-```
-simplex:/invitation#/?v=2-7&smp=smp%3A%2F%2F...
-
-After URL decode:
-smp://6iIcWT_dF2zN_w5xzZEY7HI2Prbh3ldP07YTyDexPjE=@smp15.simplex.im:5223/ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK#/?v=1-4&dh=MCow...
-      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^    ^^^^^^^^^^^^^^^^^      ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^        ^^^^^^^^
-      Key Hash (Base64URL)                         Host:Port              Queue ID                                DH Key
-```
-
----
-
-## DH Key Search (In Progress)
-
-### The Challenge
-
-The `dh=` parameter is deeply nested and multi-encoded:
-
-```
-%26dh%3DMCowBQYDK2VuAyEAWjdWg-4cHabdeVsdhOtIvEZXxaHZKtQlZeXrBj0Z7EU%253D
+From Haskell source:
+```haskell
+data AMessage =
+  ...
+  | AgentConfirmation {
+      agentVersion :: Version,
+      e2eEncryption_ :: Maybe (E2ERatchetParams 'C448),
+      encConnInfo :: ByteString
+    }
 ```
 
-### Search Patterns
+### Hypothesis
 
-```c
-// Try multiple patterns
-const char *patterns[] = {
-    "dh=",           // Direct
-    "dh%3D",         // Once encoded
-    "%26dh%3D",      // Twice encoded (&dh=)
-    NULL
-};
-```
+`encConnInfo` needs more than just our DH Key:
+- Profile information?
+- Ratchet initialization?
+- Proper encryption with peer's DH?
 
-### Status
+### Next Steps
 
-- ✅ Pattern search implemented
-- 🔧 Base64URL decode needed
-- 🔧 Handle trailing `%253D` (double-encoded `=`)
-
----
-
-## Agent Message Types
-
-| Type | Name | Description | Status |
-|------|------|-------------|--------|
-| `'C'` | AgentConfirmation | Confirmation response | ⏳ To Send |
-| `'I'` | AgentInvitation | Invitation with reply queue | ✅ Parsed |
-| `'M'` | AgentMsgEnvelope | Double Ratchet message | 📋 Planned |
-| `'R'` | AgentRatchetKey | Ratchet key exchange | 📋 Planned |
-
----
-
-## Connection Flow (Current State)
-
-```
-┌──────────┐                              ┌──────────┐
-│ SimpleX  │                              │  ESP32   │
-│   App    │                              │          │
-└────┬─────┘                              └────┬─────┘
-     │  1. Scans Contact Link                  │
-     │  2. SEND AgentInvitation ───────────────>
-     │                                         │
-     │  3. ESP32 parses:                       │
-     │     ✅ Type = 'I' (Invitation)          │
-     │     ✅ Peer Server = smp15.simplex.im   │
-     │     ✅ Queue ID = ahjPk2jl...           │
-     │     🔧 DH Key = (in progress)           │
-     │                                         │
-     │  READY TO SEND CONFIRMATION             │
-     │                                         │
-     │  4. Connect to Peer Server              │  ⏳ NEXT
-     │  5. SEND AgentConfirmation              │  ⏳ NEXT
-     │     <─────────────────────────────────────
-     │  6. "Connected!"                        │
-```
+1. Analyze `encConnInfo` encoding in Haskell
+2. Check if profile data needed
+3. May need Double Ratchet init
 
 ---
 
 ## Build Environment
 
-**Windows (ESP-IDF 5.5 PowerShell):**
 ```powershell
 cd C:\Espressif\projects\simplex_client
 idf.py build flash monitor -p COM5
@@ -251,43 +188,32 @@ idf.py build flash monitor -p COM5
 
 ---
 
-## Feature Matrix v0.1.13
+## Feature Matrix v0.1.14
 
 ```
 ═══════════════════════════════════════════════════════════════
-✅ TLS 1.3 Connection (ALPN: smp/1)
-✅ SMP Handshake (ServerHello/ClientHello)
-✅ Queue Creation (NEW → IDS)
-✅ Queue Subscribe (SUB → OK)
-✅ Contact Link Generation
-✅ Message Receive (MSG)
-✅ SMP E2E Decryption (Layer 3)
-✅ Client Message Decryption (Layer 5)
-✅ Agent Protocol Parsing (Layer 6)
-✅ Message Type Fix ('_' + 3)
-✅ Peer Server Extraction
-✅ Queue ID Extraction
-✅ url_decode_inplace() (multi-pass)
-✅ "READY TO SEND CONFIRMATION"
+✅ Modular Architecture (8 modules)
+✅ Peer Server TLS Connection
+✅ SMP Handshake with Peer
+✅ AgentConfirmation Sent
+✅ Server Response: OK
 ═══════════════════════════════════════════════════════════════
-🔧 DH Key Extraction (multi-encoded)
-⏳ Connect to Peer Server
-⏳ AgentConfirmation Builder
-⏳ SEND CONF to Peer Queue
-⏳ Connection Established!
+🔧 App Shows "Connected" (encConnInfo format)
+⏳ Double Ratchet Implementation
+⏳ UI Components
 ═══════════════════════════════════════════════════════════════
 ```
 
 ---
 
-## Next Steps (v0.1.14)
+## New Files
 
-1. **DH Key Extraction** — Handle all encoding variants
-2. **Connect to Peer Server** — TLS to peer's SMP server
-3. **AgentConfirmation Builder** — Create CONF message
-4. **SEND to Peer** — Complete handshake
-5. **"Connected!"** — SimpleX App shows connection
+| File | Purpose |
+|------|---------|
+| `.gitignore` | build/, managed_components/, sdkconfig.old |
+| `docs/ARCHITECTURE.md` | Module documentation |
+| `docs/release-info/v0.1.14-alpha.md` | Detailed release notes |
 
 ---
 
-*Last updated: January 21, 2026 — v0.1.13-alpha*
+*Last updated: January 21, 2026 — v0.1.14-alpha*

@@ -1,12 +1,12 @@
 # SimpleGo
 
-> **The First Native SimpleX SMP Client for ESP32 — Ready to Send Confirmation!** — Part of the Sentinel Secure Messenger Suite
+> **The First Native SimpleX SMP Client for ESP32 — Modular Architecture** — Part of the Sentinel Secure Messenger Suite
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-green.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
 [![Framework: ESP-IDF 5.5](https://img.shields.io/badge/Framework-ESP--IDF%205.5-red.svg)](https://docs.espressif.com/projects/esp-idf/)
-[![Version: v0.1.13-alpha](https://img.shields.io/badge/Version-v0.1.13--alpha-orange.svg)]()
-[![Status: Peer Queue Parsed](https://img.shields.io/badge/Status-Peer%20Queue%20Parsed-brightgreen.svg)]()
+[![Version: v0.1.14-alpha](https://img.shields.io/badge/Version-v0.1.14--alpha-orange.svg)]()
+[![Status: Peer Connection Working](https://img.shields.io/badge/Status-Peer%20Connection%20Working-brightgreen.svg)]()
 
 ---
 
@@ -16,143 +16,107 @@ SimpleGo brings [SimpleX Chat](https://simplex.chat/) — the first messaging pl
 
 ---
 
-## 🔧 MILESTONE: Peer Queue Parsing!
+## 🏗️ MILESTONE: Modular Architecture + Peer Connection!
 
-**As of v0.1.13-alpha (January 21, 2026)**, SimpleGo correctly parses AgentInvitation and extracts peer server info!
+**As of v0.1.14-alpha (January 21, 2026)**, SimpleGo has been refactored into a clean modular architecture and can connect to peer SMP servers!
 
 ```
-💬 MESSAGE for [Test]!
-🔓 Layer 3 Decrypted: 16106 bytes
-🔓 Layer 5 Decrypted: 847 bytes
-📋 Agent: Version=7, Type='I' (Invitation)
-📡 Peer Server: smp15.simplex.im:5223
-📮 Queue ID: ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK
-✅ READY TO SEND CONFIRMATION
+📦 Monolithic main.c (~1800 lines) → 8 Modules (~350 lines main.c)
+🔌 Peer Connection: TLS + Handshake ✅
+📤 AgentConfirmation: Server OK ✅
+📱 App "Connected": Format pending 🔧
 ```
-
-**ESP32 knows where to send the confirmation response!** 🎉
-
----
-
-## 🎯 What is SimpleGo?
-
-SimpleGo is a **groundbreaking open-source project** that implements a native [SimpleX Messaging Protocol (SMP)](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md) client for ESP32 microcontrollers. This is the **first known implementation** of the SimpleX protocol outside of the official Haskell codebase.
-
-**Why is this significant?**
-
-All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core library via FFI. SimpleGo implements the protocol **from scratch in C**, enabling:
-
-- 📱 **Smartphone-free messaging** — No dependency on mobile devices
-- 🔒 **Hardware-level privacy** — Dedicated secure communication device
-- 🌐 **Offline-first design** — Store-and-forward with local encryption
-- 🔧 **Full protocol control** — No black-box dependencies
 
 ---
 
 ## 🏗️ Architecture
 
+### Module Structure (v0.1.14)
+
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                       SimpleGo Client                           │
+│                        SimpleGo Client                          │
 ├─────────────────────────────────────────────────────────────────┤
-│  UI Layer                                       📋 PLANNED      │
-│  └── OLED/LCD Display (LVGL planned)                            │
+│  main.c (~350 lines)                                            │
+│  └── Application flow, WiFi init, main loop                     │
 ├─────────────────────────────────────────────────────────────────┤
-│  Connection Handler                             🔧 IN PROGRESS  │
-│  ├── peer_queue_t Structure                     ✅ NEW!         │
-│  ├── Peer Server Extraction                     ✅ NEW!         │
-│  ├── Queue ID Extraction                        ✅ NEW!         │
-│  ├── DH Key Extraction                          🔧 In Progress  │
-│  └── CONF Response Builder                      ⏳ Next         │
+│  smp_peer.c        ← NEW!        │  smp_parser.c                │
+│  ├── peer_connect()              │  ├── parse_agent_message()   │
+│  ├── peer_disconnect()           │  ├── handle_invitation()     │
+│  └── send_agent_confirmation()   │  └── Auto-Connect trigger    │
+├──────────────────────────────────┼──────────────────────────────┤
+│  smp_contacts.c                  │  smp_network.c               │
+│  ├── add/remove/list_contacts()  │  ├── smp_tcp_connect()       │
+│  ├── NVS persistence             │  ├── tls_connect()           │
+│  └── Message routing             │  └── send/receive blocks     │
+├──────────────────────────────────┼──────────────────────────────┤
+│  smp_crypto.c                    │  smp_utils.c                 │
+│  ├── Ed25519 signatures          │  ├── base64_encode/decode    │
+│  ├── X25519 DH                   │  ├── url_encode/decode       │
+│  └── crypto_box                  │  └── hex utilities           │
 ├─────────────────────────────────────────────────────────────────┤
-│  Agent Protocol Layer                           ✅ COMPLETE     │
-│  ├── Message Type Fix ('_' + 3)                 ✅ FIXED!       │
-│  ├── AgentInvitation Parser (Type 'I')          ✅ Working      │
-│  └── url_decode_inplace()                       ✅ NEW!         │
-├─────────────────────────────────────────────────────────────────┤
-│  Message Decryption Stack                       ✅ COMPLETE     │
-│  ├── Layer 3: SMP E2E (server DH)                               │
-│  ├── Layer 5: Client DH (contact DH)                            │
-│  └── Layer 6: Agent Protocol Parsing                            │
-├─────────────────────────────────────────────────────────────────┤
-│  Contact Management                             ✅ COMPLETE     │
-│  ├── Multi-Contact Database (10 slots)                          │
-│  ├── NVS Persistence                                            │
-│  └── Message Routing                                            │
-├─────────────────────────────────────────────────────────────────┤
-│  Crypto Engine                                  ✅ COMPLETE     │
-│  ├── Ed25519 + X25519 (libsodium)                               │
-│  └── crypto_box (XSalsa20-Poly1305)                             │
-├─────────────────────────────────────────────────────────────────┤
-│  SMP Protocol Layer                             ✅ COMPLETE     │
-│  ├── NEW, SUB, SEND, MSG, ACK, DEL                              │
-│  └── TLS 1.3 + 16KB Block Framing                               │
+│  smp_globals.c                   │  smp_types.h                 │
+│  └── Global variables            │  └── All structures/consts   │
 └─────────────────────────────────────────────────────────────────┘
+```
+
+### Header Files
+
+```
+include/
+├── smp_types.h      # Structures, constants, externs
+├── smp_utils.h      # Encoding functions
+├── smp_crypto.h     # Crypto functions
+├── smp_network.h    # Network I/O
+├── smp_contacts.h   # Contact management
+├── smp_parser.h     # Agent Protocol
+└── smp_peer.h       # Peer connection (NEW!)
 ```
 
 ---
 
 ## ✅ What's Working
 
-### Message Type Parsing (FIXED in v0.1.13!)
+### Connection Flow
 
 ```
-Message Format After DH Decryption:
-
-2a a5 5f 00 07 49 ...
-*  ?  _  ver   I
-0  1  2  3  4  5
-
-✅ Find '_' delimiter (position 2)
-✅ Read version at +1,+2 (Big Endian)
-✅ Read type at +3 ('C', 'I', 'M', 'R')
+┌──────────┐                              ┌──────────┐
+│ SimpleX  │                              │  ESP32   │
+│   App    │                              │          │
+└────┬─────┘                              └────┬─────┘
+     │  1. Scans Contact Link                  │
+     │  2. SEND AgentInvitation ───────────────>  ✅
+     │                                         │
+     │  3. ESP32 parses invitation             │  ✅
+     │  4. ESP32 connects to Peer Server       │  ✅
+     │  5. ESP32 sends AgentConfirmation       │  ✅
+     │     <─────────────────────────────────────
+     │     Server: "OK"                        │  ✅
+     │                                         │
+     │  6. App shows "Connected"               │  🔧
 ```
 
-### Peer Queue Extraction
-
-| Data | Status | Example |
-|------|--------|---------|
-| Peer Server | ✅ Extracted | `smp15.simplex.im` |
-| Port | ✅ Extracted | `5223` |
-| Queue ID | ✅ Extracted | `ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK` |
-| Key Hash | ✅ Extracted | (32 bytes) |
-| DH Public Key | 🔧 In Progress | (multi-encoded URL) |
-
-### Agent Message Types
-
-| Type | Name | Status |
-|------|------|--------|
-| `'I'` | AgentInvitation | ✅ Parsed |
-| `'C'` | AgentConfirmation | ⏳ Next (to send) |
-| `'M'` | AgentMsgEnvelope | 📋 Planned |
-| `'R'` | AgentRatchetKey | 📋 Planned |
-
-### Features Summary
+### Features
 
 | Feature | Status |
 |---------|--------|
-| **Message Type Fix** | ✅ **FIXED!** |
-| **Peer Server Extraction** | ✅ **NEW!** |
-| **Queue ID Extraction** | ✅ **NEW!** |
-| **url_decode_inplace()** | ✅ **NEW!** |
+| **Modular Architecture** | ✅ 8 modules |
+| **Peer Server Connection** | ✅ TLS working |
+| **AgentConfirmation Sent** | ✅ Server OK |
 | Agent Protocol (Layer 6) | ✅ Complete |
-| Client DH Decrypt (Layer 5) | ✅ Complete |
-| SMP E2E (Layer 3) | ✅ Complete |
-| Multi-Contact | ✅ Complete |
+| 6-Layer Decryption | ✅ Complete |
+| Multi-Contact (10 slots) | ✅ Complete |
 | All SMP Commands | ✅ Complete |
-| DH Key Extraction | 🔧 In Progress |
-| CONF Response | ⏳ Next |
+| App "Connected" | 🔧 Format issue |
 
 ---
 
 ## 🔧 Hardware
 
-### Target Hardware
-
-| Device | Status | Features |
-|--------|--------|----------|
-| **LilyGo T-Deck** | 🎯 Primary | ESP32-S3, 2.8" LCD, Keyboard |
-| **LilyGo T-Embed** | 🎯 Secondary | ESP32-S3, 1.9" LCD, Encoder |
+| Device | Status |
+|--------|--------|
+| **LilyGo T-Deck** | 🎯 Primary |
+| **LilyGo T-Embed** | 🎯 Secondary |
 
 ---
 
@@ -160,27 +124,28 @@ Message Format After DH Decryption:
 
 ### Build & Flash
 
-```bash
-cd ~/SimpleGo
-idf.py build flash monitor -p /dev/ttyUSB0
+```powershell
+cd C:\Espressif\projects\simplex_client
+idf.py build flash monitor -p COM5
 ```
 
-### Expected Output (v0.1.13)
+### Expected Output (v0.1.14)
 
 ```
 🔗 SIMPLEX CONTACT LINKS ════════════════════════════════
-📱 [0] Test ──────────────────────────────────────────────
+📱 [0] Test
 🌐 https://simplex.chat/contact#/?v=2-7&smp=...
 
-[SimpleX App scans link and sends Invitation]
+[SimpleX App scans and sends Invitation]
 
 💬 MESSAGE for [Test]!
-🔓 Layer 3 Decrypted: 16106 bytes
-🔓 Layer 5 Decrypted: 847 bytes
-📋 Agent: Version=7, Type='I' (Invitation)
-📡 Peer Server: smp15.simplex.im:5223
-📮 Queue ID: ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK
-✅ READY TO SEND CONFIRMATION
+📋 Agent: Version=7, Type='I'
+📡 Peer: smp15.simplex.im:5223
+🔌 Connecting to peer server...
+✅ Peer TLS OK
+✅ Peer Handshake OK
+📤 Sending AgentConfirmation...
+✅ Server: OK
 ```
 
 ---
@@ -189,10 +154,9 @@ idf.py build flash monitor -p /dev/ttyUSB0
 
 | Phase | Status |
 |-------|--------|
-| Phase 1-3.7: Foundation | ✅ Complete |
-| Phase 3.8: Agent Protocol | ✅ Complete |
-| Phase 3.9: Peer Queue Parsing | ✅ **Complete!** |
-| Phase 3.10: Connection Complete | 🔧 In Progress |
+| Phase 1-3.9: Foundation | ✅ Complete |
+| Phase 3.10: Peer Connection | ✅ **Complete!** |
+| Phase 3.11: encConnInfo Fix | 🔧 In Progress |
 | Phase 4: User Interface | 📋 Planned |
 | Phase 5: Double Ratchet | 📋 Future |
 
@@ -208,15 +172,15 @@ idf.py build flash monitor -p /dev/ttyUSB0
 
 | Version | Date | Milestone |
 |---------|------|-----------|
-| **v0.1.13-alpha** | **2026-01-21** | **🔧 Message Type Fix + Peer Queue!** |
+| **v0.1.14-alpha** | **2026-01-21** | **🏗️ Modular + Peer!** |
+| v0.1.13-alpha | 2026-01-21 | 🔧 Message Type Fix |
 | v0.1.12-alpha | 2026-01-21 | 🔐 Agent Protocol |
 | v0.1.11-alpha | 2026-01-20 | 🔗 Invitation Links |
-| v0.1.10-alpha | 2026-01-20 | 🏆 Multi-Contact + E2E |
 
 ---
 
 <p align="center">
-  <strong>🔧 First Native ESP32 SimpleX Client — Ready to Send Confirmation! 🔧</strong><br>
+  <strong>🏗️ First Native ESP32 SimpleX Client — Modular Architecture! 🏗️</strong><br>
   <em>Privacy is not a privilege, it's a right.</em>
 </p>
 

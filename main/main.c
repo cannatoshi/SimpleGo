@@ -1,6 +1,6 @@
 /**
  * SimpleGo - Native SimpleX SMP Client for ESP32
- * v0.1.12-alpha - Multi-Contact Test
+ * v0.1.13-alpha - AgentConfirmation (Connection Accept)
  * github.com/cannatoshi/SimpleGo
  * Autor: cannatoshi
  * 
@@ -11,13 +11,12 @@
  *   - SMP v6 protocol
  *   - NVS persistent contact storage
  *   - Multiple contacts over single connection
+ *   - Agent Protocol parsing
+ *   - Peer connection for confirmation
  */
 
 #include <string.h>
 #include <stdbool.h>
-#include <sys/socket.h>
-#include <netdb.h>
-#include <errno.h>
 #include <unistd.h>
 
 #include "freertos/FreeRTOS.h"
@@ -28,15 +27,24 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_heap_caps.h"
 #include "nvs_flash.h"
 
 #include "mbedtls/ssl.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
-#include "mbedtls/error.h"
 #include "mbedtls/sha256.h"
 
-#include "sodium.h"  // libsodium for Ed25519 + X25519
+#include "sodium.h"
+
+// SimpleGo modules
+#include "smp_types.h"
+#include "smp_utils.h"
+#include "smp_crypto.h"
+#include "smp_network.h"
+#include "smp_contacts.h"
+#include "smp_parser.h"
+#include "smp_peer.h"
 
 static const char *TAG = "SMP";
 
@@ -45,342 +53,6 @@ static const char *TAG = "SMP";
 #define WIFI_PASS     "MKwlan1d250e-mured5"
 #define SMP_HOST      "smp3.simplexonflux.com"
 #define SMP_PORT      5223
-// Peer queue info (from received invitation)
-typedef struct {
-    char host[64];
-    int port;
-    uint8_t key_hash[32];
-    char key_hash_b64[48];
-    uint8_t queue_id[32];
-    int queue_id_len;
-    uint8_t dh_public[32];
-    int has_dh;
-    int valid;
-} peer_queue_t;
-
-static peer_queue_t pending_peer = {0};
-
-// Simple URL decode (in-place, single pass)
-static void url_decode_inplace(char *str) {
-    char *src = str, *dst = str;
-    while (*src) {
-        if (*src == '%' && src[1] && src[2]) {
-            int hi = src[1], lo = src[2];
-            hi = (hi >= 'A') ? (hi & 0xDF) - 'A' + 10 : hi - '0';
-            lo = (lo >= 'A') ? (lo & 0xDF) - 'A' + 10 : lo - '0';
-            *dst++ = (hi << 4) | lo;
-            src += 3;
-        } else {
-            *dst++ = *src++;
-        }
-    }
-    *dst = 0;
-}
-#define SMP_BLOCK_SIZE 16384
-
-// SPKI headers for key encoding
-static const uint8_t ED25519_SPKI_HEADER[12] = {
-    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00
-};
-static const uint8_t X25519_SPKI_HEADER[12] = {
-    0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00
-};
-#define SPKI_KEY_SIZE 44  // 12 header + 32 key
-
-static volatile bool wifi_connected = false;
-
-static const int ciphersuites[] = {
-    MBEDTLS_TLS1_3_CHACHA20_POLY1305_SHA256,
-    0
-};
-
-// ============== Base64URL Encoding ==============
-
-static const char base64url_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-
-static int base64url_encode(const uint8_t *input, int input_len, char *output, int output_max) {
-    int i, j;
-    for (i = 0, j = 0; i < input_len && j < output_max - 4; ) {
-        uint32_t octet_a = i < input_len ? input[i++] : 0;
-        uint32_t octet_b = i < input_len ? input[i++] : 0;
-        uint32_t octet_c = i < input_len ? input[i++] : 0;
-        uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
-        
-        output[j++] = base64url_chars[(triple >> 18) & 0x3F];
-        output[j++] = base64url_chars[(triple >> 12) & 0x3F];
-        output[j++] = base64url_chars[(triple >> 6) & 0x3F];
-        output[j++] = base64url_chars[triple & 0x3F];
-    }
-    
-    // Remove padding
-    int mod = input_len % 3;
-    if (mod == 1) j -= 2;
-    else if (mod == 2) j -= 1;
-    
-    output[j] = '\0';
-    return j;
-}
-
-// ============== Base64URL Decoding ==============
-
-static int base64url_decode(const char *input, uint8_t *output, int output_max) {
-    size_t bin_len;
-    if (sodium_base642bin(output, output_max, input, strlen(input),
-                          NULL, &bin_len, NULL, sodium_base64_VARIANT_URLSAFE_NO_PADDING) != 0) {
-        return -1;
-    }
-    return (int)bin_len;
-}
-
-// ============== URL Encoding ==============
-
-// URL encode - encodes all special characters including + and =
-static int url_encode(const char *input, char *output, int output_max) {
-    static const char *hex = "0123456789ABCDEF";
-    int j = 0;
-    for (int i = 0; input[i] && j < output_max - 4; i++) {
-        unsigned char c = (unsigned char)input[i];
-        // Only keep alphanumeric and - _ . ~ unreserved
-        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || 
-            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
-            output[j++] = c;
-        } else {
-            // Percent-encode everything else including : / # ? = & @ +
-            output[j++] = '%';
-            output[j++] = hex[(c >> 4) & 0x0F];
-            output[j++] = hex[c & 0x0F];
-        }
-    }
-    output[j] = '\0';
-    return j;
-}
-
-// ============== Contact Data Structures ==============
-
-#define MAX_CONTACTS 10
-#define NVS_NAMESPACE "simplego"
-
-typedef struct {
-    char name[32];                                    // Contact name
-    uint8_t rcv_auth_secret[crypto_sign_SECRETKEYBYTES]; // 64 bytes
-    uint8_t rcv_auth_public[crypto_sign_PUBLICKEYBYTES]; // 32 bytes
-    uint8_t rcv_dh_secret[32];                        // X25519 secret
-    uint8_t rcv_dh_public[32];                        // X25519 public
-    uint8_t recipient_id[24];                         // Queue recipient ID
-    uint8_t recipient_id_len;
-    uint8_t sender_id[24];                            // Queue sender ID
-    uint8_t sender_id_len;
-    uint8_t srv_dh_public[32];                        // Server DH public key
-    uint8_t have_srv_dh;                              // 1 if srv_dh_public is valid
-    uint8_t active;                                   // 1=active, 0=slot free
-} contact_t;
-
-typedef struct {
-    uint8_t num_contacts;
-    contact_t contacts[MAX_CONTACTS];
-} contacts_db_t;
-
-static contacts_db_t contacts_db;
-
-// ============== TCP Helpers ==============
-
-static int tcp_connect(const char *host, int port) {
-    struct addrinfo hints = {0}, *res;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    
-    char port_str[6];
-    snprintf(port_str, sizeof(port_str), "%d", port);
-    
-    int err = getaddrinfo(host, port_str, &hints, &res);
-    if (err != 0 || res == NULL) {
-        ESP_LOGE(TAG, "DNS failed: %d", err);
-        return -1;
-    }
-    
-    int sock = socket(res->ai_family, res->ai_socktype, 0);
-    if (sock < 0) {
-        ESP_LOGE(TAG, "Socket failed");
-        freeaddrinfo(res);
-        return -1;
-    }
-    
-    struct timeval tv;
-    tv.tv_sec = 15;
-    tv.tv_usec = 0;
-    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    
-    if (connect(sock, res->ai_addr, res->ai_addrlen) != 0) {
-        ESP_LOGE(TAG, "Connect failed");
-        close(sock);
-        freeaddrinfo(res);
-        return -1;
-    }
-    
-    freeaddrinfo(res);
-    return sock;
-}
-
-// ============== mbedTLS I/O ==============
-
-static int my_send_cb(void *ctx, const unsigned char *buf, size_t len) {
-    int sock = *(int *)ctx;
-    int ret = send(sock, buf, len, 0);
-    if (ret < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return MBEDTLS_ERR_SSL_WANT_WRITE;
-        return -1;
-    }
-    return ret;
-}
-
-static int my_recv_cb(void *ctx, unsigned char *buf, size_t len) {
-    int sock = *(int *)ctx;
-    int ret = recv(sock, buf, len, 0);
-    if (ret < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return MBEDTLS_ERR_SSL_WANT_READ;
-        return -1;
-    }
-    return ret;
-}
-
-// ============== SMP Block I/O ==============
-
-static TickType_t get_tick_ms(void) {
-    return xTaskGetTickCount() * portTICK_PERIOD_MS;
-}
-
-static int read_exact(mbedtls_ssl_context *ssl, uint8_t *buf, size_t len, int timeout_ms) {
-    size_t received = 0;
-    TickType_t start = get_tick_ms();
-    
-    while (received < len) {
-        int ret = mbedtls_ssl_read(ssl, buf + received, len - received);
-        
-        if (ret > 0) {
-            received += ret;
-        } else if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-        } else if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || ret == 0) {
-            ESP_LOGW(TAG, "Connection closed");
-            return -1;
-        } else {
-            ESP_LOGE(TAG, "Read error: -0x%04X", -ret);
-            return -1;
-        }
-        
-        if ((get_tick_ms() - start) > (TickType_t)timeout_ms) {
-            if (received > 0) return received;
-            return -2;  // Timeout
-        }
-    }
-    return received;
-}
-
-static int smp_read_block(mbedtls_ssl_context *ssl, uint8_t *block, int timeout_ms) {
-    int ret = read_exact(ssl, block, SMP_BLOCK_SIZE, timeout_ms);
-    if (ret < 0) return ret;
-    
-    uint16_t content_len = (block[0] << 8) | block[1];
-    if (content_len > SMP_BLOCK_SIZE - 2) {
-        ESP_LOGE(TAG, "Invalid content length: %d", content_len);
-        return -3;
-    }
-    return content_len;
-}
-
-// Write a HANDSHAKE block (simple format: length + content + padding)
-static int smp_write_handshake_block(mbedtls_ssl_context *ssl, uint8_t *block, 
-                                      const uint8_t *content, size_t content_len) {
-    if (content_len > SMP_BLOCK_SIZE - 2) return -1;
-    
-    memset(block, '#', SMP_BLOCK_SIZE);
-    block[0] = (content_len >> 8) & 0xFF;
-    block[1] = content_len & 0xFF;
-    memcpy(block + 2, content, content_len);
-    
-    int written = 0;
-    while (written < SMP_BLOCK_SIZE) {
-        int ret = mbedtls_ssl_write(ssl, block + written, SMP_BLOCK_SIZE - written);
-        if (ret > 0) {
-            written += ret;
-        } else if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-        } else {
-            ESP_LOGE(TAG, "Write error: -0x%04X", -ret);
-            return ret;
-        }
-    }
-    return 0;
-}
-
-// Write a COMMAND block (transport format with txCount + txLen)
-static int smp_write_command_block(mbedtls_ssl_context *ssl, uint8_t *block,
-                                    const uint8_t *transmission, size_t trans_len) {
-    memset(block, '#', SMP_BLOCK_SIZE);
-    
-    int pos = 0;
-    
-    // originalLength = 1 (txCount) + 2 (txLen) + trans_len
-    uint16_t orig_len = 1 + 2 + trans_len;
-    block[pos++] = (orig_len >> 8) & 0xFF;
-    block[pos++] = orig_len & 0xFF;
-    
-    // transmissionCount = 1
-    block[pos++] = 1;
-    
-    // transmissionLength
-    block[pos++] = (trans_len >> 8) & 0xFF;
-    block[pos++] = trans_len & 0xFF;
-    
-    // transmission data
-    memcpy(&block[pos], transmission, trans_len);
-    
-    int written = 0;
-    while (written < SMP_BLOCK_SIZE) {
-        int ret = mbedtls_ssl_write(ssl, block + written, SMP_BLOCK_SIZE - written);
-        if (ret > 0) {
-            written += ret;
-        } else if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-        } else {
-            ESP_LOGE(TAG, "Write error: -0x%04X", -ret);
-            return ret;
-        }
-    }
-    return 0;
-}
-
-// ============== Certificate Parsing ==============
-
-static int parse_cert_chain(const uint8_t *data, int len, 
-                           int *cert1_off, int *cert1_len,
-                           int *cert2_off, int *cert2_len) {
-    *cert1_off = -1;
-    *cert2_off = -1;
-    
-    // Find first certificate (0x30 0x82 = ASN.1 SEQUENCE)
-    for (int i = 0; i < len - 4; i++) {
-        if (data[i] == 0x30 && data[i+1] == 0x82) {
-            *cert1_off = i;
-            *cert1_len = ((data[i+2] << 8) | data[i+3]) + 4;
-            break;
-        }
-    }
-    
-    if (*cert1_off < 0) return -1;
-    
-    // Find second certificate (CA cert for keyHash)
-    int search_start = *cert1_off + *cert1_len;
-    for (int i = search_start; i < len - 4; i++) {
-        if (data[i] == 0x30 && data[i+1] == 0x82) {
-            *cert2_off = i;
-            *cert2_len = ((data[i+2] << 8) | data[i+3]) + 4;
-            break;
-        }
-    }
-    
-    return 0;
-}
 
 // ============== WiFi ==============
 
@@ -418,1129 +90,6 @@ static void wifi_init(void) {
     ESP_ERROR_CHECK(esp_wifi_connect());
 }
 
-// ============== NVS Functions ==============
-
-static bool load_contacts_from_nvs(void) {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
-    if (err != ESP_OK) {
-        ESP_LOGI(TAG, "NVS: No saved contacts found");
-        memset(&contacts_db, 0, sizeof(contacts_db));
-        return false;
-    }
-    
-    size_t required_size = sizeof(contacts_db_t);
-    err = nvs_get_blob(handle, "contacts", &contacts_db, &required_size);
-    nvs_close(handle);
-    
-    if (err == ESP_OK && contacts_db.num_contacts > 0) {
-        ESP_LOGI(TAG, "NVS: Loaded %d contact(s)!", contacts_db.num_contacts);
-        for (int i = 0; i < MAX_CONTACTS; i++) {
-            if (contacts_db.contacts[i].active) {
-                ESP_LOGI(TAG, "      [%d] %s (rcvId: %02x%02x%02x%02x...)", 
-                         i, contacts_db.contacts[i].name,
-                         contacts_db.contacts[i].recipient_id[0],
-                         contacts_db.contacts[i].recipient_id[1],
-                         contacts_db.contacts[i].recipient_id[2],
-                         contacts_db.contacts[i].recipient_id[3]);
-            }
-        }
-        return true;
-    }
-    
-    ESP_LOGI(TAG, "NVS: No saved contacts found");
-    memset(&contacts_db, 0, sizeof(contacts_db));
-    return false;
-}
-
-static bool save_contacts_to_nvs(void) {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS: Failed to open for writing");
-        return false;
-    }
-    
-    err = nvs_set_blob(handle, "contacts", &contacts_db, sizeof(contacts_db_t));
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS: Failed to save contacts");
-        nvs_close(handle);
-        return false;
-    }
-    
-    err = nvs_commit(handle);
-    nvs_close(handle);
-    
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "NVS: Contacts saved!");
-        return true;
-    }
-    
-    ESP_LOGE(TAG, "NVS: Commit failed");
-    return false;
-}
-
-static void clear_all_contacts(void) {
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_OK) {
-        nvs_erase_key(handle, "contacts");
-        nvs_commit(handle);
-        nvs_close(handle);
-        memset(&contacts_db, 0, sizeof(contacts_db));
-        ESP_LOGI(TAG, "NVS: All contacts cleared!");
-    }
-}
-
-// ============== Contact Management ==============
-
-static int find_contact_by_recipient_id(const uint8_t *recipient_id, uint8_t len) {
-    for (int i = 0; i < MAX_CONTACTS; i++) {
-        if (contacts_db.contacts[i].active && 
-            contacts_db.contacts[i].recipient_id_len == len &&
-            memcmp(contacts_db.contacts[i].recipient_id, recipient_id, len) == 0) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-static void list_contacts(void) {
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "📋 Contact List (%d active):", contacts_db.num_contacts);
-    ESP_LOGI(TAG, "────────────────────────────────────");
-    for (int i = 0; i < MAX_CONTACTS; i++) {
-        if (contacts_db.contacts[i].active) {
-            contact_t *c = &contacts_db.contacts[i];
-            ESP_LOGI(TAG, "  [%d] %s", i, c->name);
-            ESP_LOGI(TAG, "      rcvId: %02x%02x%02x%02x%02x%02x...", 
-                     c->recipient_id[0], c->recipient_id[1], 
-                     c->recipient_id[2], c->recipient_id[3],
-                     c->recipient_id[4], c->recipient_id[5]);
-            ESP_LOGI(TAG, "      srvDH: %s", c->have_srv_dh ? "✅" : "❌");
-        }
-    }
-    ESP_LOGI(TAG, "────────────────────────────────────");
-    ESP_LOGI(TAG, "");
-}
-
-static void print_invitation_links(const uint8_t *ca_hash) {
-    char hash_b64[64];           // keyHash (Base64URL, no padding)
-    char snd_b64[64];            // senderId (Base64URL, no padding)
-    char dh_b64[80];             // dhPublicKey (Base64URL with padding)
-    char smp_uri[512];           // SMP URI 
-    char smp_uri_encoded[2048];  // URL-encoded SMP URI
-    
-    // Encode keyHash as Base64URL (no padding)
-    base64url_encode(ca_hash, 32, hash_b64, sizeof(hash_b64));
-    
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "🔗 SIMPLEX CONTACT LINKS");
-    ESP_LOGI(TAG, "══════════════════════════════════════════════════════════════════════════════");
-    ESP_LOGI(TAG, "Server keyHash: %s", hash_b64);
-    ESP_LOGI(TAG, "");
-    
-    for (int i = 0; i < MAX_CONTACTS; i++) {
-        if (!contacts_db.contacts[i].active) continue;
-        
-        contact_t *c = &contacts_db.contacts[i];
-        
-        // Encode senderId as Base64URL (no padding)
-        base64url_encode(c->sender_id, c->sender_id_len, snd_b64, sizeof(snd_b64));
-        
-        // Encode dhPublicKey as SPKI + Base64URL (WITH padding!)
-        // SPKI format: 12-byte header + 32-byte raw key = 44 bytes
-        uint8_t dh_spki[44];
-        memcpy(dh_spki, X25519_SPKI_HEADER, 12);
-        memcpy(dh_spki + 12, c->rcv_dh_public, 32);
-        
-        // Use Base64URL encoding (- and _ instead of + and /)
-        // BUT keep the = padding!
-        {
-            int in_len = 44;
-            int j = 0;
-            for (int k = 0; k < in_len; ) {
-                uint32_t octet_a = k < in_len ? dh_spki[k++] : 0;
-                uint32_t octet_b = k < in_len ? dh_spki[k++] : 0;
-                uint32_t octet_c = k < in_len ? dh_spki[k++] : 0;
-                uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
-                
-                dh_b64[j++] = base64url_chars[(triple >> 18) & 0x3F];
-                dh_b64[j++] = base64url_chars[(triple >> 12) & 0x3F];
-                dh_b64[j++] = base64url_chars[(triple >> 6) & 0x3F];
-                dh_b64[j++] = base64url_chars[triple & 0x3F];
-            }
-            // Add padding (44 bytes = 44 % 3 = 2, so one = padding)
-            int mod = in_len % 3;
-            if (mod == 1) {
-                dh_b64[j-2] = '=';
-                dh_b64[j-1] = '=';
-            } else if (mod == 2) {
-                dh_b64[j-1] = '=';
-            }
-            dh_b64[j] = '\0';
-        }
-        
-        // Build SMP URI - the = in dh key needs to be pre-encoded as %3D
-        // so it becomes %253D after URL encoding (double-encoded)
-        char dh_with_encoded_padding[100];
-        {
-            int j = 0;
-            for (int k = 0; dh_b64[k] && j < 95; k++) {
-                if (dh_b64[k] == '=') {
-                    dh_with_encoded_padding[j++] = '%';
-                    dh_with_encoded_padding[j++] = '3';
-                    dh_with_encoded_padding[j++] = 'D';
-                } else {
-                    dh_with_encoded_padding[j++] = dh_b64[k];
-                }
-            }
-            dh_with_encoded_padding[j] = '\0';
-        }
-        
-        snprintf(smp_uri, sizeof(smp_uri), 
-                 "smp://%s@%s:%d/%s#/?v=1-4&dh=%s&q=c",
-                 hash_b64, SMP_HOST, SMP_PORT, snd_b64, dh_with_encoded_padding);
-        
-        // URL-encode the entire SMP URI once
-        url_encode(smp_uri, smp_uri_encoded, sizeof(smp_uri_encoded));
-        
-        ESP_LOGI(TAG, "📱 [%d] %s", i, c->name);
-        ESP_LOGI(TAG, "──────────────────────────────────────────────────────────────────────────────");
-        
-        // Format 1: Raw SMP Queue URI (for reference/debugging)
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "   📋 SMP Queue URI (raw):");
-        printf("   smp://%s@%s:%d/%s#/?v=1-4&dh=%s&q=c\n", 
-               hash_b64, SMP_HOST, SMP_PORT, snd_b64, dh_b64);
-        
-        // Format 2: Web landing page (MAIN - copy this!)
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "   🌐 SimpleX Contact Link (COPY THIS!):");
-        printf("   https://simplex.chat/contact#/?v=2-7&smp=%s\n", smp_uri_encoded);
-        
-        // Format 3: simplex: URI scheme (for direct app opening)
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "   📲 Direct App Link:");
-        printf("   simplex:/contact#/?v=2-7&smp=%s\n", smp_uri_encoded);
-        
-        // Debug info
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "   🔧 Debug Info:");
-        ESP_LOGI(TAG, "      senderId (b64url): %s", snd_b64);
-        ESP_LOGI(TAG, "      dhPubKey (b64url): %s", dh_b64);
-        printf("      senderId (hex): ");
-        for (int j = 0; j < c->sender_id_len; j++) {
-            printf("%02x", c->sender_id[j]);
-        }
-        printf("\n");
-        
-        ESP_LOGI(TAG, "");
-    }
-    
-    ESP_LOGI(TAG, "══════════════════════════════════════════════════════════════════════════════");
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "📝 ANLEITUNG:");
-    ESP_LOGI(TAG, "   1. Den 🌐 Web Link kopieren");
-    ESP_LOGI(TAG, "   2. In SimpleX Desktop/Mobile App öffnen");
-    ESP_LOGI(TAG, "   3. 'Connect' klicken");
-    ESP_LOGI(TAG, "   4. Nachricht senden");
-    ESP_LOGI(TAG, "   5. ESP32 empfängt MSG!");
-    ESP_LOGI(TAG, "");
-}
-
-// Self-test: Send a message to our own queue
-static void self_test_send(mbedtls_ssl_context *ssl, uint8_t *block,
-                           const uint8_t *session_id, int contact_idx) {
-    if (contact_idx < 0 || contact_idx >= MAX_CONTACTS || !contacts_db.contacts[contact_idx].active) {
-        ESP_LOGE(TAG, "❌ Invalid contact for self-test");
-        return;
-    }
-    
-    contact_t *c = &contacts_db.contacts[contact_idx];
-    
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "🧪 SELF-TEST: Sending message to [%d] %s...", contact_idx, c->name);
-    
-    // Create test message - server will encrypt for receiver!
-    const char *test_msg = "Hello from ESP32!";
-    int msg_len = strlen(test_msg);
-    
-    ESP_LOGI(TAG, "   Message: \"%s\" (%d bytes)", test_msg, msg_len);
-    
-    // Build SEND command
-    // Format: corrId | entityId (senderId) | "SEND " | flags | msgBody
-    // Server encrypts msgBody with receiver's DH key!
-    uint8_t send_body[256];
-    int pos = 0;
-    
-    // CorrId
-    send_body[pos++] = 1;
-    send_body[pos++] = 'S';
-    
-    // EntityId = senderId
-    send_body[pos++] = c->sender_id_len;
-    memcpy(&send_body[pos], c->sender_id, c->sender_id_len);
-    pos += c->sender_id_len;
-    
-    // Command: "SEND "
-    send_body[pos++] = 'S';
-    send_body[pos++] = 'E';
-    send_body[pos++] = 'N';
-    send_body[pos++] = 'D';
-    send_body[pos++] = ' ';
-    
-    // Flags = 'F' (no notification) - ASCII not binary!
-    send_body[pos++] = 'F';
-    
-    // Space after flags
-    send_body[pos++] = ' ';
-    
-    // MsgBody - plaintext! Server encrypts for us.
-    memcpy(&send_body[pos], test_msg, msg_len);
-    pos += msg_len;
-    
-    ESP_LOGI(TAG, "   SEND body: %d bytes", pos);
-    
-    // SEND uses senderId for auth (no signature)
-    uint8_t transmission[256];
-    int tpos = 0;
-    
-    // No signature (auth length = 0)
-    transmission[tpos++] = 0;
-    
-    // SessionId
-    transmission[tpos++] = 32;
-    memcpy(&transmission[tpos], session_id, 32);
-    tpos += 32;
-    
-    // Body
-    memcpy(&transmission[tpos], send_body, pos);
-    tpos += pos;
-    
-    ESP_LOGI(TAG, "   Transmission: %d bytes", tpos);
-    
-    // Send
-    int ret = smp_write_command_block(ssl, block, transmission, tpos);
-    if (ret != 0) {
-        ESP_LOGE(TAG, "   ❌ Failed to send SEND");
-        return;
-    }
-    
-    ESP_LOGI(TAG, "   📤 SEND command sent!");
-    ESP_LOGI(TAG, "   Waiting for MSG echo...");
-}
-
-static int add_contact(mbedtls_ssl_context *ssl, uint8_t *block, 
-                       const uint8_t *session_id, const char *name) {
-    // Find free slot
-    int slot = -1;
-    for (int i = 0; i < MAX_CONTACTS; i++) {
-        if (!contacts_db.contacts[i].active) {
-            slot = i;
-            break;
-        }
-    }
-    
-    if (slot < 0) {
-        ESP_LOGE(TAG, "❌ No free contact slot! Max %d contacts.", MAX_CONTACTS);
-        return -1;
-    }
-    
-    contact_t *c = &contacts_db.contacts[slot];
-    memset(c, 0, sizeof(contact_t));
-    strncpy(c->name, name, sizeof(c->name) - 1);
-    
-    ESP_LOGI(TAG, "➕ Creating contact '%s' in slot %d...", name, slot);
-    
-    // Generate Ed25519 keypair for authentication
-    uint8_t seed[32];
-    esp_fill_random(seed, 32);
-    crypto_sign_seed_keypair(c->rcv_auth_public, c->rcv_auth_secret, seed);
-    
-    // Generate X25519 keypair for DH
-    esp_fill_random(c->rcv_dh_secret, 32);
-    crypto_scalarmult_base(c->rcv_dh_public, c->rcv_dh_secret);
-    
-    ESP_LOGI(TAG, "      Keys generated!");
-    
-    // Build SPKI-encoded keys
-    uint8_t rcv_auth_spki[SPKI_KEY_SIZE];
-    memcpy(rcv_auth_spki, ED25519_SPKI_HEADER, 12);
-    memcpy(rcv_auth_spki + 12, c->rcv_auth_public, 32);
-    
-    uint8_t rcv_dh_spki[SPKI_KEY_SIZE];
-    memcpy(rcv_dh_spki, X25519_SPKI_HEADER, 12);
-    memcpy(rcv_dh_spki + 12, c->rcv_dh_public, 32);
-    
-    // Build NEW command body
-    uint8_t trans_body[256];
-    int pos = 0;
-    
-    // CorrId = slot number as single char
-    trans_body[pos++] = 1;
-    trans_body[pos++] = '0' + slot;
-    
-    // EntityId = empty for NEW
-    trans_body[pos++] = 0;
-    
-    // Command: "NEW "
-    trans_body[pos++] = 'N';
-    trans_body[pos++] = 'E';
-    trans_body[pos++] = 'W';
-    trans_body[pos++] = ' ';
-    
-    // rcvAuthKey (SPKI encoded)
-    trans_body[pos++] = SPKI_KEY_SIZE;
-    memcpy(&trans_body[pos], rcv_auth_spki, SPKI_KEY_SIZE);
-    pos += SPKI_KEY_SIZE;
-    
-    // rcvDhKey (SPKI encoded)
-    trans_body[pos++] = SPKI_KEY_SIZE;
-    memcpy(&trans_body[pos], rcv_dh_spki, SPKI_KEY_SIZE);
-    pos += SPKI_KEY_SIZE;
-    
-    // subMode = 'S' (subscribe)
-    trans_body[pos++] = 'S';
-    
-    int trans_body_len = pos;
-    
-    // Sign: sessionId + transBody
-    uint8_t to_sign[1 + 32 + 256];
-    int sign_pos = 0;
-    to_sign[sign_pos++] = 32;  // sessionId length
-    memcpy(&to_sign[sign_pos], session_id, 32);
-    sign_pos += 32;
-    memcpy(&to_sign[sign_pos], trans_body, trans_body_len);
-    sign_pos += trans_body_len;
-    
-    uint8_t signature[crypto_sign_BYTES];
-    crypto_sign_detached(signature, NULL, to_sign, sign_pos, c->rcv_auth_secret);
-    
-    // Build full transmission
-    uint8_t transmission[256];
-    int tpos = 0;
-    
-    // Signature
-    transmission[tpos++] = crypto_sign_BYTES;
-    memcpy(&transmission[tpos], signature, crypto_sign_BYTES);
-    tpos += crypto_sign_BYTES;
-    
-    // SessionId
-    transmission[tpos++] = 32;
-    memcpy(&transmission[tpos], session_id, 32);
-    tpos += 32;
-    
-    // TransBody
-    memcpy(&transmission[tpos], trans_body, trans_body_len);
-    tpos += trans_body_len;
-    
-    // Send NEW command
-    ESP_LOGI(TAG, "      Sending NEW command...");
-    int ret = smp_write_command_block(ssl, block, transmission, tpos);
-    if (ret != 0) {
-        ESP_LOGE(TAG, "      ❌ Failed to send NEW");
-        return -1;
-    }
-    
-    // Wait for IDS response
-    int content_len = smp_read_block(ssl, block, 15000);
-    if (content_len < 0) {
-        ESP_LOGE(TAG, "      ❌ No response to NEW");
-        return -1;
-    }
-    
-    uint8_t *resp = block + 2;
-    
-    // Parse response - look for IDS or ERR
-    for (int i = 0; i < content_len - 3; i++) {
-        if (resp[i] == 'I' && resp[i+1] == 'D' && resp[i+2] == 'S' && resp[i+3] == ' ') {
-            int p = i + 4;
-            
-            // rcvId (length-prefixed)
-            if (p < content_len) {
-                c->recipient_id_len = resp[p++];
-                if (c->recipient_id_len > 24) c->recipient_id_len = 24;
-                if (p + c->recipient_id_len <= content_len) {
-                    memcpy(c->recipient_id, &resp[p], c->recipient_id_len);
-                    p += c->recipient_id_len;
-                }
-            }
-            
-            // sndId (length-prefixed)
-            if (p < content_len) {
-                c->sender_id_len = resp[p++];
-                if (c->sender_id_len > 24) c->sender_id_len = 24;
-                if (p + c->sender_id_len <= content_len) {
-                    memcpy(c->sender_id, &resp[p], c->sender_id_len);
-                    p += c->sender_id_len;
-                }
-            }
-            
-            // srvDhKey (length-prefixed, SPKI encoded - 44 bytes)
-            if (p < content_len) {
-                uint8_t srv_dh_len = resp[p++];
-                if (srv_dh_len == 44 && p + srv_dh_len <= content_len) {
-                    // Extract raw 32-byte key from SPKI (skip 12-byte header)
-                    memcpy(c->srv_dh_public, &resp[p + 12], 32);
-                    c->have_srv_dh = 1;
-                }
-            }
-            
-            c->active = 1;
-            contacts_db.num_contacts++;
-            save_contacts_to_nvs();
-            
-            ESP_LOGI(TAG, "      ✅ Contact '%s' created!", name);
-            ESP_LOGI(TAG, "      rcvId: %02x%02x%02x%02x%02x%02x...",
-                     c->recipient_id[0], c->recipient_id[1], c->recipient_id[2],
-                     c->recipient_id[3], c->recipient_id[4], c->recipient_id[5]);
-            return slot;
-        }
-        
-        if (resp[i] == 'E' && resp[i+1] == 'R' && resp[i+2] == 'R') {
-            ESP_LOGE(TAG, "      ❌ Server error creating contact");
-            // Log error details
-            ESP_LOGE(TAG, "      Error: %.*s", 
-                     (content_len - i > 20) ? 20 : content_len - i, &resp[i]);
-            return -1;
-        }
-    }
-    
-    ESP_LOGE(TAG, "      ❌ Unexpected response");
-    return -1;
-}
-
-static bool remove_contact(mbedtls_ssl_context *ssl, uint8_t *block,
-                           const uint8_t *session_id, int index) {
-    if (index < 0 || index >= MAX_CONTACTS || !contacts_db.contacts[index].active) {
-        ESP_LOGE(TAG, "❌ Invalid contact index: %d", index);
-        return false;
-    }
-    
-    contact_t *c = &contacts_db.contacts[index];
-    ESP_LOGI(TAG, "🗑️  Removing contact '%s' [%d]...", c->name, index);
-    
-    // Build DEL command body
-    uint8_t del_body[64];
-    int dp = 0;
-    
-    // CorrId
-    del_body[dp++] = 1;
-    del_body[dp++] = 'D';
-    
-    // EntityId = recipientId
-    del_body[dp++] = c->recipient_id_len;
-    memcpy(&del_body[dp], c->recipient_id, c->recipient_id_len);
-    dp += c->recipient_id_len;
-    
-    // Command: "DEL"
-    del_body[dp++] = 'D';
-    del_body[dp++] = 'E';
-    del_body[dp++] = 'L';
-    
-    // Sign
-    uint8_t del_to_sign[128];
-    int dsp = 0;
-    del_to_sign[dsp++] = 32;
-    memcpy(&del_to_sign[dsp], session_id, 32);
-    dsp += 32;
-    memcpy(&del_to_sign[dsp], del_body, dp);
-    dsp += dp;
-    
-    uint8_t del_sig[crypto_sign_BYTES];
-    crypto_sign_detached(del_sig, NULL, del_to_sign, dsp, c->rcv_auth_secret);
-    
-    // Build transmission
-    uint8_t del_trans[192];
-    int dtp = 0;
-    
-    del_trans[dtp++] = crypto_sign_BYTES;
-    memcpy(&del_trans[dtp], del_sig, crypto_sign_BYTES);
-    dtp += crypto_sign_BYTES;
-    
-    del_trans[dtp++] = 32;
-    memcpy(&del_trans[dtp], session_id, 32);
-    dtp += 32;
-    
-    memcpy(&del_trans[dtp], del_body, dp);
-    dtp += dp;
-    
-    int ret = smp_write_command_block(ssl, block, del_trans, dtp);
-    if (ret != 0) {
-        ESP_LOGE(TAG, "      ❌ Failed to send DEL");
-        return false;
-    }
-    
-    int content_len = smp_read_block(ssl, block, 5000);
-    if (content_len >= 0) {
-        uint8_t *resp = block + 2;
-        
-        // Parse transport format to find OK
-        int rp = 0;
-        if (resp[rp] == 1) {
-            rp++;  // txCount
-            rp += 2;  // txLen
-            int rauthLen = resp[rp++]; rp += rauthLen;  // auth
-            int rsessLen = resp[rp++]; rp += rsessLen;  // sessId
-            int rcorrLen = resp[rp++]; rp += rcorrLen;  // corrId
-            int rentLen = resp[rp++]; rp += rentLen;    // entityId
-            
-            if (rp + 1 < content_len && resp[rp] == 'O' && resp[rp+1] == 'K') {
-                c->active = 0;
-                memset(c, 0, sizeof(contact_t));
-                contacts_db.num_contacts--;
-                save_contacts_to_nvs();
-                ESP_LOGI(TAG, "      ✅ Contact removed from server and NVS!");
-                return true;
-            }
-        }
-    }
-    
-    ESP_LOGE(TAG, "      ❌ Failed to remove contact from server");
-    return false;
-}
-
-// ============== Multi-SUB ==============
-
-static void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
-                                   const uint8_t *session_id) {
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "📡 Subscribing to all contacts...");
-    
-    int success_count = 0;
-    
-    for (int i = 0; i < MAX_CONTACTS; i++) {
-        if (!contacts_db.contacts[i].active) continue;
-        
-        contact_t *c = &contacts_db.contacts[i];
-        ESP_LOGI(TAG, "   [%d] %s...", i, c->name);
-        
-        // Build SUB command body
-        uint8_t sub_body[64];
-        int pos = 0;
-        
-        // CorrId = slot number
-        sub_body[pos++] = 1;
-        sub_body[pos++] = '0' + i;
-        
-        // EntityId = recipientId
-        sub_body[pos++] = c->recipient_id_len;
-        memcpy(&sub_body[pos], c->recipient_id, c->recipient_id_len);
-        pos += c->recipient_id_len;
-        
-        // Command: "SUB"
-        sub_body[pos++] = 'S';
-        sub_body[pos++] = 'U';
-        sub_body[pos++] = 'B';
-        
-        int sub_body_len = pos;
-        
-        // Sign
-        uint8_t sub_to_sign[1 + 32 + 64];
-        int sub_sign_pos = 0;
-        sub_to_sign[sub_sign_pos++] = 32;
-        memcpy(&sub_to_sign[sub_sign_pos], session_id, 32);
-        sub_sign_pos += 32;
-        memcpy(&sub_to_sign[sub_sign_pos], sub_body, sub_body_len);
-        sub_sign_pos += sub_body_len;
-        
-        uint8_t sub_sig[crypto_sign_BYTES];
-        crypto_sign_detached(sub_sig, NULL, sub_to_sign, sub_sign_pos, c->rcv_auth_secret);
-        
-        // Build transmission
-        uint8_t sub_trans[256];
-        int sub_tpos = 0;
-        
-        sub_trans[sub_tpos++] = crypto_sign_BYTES;
-        memcpy(&sub_trans[sub_tpos], sub_sig, crypto_sign_BYTES);
-        sub_tpos += crypto_sign_BYTES;
-        
-        sub_trans[sub_tpos++] = 32;
-        memcpy(&sub_trans[sub_tpos], session_id, 32);
-        sub_tpos += 32;
-        
-        memcpy(&sub_trans[sub_tpos], sub_body, sub_body_len);
-        sub_tpos += sub_body_len;
-        
-        int ret = smp_write_command_block(ssl, block, sub_trans, sub_tpos);
-        if (ret != 0) {
-            ESP_LOGE(TAG, "       ❌ Send failed");
-            continue;
-        }
-        
-        int content_len = smp_read_block(ssl, block, 5000);
-        if (content_len >= 0) {
-            uint8_t *resp = block + 2;
-            int rp = 0;
-            
-            if (resp[rp] == 1) {
-                rp++;  // txCount
-                rp += 2;  // txLen
-                int rauthLen = resp[rp++]; rp += rauthLen;
-                int rsessLen = resp[rp++]; rp += rsessLen;
-                int rcorrLen = resp[rp++]; rp += rcorrLen;
-                int rentLen = resp[rp++]; rp += rentLen;
-                
-                if (rp + 1 < content_len && resp[rp] == 'O' && resp[rp+1] == 'K') {
-                    ESP_LOGI(TAG, "       ✅ Subscribed!");
-                    success_count++;
-                } else if (rp + 2 < content_len && resp[rp] == 'E' && resp[rp+1] == 'R' && resp[rp+2] == 'R') {
-                    ESP_LOGW(TAG, "       ⚠️ Server error");
-                } else {
-                    ESP_LOGW(TAG, "       ⚠️ Unknown response");
-                }
-            }
-        } else {
-            ESP_LOGW(TAG, "       ⚠️ No response");
-        }
-    }
-    
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "📡 Subscriptions complete: %d/%d", success_count, contacts_db.num_contacts);
-    ESP_LOGI(TAG, "");
-}
-
-// ============== Message Decryption ==============
-
-static bool decrypt_message(contact_t *c, const uint8_t *encrypted, int enc_len,
-                           const uint8_t *nonce, uint8_t nonce_len,
-                           uint8_t *plain, int *plain_len) {
-    if (!c || !c->have_srv_dh || enc_len <= crypto_box_MACBYTES) {
-        return false;
-    }
-    
-    // Compute shared secret using crypto_box_beforenm
-    // This does X25519 + HSalsa20 key derivation (not just raw X25519!)
-    uint8_t shared[crypto_box_BEFORENMBYTES];
-    if (crypto_box_beforenm(shared, c->srv_dh_public, c->rcv_dh_secret) != 0) {
-        ESP_LOGE(TAG, "      DH key computation failed");
-        return false;
-    }
-    
-    // Prepare nonce (24 bytes, zero-padded if needed)
-    uint8_t full_nonce[crypto_box_NONCEBYTES];
-    memset(full_nonce, 0, crypto_box_NONCEBYTES);
-    int copy_len = (nonce_len < crypto_box_NONCEBYTES) ? nonce_len : crypto_box_NONCEBYTES;
-    memcpy(full_nonce, nonce, copy_len);
-    
-    // Decrypt using crypto_box (XSalsa20 + Poly1305)
-    if (crypto_box_open_easy_afternm(plain, encrypted, enc_len, full_nonce, shared) != 0) {
-        ESP_LOGE(TAG, "      Decryption failed");
-        return false;
-    }
-    
-    *plain_len = enc_len - crypto_box_MACBYTES;
-    return true;
-}
-
-// ============== Agent Message Parsing ==============
-
-// Agent message types (after SMP-level decryption)
-#define AGENT_MSG_CONFIRMATION  'C'  // Connection request from peer
-#define AGENT_MSG_ENVELOPE      'M'  // Normal message (Double Ratchet encrypted)
-#define AGENT_MSG_INVITATION    'I'  // Invitation
-#define AGENT_MSG_RATCHET_KEY   'R'  // Ratchet key exchange
-
-// Dump hex for debugging
-static void dump_hex(const char *label, const uint8_t *data, int len, int max_bytes) {
-    int show = (len > max_bytes) ? max_bytes : len;
-    printf("   %s (%d bytes): ", label, len);
-    for (int i = 0; i < show; i++) {
-        printf("%02x ", data[i]);
-    }
-    if (len > max_bytes) printf("...");
-    printf("\n");
-}
-
-// Decrypt client message body using contact's DH keys
-// Returns decrypted length, or -1 on error
-static int decrypt_client_msg(const uint8_t *enc, int enc_len,
-                              const uint8_t *sender_dh_pub,  // Peer's X25519 public key (32 bytes raw)
-                              const uint8_t *our_dh_priv,    // Our X25519 private key (32 bytes)
-                              uint8_t *plain) {
-    // crypto_box format: [24-byte nonce][ciphertext + 16-byte tag]
-    if (enc_len < 24 + 16) {
-        ESP_LOGE(TAG, "      ❌ Client msg too short for crypto_box (%d)", enc_len);
-        return -1;
-    }
-    
-    const uint8_t *nonce = enc;
-    const uint8_t *ciphertext = enc + 24;
-    int ciphertext_len = enc_len - 24;
-    
-    ESP_LOGI(TAG, "         Nonce (first 12): %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x",
-             nonce[0], nonce[1], nonce[2], nonce[3], nonce[4], nonce[5],
-             nonce[6], nonce[7], nonce[8], nonce[9], nonce[10], nonce[11]);
-    
-    // crypto_box_open_easy(plain, ciphertext, ciphertext_len, nonce, sender_pub, our_priv)
-    if (crypto_box_open_easy(plain, ciphertext, ciphertext_len, nonce, sender_dh_pub, our_dh_priv) != 0) {
-        ESP_LOGE(TAG, "      ❌ Client msg decryption failed!");
-        return -1;
-    }
-    
-    return ciphertext_len - 16;  // plaintext is ciphertext minus 16-byte tag
-}
-
-// Parse and display agent message details
-static void parse_agent_message(contact_t *contact, const uint8_t *plain, int plain_len) {
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "   🔬 AGENT MESSAGE ANALYSIS:");
-    
-    // Step 1: Check for length prefix
-    const uint8_t *content = plain;
-    int content_len = plain_len;
-    
-    if (plain_len >= 2) {
-        uint16_t prefix_len = (plain[0] << 8) | plain[1];
-        if (prefix_len > 0 && prefix_len < plain_len - 2 && prefix_len < 16100) {
-            ESP_LOGI(TAG, "      📏 Length prefix: %d bytes (total: %d)", prefix_len, plain_len);
-            content = plain + 2;
-            content_len = prefix_len;
-        }
-    }
-    
-    // Show raw structure first
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "      📊 Raw message structure (first 64 bytes):");
-    printf("         ");
-    for (int i = 0; i < 64 && i < content_len; i++) {
-        printf("%02x ", content[i]);
-        if ((i + 1) % 16 == 0) printf("\n         ");
-    }
-    printf("\n");
-    
-    // Step 2: Scan for X25519 SPKI header (30 2a 30 05 06 03 2b 65 6e 03 21 00)
-    //                                       0  1  2  3  4  5  6  7  8  9  10 11
-    int sender_key_offset = -1;
-    uint8_t sender_key_raw[32];
-    
-    for (int i = 0; i < content_len - 44; i++) {
-        // X25519 SPKI header: 30 2a 30 05 06 03 2b 65 6e 03 21 00
-        if (content[i] == 0x30 && content[i+1] == 0x2a && content[i+2] == 0x30 &&
-            content[i+3] == 0x05 && content[i+4] == 0x06 && content[i+5] == 0x03 &&
-            content[i+6] == 0x2b && content[i+7] == 0x65 && content[i+8] == 0x6e &&
-            content[i+9] == 0x03 && content[i+10] == 0x21 && content[i+11] == 0x00) {
-            
-            sender_key_offset = i;
-            ESP_LOGI(TAG, "");
-            ESP_LOGI(TAG, "      🔑 Found X25519 SPKI at offset %d!", i);
-            dump_hex("SPKI key", &content[i], 44, 44);
-            
-            // Extract raw 32-byte key (skip 12-byte SPKI header)
-            memcpy(sender_key_raw, &content[i + 12], 32);
-            dump_hex("Raw key", sender_key_raw, 32, 32);
-            break;
-        }
-    }
-    
-    if (sender_key_offset < 0) {
-        ESP_LOGW(TAG, "      ⚠️ No X25519 SPKI found in message!");
-        
-        // Show text representation for debugging
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "      📝 As text:");
-        printf("         \"");
-        for (int i = 0; i < content_len && i < 200; i++) {
-            char c = content[i];
-            if (c >= 32 && c < 127) printf("%c", c);
-            else printf(".");
-        }
-        printf("\"\n");
-        return;
-    }
-    
-    // Step 3: Analyze what comes after the SPKI key
-    int after_key_offset = sender_key_offset + 44;
-    int after_key_len = content_len - after_key_offset;
-    
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "      📦 Data after SPKI key (%d bytes):", after_key_len);
-    if (after_key_len > 0) {
-        dump_hex("After key", &content[after_key_offset], after_key_len, 64);
-    }
-    
-    // Step 4: Try DH decryption on the data after the SPKI
-    if (after_key_len > 40) {
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "      🔐 Attempting DH decryption on post-key data...");
-        
-        uint8_t *decrypted = malloc(after_key_len);
-        if (decrypted) {
-            int dec_len = decrypt_client_msg(&content[after_key_offset], after_key_len,
-                                             sender_key_raw,
-                                             contact->rcv_dh_secret,
-                                             decrypted);
-            
-            if (dec_len > 0) {
-                ESP_LOGI(TAG, "      ✅ DH Decryption SUCCESS! (%d bytes)", dec_len);
-                dump_hex("Decrypted", decrypted, dec_len, 100);
-                
-                if (dec_len >= 6) {
-                    // Find '_' delimiter, then version (2 bytes), then type
-                    int toff = -1;
-                    for (int i = 0; i < 10 && i < dec_len - 3; i++) {
-                        if (decrypted[i] == '_') { toff = i; break; }
-                    }
-                    if (toff < 0) toff = 2; // fallback
-                    uint16_t ver = (decrypted[toff + 1] << 8) | decrypted[toff + 2];
-                    char type = decrypted[toff + 3];
-                    ESP_LOGI(TAG, "");
-                    ESP_LOGI(TAG, "      📦 Agent Version: %d", ver);
-                    ESP_LOGI(TAG, "      📬 Message Type: '%c' (0x%02x)", 
-                             (type >= 32 && type < 127) ? type : '?', type);
-                    
-                    if (type == 'C') {
-                        ESP_LOGI(TAG, "      🎉 CONFIRMATION received!");
-                    }
-                    else if (type == 'I') {
-                        ESP_LOGI(TAG, "      🎉 INVITATION received!");
-                        
-                        // Find smp= parameter in the invitation
-                        for (int j = toff + 4; j < dec_len - 10; j++) {
-                            // Look for "smp=" or "smp%3A" (URL encoded)
-                            if ((decrypted[j] == 's' && decrypted[j+1] == 'm' && 
-                                 decrypted[j+2] == 'p' && (decrypted[j+3] == '=' || decrypted[j+3] == '%'))) {
-                                
-                                // Find start of smp:// URI
-                                int uri_start = j + 4;
-                                if (decrypted[j+3] == '%') uri_start = j; // smp%3A...
-                                
-                                // Find end of URI (& or space or end)
-                                int uri_end = uri_start;
-                                while (uri_end < dec_len && decrypted[uri_end] != '&' && 
-                                       decrypted[uri_end] > 32 && decrypted[uri_end] < 127 &&
-                                       uri_end - uri_start < 600) uri_end++;
-                                
-                                int uri_len = uri_end - uri_start;
-                                if (uri_len > 50 && uri_len < 600) {
-                                    // Copy and decode URI
-                                    char *uri = malloc(uri_len + 1);
-                                    if (uri) {
-                                        memcpy(uri, &decrypted[uri_start], uri_len);
-                                        uri[uri_len] = 0;
-                                        
-                                        // Decode multiple times (can be 2-3x encoded)
-                                        for (int pass = 0; pass < 3; pass++) {
-                                            if (!strchr(uri, '%')) break;
-                                            url_decode_inplace(uri);
-                                        }
-                                        
-                                        ESP_LOGI(TAG, "      📋 Peer SMP URI: %.80s...", uri);
-                                        
-                                        // Parse: smp://KEYHASH@HOST:PORT/QUEUEID#/?...&dh=DHKEY
-                                        char *at = strchr(uri, '@');
-                                        char *slash = at ? strchr(at, '/') : NULL;
-                                        char *hash = slash ? strchr(slash, '#') : NULL;
-                                        
-                                        if (at && slash) {
-                                            // Extract host:port
-                                            int hostlen = slash - at - 1;
-                                            if (hostlen > 0 && hostlen < 63) {
-                                                memcpy(pending_peer.host, at + 1, hostlen);
-                                                pending_peer.host[hostlen] = 0;
-                                                
-                                                // Check for port
-                                                char *colon = strchr(pending_peer.host, ':');
-                                                if (colon) {
-                                                    pending_peer.port = atoi(colon + 1);
-                                                    *colon = 0;
-                                                } else {
-                                                    pending_peer.port = 5223;
-                                                }
-                                                
-                                                ESP_LOGI(TAG, "      🖥️  Peer Server: %s:%d", 
-                                                         pending_peer.host, pending_peer.port);
-                                            }
-                                            
-                                            // Extract queue ID
-                                            char *qend = hash ? hash : (slash + strlen(slash));
-                                            int qlen = qend - slash - 1;
-                                            if (qlen > 0 && qlen < 48) {
-                                                char qid_b64[48] = {0};
-                                                memcpy(qid_b64, slash + 1, qlen);
-                                                // Base64URL decode queue ID
-                                                pending_peer.queue_id_len = base64url_decode(
-                                                    qid_b64, pending_peer.queue_id, 32);
-                                                ESP_LOGI(TAG, "      📮 Queue ID: %s (%d bytes)", 
-                                                         qid_b64, pending_peer.queue_id_len);
-                                            }
-                                        }
-                                        
-                                        // Find dh= parameter (might be deeper in nested URI)
-                                        char *dh = strstr(uri, "dh=");
-                                        if (!dh) {
-                                            // Search in original decrypted data for dh= (various encodings)
-                                            ESP_LOGI(TAG, "      🔍 Searching for dh= in %d bytes...", dec_len - toff);
-                                            for (int d = toff; d < dec_len - 60; d++) {
-                                                // Look for: dh= or dh%3D or %26dh%3D (URL encoded &dh=)
-                                                int found = 0;
-                                                int start = 0;
-                                                
-                                                if (decrypted[d] == 'd' && decrypted[d+1] == 'h' && decrypted[d+2] == '=') {
-                                                    found = 1; start = d + 3;
-                                                }
-                                                else if (decrypted[d] == 'd' && decrypted[d+1] == 'h' && 
-                                                         decrypted[d+2] == '%' && decrypted[d+3] == '3') {
-                                                    found = 1; start = d + 6; // skip dh%3D
-                                                }
-                                                else if (decrypted[d] == '%' && decrypted[d+1] == '2' && 
-                                                         decrypted[d+2] == '6' && decrypted[d+3] == 'd' && 
-                                                         decrypted[d+4] == 'h' && decrypted[d+5] == '%' &&
-                                                         decrypted[d+6] == '3') {
-                                                    found = 1; start = d + 10; // skip %26dh%3D
-                                                }
-                                                
-                                                if (found) {
-                                                    char dh_buf[120] = {0};
-                                                    int di = 0;
-                                                    for (int x = start; x < dec_len && di < 100; x++) {
-                                                        char c = decrypted[x];
-                                                        if (c == '&' || (c == '%' && decrypted[x+1] == '2' && decrypted[x+2] == '6')) break;
-                                                        if (c == ' ' || c < 33) break;
-                                                        dh_buf[di++] = c;
-                                                    }
-                                                    if (di > 40) {
-                                                        url_decode_inplace(dh_buf);
-                                                        url_decode_inplace(dh_buf);
-                                                        url_decode_inplace(dh_buf);
-                                                        ESP_LOGI(TAG, "      🔑 DH (raw): %.50s...", dh_buf);
-                                                        
-                                                        uint8_t spki[48];
-                                                        int spki_len = base64url_decode(dh_buf, spki, 48);
-                                                        if (spki_len >= 44) {
-                                                            memcpy(pending_peer.dh_public, spki + 12, 32);
-                                                            pending_peer.has_dh = 1;
-                                                            ESP_LOGI(TAG, "      🔑 DH Key: %02x%02x%02x%02x... ✅",
-                                                                     pending_peer.dh_public[0], pending_peer.dh_public[1],
-                                                                     pending_peer.dh_public[2], pending_peer.dh_public[3]);
-                                                        }
-                                                    }
-                                                    break;
-                                                }
-                                                if (d < toff + 20 || (d % 200 == 0 && d < 1000)) {
-                                                    ESP_LOGD(TAG, "      byte %d: %02x %02x %02x", d, decrypted[d], decrypted[d+1], decrypted[d+2]);
-                                                }
-                                            }
-                                            if (!pending_peer.has_dh) {
-                                                ESP_LOGW(TAG, "      ⚠️ DH key not found in buffer!");
-                                            } 
-                                        } else {
-                                            dh += 3;
-                                            char *dh_end = dh;
-                                            while (*dh_end && *dh_end != '&' && *dh_end != ' ') dh_end++;
-                                            int dh_len = dh_end - dh;
-                                            
-                                            if (dh_len > 40 && dh_len < 100) {
-                                                char dh_b64[100] = {0};
-                                                memcpy(dh_b64, dh, dh_len);
-                                                
-                                                uint8_t spki[48];
-                                                int spki_len = base64url_decode(dh_b64, spki, 48);
-                                                
-                                                if (spki_len >= 44) {
-                                                    memcpy(pending_peer.dh_public, spki + 12, 32);
-                                                    pending_peer.has_dh = 1;
-                                                    ESP_LOGI(TAG, "      🔑 DH Key: %02x%02x%02x%02x... ✅",
-                                                             pending_peer.dh_public[0], pending_peer.dh_public[1],
-                                                             pending_peer.dh_public[2], pending_peer.dh_public[3]);
-                                                }
-                                            }
-                                        } 
-                                        
-                                        pending_peer.valid = (strlen(pending_peer.host) > 0 && 
-                                                              pending_peer.queue_id_len > 0);
-                                        
-                                        if (pending_peer.valid) {
-                                            ESP_LOGI(TAG, "");
-                                            ESP_LOGI(TAG, "      ╔══════════════════════════════════════╗");
-                                            ESP_LOGI(TAG, "      ║  🎯 READY TO SEND CONFIRMATION!     ║");
-                                            ESP_LOGI(TAG, "      ╚══════════════════════════════════════╝");
-                                        }
-                                        
-                                        free(uri);
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                    } 
-                }
-                
-                // Show as text
-                printf("         Text: \"");
-                for (int i = 0; i < dec_len && i < 150; i++) {
-                    char c = decrypted[i];
-                    if (c >= 32 && c < 127) printf("%c", c);
-                }
-                printf("\"\n");
-            } else {
-                ESP_LOGW(TAG, "      ⚠️ DH decrypt failed on post-key data");
-            }
-            free(decrypted);
-        }
-    }
-    
-    // Step 5: Analyze what comes BEFORE the SPKI key
-    if (sender_key_offset > 0) {
-        ESP_LOGI(TAG, "");
-        ESP_LOGI(TAG, "      📋 Data BEFORE SPKI key (%d bytes):", sender_key_offset);
-        dump_hex("Before key", content, sender_key_offset, 32);
-        
-        // Look for version strings, lengths, etc.
-        printf("         Text: \"");
-        for (int i = 0; i < sender_key_offset; i++) {
-            char c = content[i];
-            if (c >= 32 && c < 127) printf("%c", c);
-            else printf(".");
-        }
-        printf("\"\n");
-        
-        // Maybe the data before the key is length-prefixed content?
-        // Try to find "1," version marker
-        for (int i = 0; i < sender_key_offset - 1; i++) {
-            if (content[i] >= '1' && content[i] <= '9' && content[i+1] == ',') {
-                ESP_LOGI(TAG, "      📌 Version '%c' found at offset %d", content[i], i);
-            }
-        }
-    }
-    
-    // Step 6: Try decrypting the ENTIRE content after length prefix as crypto_box
-    // Maybe the whole thing is encrypted with our DH key pair
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "      🔐 Trying FULL content decryption...");
-    
-    if (content_len > 40) {
-        // First 32 bytes might be sender's ephemeral key, rest is encrypted
-        uint8_t *full_decrypted = malloc(content_len);
-        if (full_decrypted) {
-            // Try: first 32 bytes = ephemeral sender key, rest = crypto_box message
-            if (content_len > 32 + 24 + 16) {
-                uint8_t ephemeral_key[32];
-                memcpy(ephemeral_key, content, 32);
-                
-                const uint8_t *enc_msg = content + 32;
-                int enc_msg_len = content_len - 32;
-                
-                int dec_len = decrypt_client_msg(enc_msg, enc_msg_len,
-                                                 ephemeral_key,
-                                                 contact->rcv_dh_secret,
-                                                 full_decrypted);
-                
-                if (dec_len > 0) {
-                    ESP_LOGI(TAG, "      ✅ FULL content decryption SUCCESS! (%d bytes)", dec_len);
-                    dump_hex("Full decrypted", full_decrypted, dec_len, 100);
-                } else {
-                    ESP_LOGW(TAG, "      ⚠️ Full content decrypt failed");
-                }
-            }
-            free(full_decrypted);
-        }
-    }
-    
-    ESP_LOGI(TAG, "");
-}
-
 // ============== Main SMP Connection ==============
 
 static void smp_connect(void) {
@@ -1552,6 +101,7 @@ static void smp_connect(void) {
     mbedtls_ctr_drbg_context ctr_drbg;
 
     uint8_t session_id[32];
+    uint8_t ca_hash[32];
 
     uint8_t *block = (uint8_t *)heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
     if (!block) {
@@ -1561,7 +111,7 @@ static void smp_connect(void) {
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║  SimpleGo v0.1.12-alpha DH-Decrypt     ║");
+    ESP_LOGI(TAG, "║  SimpleGo v0.1.13-alpha Connection!    ║");
     ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
     ESP_LOGI(TAG, "");
 
@@ -1575,7 +125,7 @@ static void smp_connect(void) {
 
     // ========== Step 1: TCP + TLS ==========
     ESP_LOGI(TAG, "[1/5] Connecting to %s:%d...", SMP_HOST, SMP_PORT);
-    sock = tcp_connect(SMP_HOST, SMP_PORT);
+    sock = smp_tcp_connect(SMP_HOST, SMP_PORT);
     if (sock < 0) goto cleanup;
 
     ret = mbedtls_ssl_config_defaults(&conf, MBEDTLS_SSL_IS_CLIENT,
@@ -1635,20 +185,17 @@ static void smp_connect(void) {
     int cert1_off, cert1_len, cert2_off, cert2_len;
     parse_cert_chain(hello, content_len, &cert1_off, &cert1_len, &cert2_off, &cert2_len);
     
-    // keyHash = SHA256 of CA cert (second cert in chain)
-    uint8_t ca_hash[32];
     if (cert2_off >= 0) {
         mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
     } else {
         mbedtls_sha256(hello + cert1_off, cert1_len, ca_hash, 0);
     }
     
-    // ClientHello: version + keyHash
     uint8_t client_hello[35];
     int pos = 0;
     client_hello[pos++] = 0x00;
-    client_hello[pos++] = 0x06;  // v6
-    client_hello[pos++] = 32;    // keyHash length
+    client_hello[pos++] = 0x06;
+    client_hello[pos++] = 32;
     memcpy(&client_hello[pos], ca_hash, 32);
     pos += 32;
     
@@ -1659,8 +206,7 @@ static void smp_connect(void) {
     // ========== Step 4: Load or Create Contacts ==========
     ESP_LOGI(TAG, "[4/5] Loading contacts...");
     
-    // FRESH START: Clear old contacts for testing
-    // Comment this out once everything works!
+    // Fresh start for testing - comment out in production!
     ESP_LOGW(TAG, "      🧹 Clearing old contacts for fresh test...");
     clear_all_contacts();
     
@@ -1684,7 +230,7 @@ static void smp_connect(void) {
     subscribe_all_contacts(&ssl, block, session_id);
     
     // Print connection info
-    print_invitation_links(ca_hash);
+    print_invitation_links(ca_hash, SMP_HOST, SMP_PORT);
     
     // ========== Message Receive Loop ==========
     ESP_LOGI(TAG, "╔════════════════════════════════════╗");
@@ -1694,10 +240,9 @@ static void smp_connect(void) {
     ESP_LOGI(TAG, "");
     
     while (1) {
-        content_len = smp_read_block(&ssl, block, 60000);  // 60s timeout
+        content_len = smp_read_block(&ssl, block, 60000);
         
         if (content_len == -2) {
-            // Timeout - still waiting
             ESP_LOGI(TAG, "   ... still waiting ...");
             continue;
         }
@@ -1715,22 +260,19 @@ static void smp_connect(void) {
             ESP_LOGW(TAG, "   Unexpected txCount: %d", resp[p]);
             continue;
         }
-        p++;  // txCount
-        p += 2;  // txLen
+        p++;
+        p += 2;
         
-        // Skip auth header
         int authLen = resp[p++]; p += authLen;
         int sessLen = resp[p++]; p += sessLen;
         int corrLen = resp[p++]; p += corrLen;
         
-        // EntityId - tells us which contact this message is for
         int entLen = resp[p++];
         uint8_t entity_id[24];
         if (entLen > 24) entLen = 24;
         memcpy(entity_id, &resp[p], entLen);
         p += entLen;
         
-        // Find which contact this is for
         int contact_idx = find_contact_by_recipient_id(entity_id, entLen);
         contact_t *contact = (contact_idx >= 0) ? &contacts_db.contacts[contact_idx] : NULL;
         
@@ -1746,9 +288,8 @@ static void smp_connect(void) {
             }
         }
         else if (p + 3 < content_len && resp[p] == 'M' && resp[p+1] == 'S' && resp[p+2] == 'G' && resp[p+3] == ' ') {
-            p += 4;  // Skip "MSG "
+            p += 4;
             
-            // Parse msgId (nonce for decryption)
             uint8_t msgIdLen = resp[p++];
             uint8_t msg_id[24];
             memset(msg_id, 0, 24);
@@ -1756,7 +297,6 @@ static void smp_connect(void) {
             memcpy(msg_id, &resp[p], msgIdLen);
             p += msgIdLen;
             
-            // Rest is encrypted body
             int enc_len = content_len - p;
             
             if (contact) {
@@ -1771,15 +311,15 @@ static void smp_connect(void) {
             ESP_LOGI(TAG, "   MsgId: %02x%02x%02x%02x...", msg_id[0], msg_id[1], msg_id[2], msg_id[3]);
             ESP_LOGI(TAG, "   Encrypted: %d bytes", enc_len);
             
-            // Try to decrypt
-            if (contact && contact->have_srv_dh && enc_len > crypto_secretbox_MACBYTES) {
+            // Decrypt
+            if (contact && contact->have_srv_dh && enc_len > crypto_box_MACBYTES) {
                 uint8_t *plain = malloc(enc_len);
                 if (plain) {
                     int plain_len = 0;
-                    if (decrypt_message(contact, &resp[p], enc_len, msg_id, msgIdLen, plain, &plain_len)) {
+                    if (decrypt_smp_message(contact, &resp[p], enc_len, msg_id, msgIdLen, plain, &plain_len)) {
                         ESP_LOGI(TAG, "   🔓 SMP-Level Decryption OK! (%d bytes)", plain_len);
                         
-                        // Parse the agent message to understand what we got
+                        // Parse agent message
                         parse_agent_message(contact, plain, plain_len);
                         
                         // Send ACK
@@ -1787,9 +327,9 @@ static void smp_connect(void) {
                         
                         uint8_t ack_body[64];
                         int ap = 0;
-                        ack_body[ap++] = 1;  // corrId len
-                        ack_body[ap++] = 'A';  // corrId
-                        ack_body[ap++] = contact->recipient_id_len;  // entityId
+                        ack_body[ap++] = 1;
+                        ack_body[ap++] = 'A';
+                        ack_body[ap++] = contact->recipient_id_len;
                         memcpy(&ack_body[ap], contact->recipient_id, contact->recipient_id_len);
                         ap += contact->recipient_id_len;
                         ack_body[ap++] = 'A';
@@ -1800,7 +340,6 @@ static void smp_connect(void) {
                         memcpy(&ack_body[ap], msg_id, msgIdLen);
                         ap += msgIdLen;
                         
-                        // Sign ACK
                         uint8_t ack_to_sign[128];
                         int ack_sign_pos = 0;
                         ack_to_sign[ack_sign_pos++] = 32;
@@ -1812,7 +351,6 @@ static void smp_connect(void) {
                         uint8_t ack_sig[crypto_sign_BYTES];
                         crypto_sign_detached(ack_sig, NULL, ack_to_sign, ack_sign_pos, contact->rcv_auth_secret);
                         
-                        // Build ACK transmission
                         uint8_t ack_trans[192];
                         int atp = 0;
                         ack_trans[atp++] = crypto_sign_BYTES;
@@ -1840,7 +378,6 @@ static void smp_connect(void) {
                      (content_len - p > 20) ? 20 : content_len - p, &resp[p]);
         }
         else {
-            // Unknown command
             ESP_LOGW(TAG, "   ❓ Unknown: %c%c%c", 
                      (p < content_len) ? resp[p] : '?',
                      (p+1 < content_len) ? resp[p+1] : '?',
@@ -1863,9 +400,11 @@ cleanup:
     if (sock >= 0) close(sock);
 }
 
+// ============== App Main ==============
+
 void app_main(void) {
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "SimpleGo starting...");
+    ESP_LOGI(TAG, "SimpleGo v0.1.13-alpha starting...");
     
     // Initialize libsodium
     if (sodium_init() < 0) {

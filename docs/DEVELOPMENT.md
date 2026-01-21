@@ -4,17 +4,6 @@
 
 ---
 
-## Table of Contents
-
-1. [Prerequisites](#prerequisites)
-2. [Environment Setup](#environment-setup)
-3. [Building & Flashing](#building--flashing)
-4. [Architecture Overview](#architecture-overview)
-5. [Debugging](#debugging)
-6. [Testing](#testing)
-
----
-
 ## Prerequisites
 
 ### Hardware
@@ -23,7 +12,6 @@
 |-----------|-------------|
 | **MCU** | ESP32-S3 |
 | **Dev Board** | LilyGo T-Deck or T-Embed |
-| **USB Cable** | USB-C data cable |
 
 ### Software
 
@@ -31,232 +19,221 @@
 |-----------|---------|
 | **ESP-IDF** | 5.5.2+ |
 | **Python** | 3.8+ |
-| **Git** | Any recent |
-
----
-
-## Environment Setup
-
-### Windows
-
-```powershell
-# Use ESP-IDF PowerShell from Start Menu
-C:\Espressif\idf_cmd_init.ps1
-```
-
-### Linux / macOS
-
-```bash
-. ~/esp/esp-idf/export.sh
-```
 
 ---
 
 ## Building & Flashing
 
-```bash
-idf.py set-target esp32s3
-idf.py build flash monitor -p /dev/ttyUSB0  # or COM5 on Windows
+```powershell
+cd C:\Espressif\projects\simplex_client
+idf.py build flash monitor -p COM5
 ```
-
-### Monitor Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+]` | Exit monitor |
-| `Ctrl+T, R` | Reboot device |
 
 ---
 
-## Architecture Overview
-
-### System Stack (v0.1.13)
+## Project Structure (v0.1.14)
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│           Application Layer                                     │
-├─────────────────────────────────────────────────────────────────┤
-│  Connection Handler                             🔧 IN PROGRESS  │
-│  ├── peer_queue_t Structure                     ✅ NEW!         │
-│  ├── Peer Server Extraction                     ✅ NEW!         │
-│  ├── Queue ID Extraction                        ✅ NEW!         │
-│  └── DH Key Extraction                          🔧 In Progress  │
-├─────────────────────────────────────────────────────────────────┤
-│  Agent Protocol Layer                           ✅ FIXED!       │
-│  ├── '_' Delimiter Search                       ✅ NEW!         │
-│  ├── Version Parse (BE uint16)                  ✅ FIXED!       │
-│  ├── Type Parse at +3                           ✅ FIXED!       │
-│  └── url_decode_inplace()                       ✅ NEW!         │
-├─────────────────────────────────────────────────────────────────┤
-│  Message Decryption Stack                       ✅ COMPLETE     │
-│  ├── Layer 3: SMP E2E (server DH)                               │
-│  ├── Layer 5: Client DH (contact DH)                            │
-│  └── Layer 6: Agent Protocol Parsing                            │
-├─────────────────────────────────────────────────────────────────┤
-│  Contact Management                             ✅ COMPLETE     │
-│  └── Multi-Contact + NVS Persistence                            │
-├─────────────────────────────────────────────────────────────────┤
-│  Crypto + SMP Protocol                          ✅ COMPLETE     │
-└─────────────────────────────────────────────────────────────────┘
+simplex_client/
+├── main/
+│   ├── main.c              # Application entry (~350 lines)
+│   ├── smp_globals.c       # Global variables
+│   ├── smp_utils.c         # Encoding utilities
+│   ├── smp_crypto.c        # Cryptography
+│   ├── smp_network.c       # TLS/TCP I/O
+│   ├── smp_contacts.c      # Contact management
+│   ├── smp_parser.c        # Agent Protocol
+│   ├── smp_peer.c          # Peer connection (NEW!)
+│   ├── include/
+│   │   ├── smp_types.h     # All structures
+│   │   ├── smp_utils.h
+│   │   ├── smp_crypto.h
+│   │   ├── smp_network.h
+│   │   ├── smp_contacts.h
+│   │   ├── smp_parser.h
+│   │   └── smp_peer.h      # NEW!
+│   ├── CMakeLists.txt
+│   └── idf_component.yml
+├── docs/
+│   ├── ARCHITECTURE.md     # Module documentation
+│   ├── PROTOCOL.md
+│   ├── TECHNICAL.md
+│   ├── DEVELOPMENT.md
+│   ├── DEVNOTES.md
+│   └── release-info/
+│       └── v0.1.14-alpha.md
+├── .gitignore              # NEW!
+├── CHANGELOG.md
+├── README.md
+└── ROADMAP.md
 ```
 
-### New Functions (v0.1.13)
+---
+
+## Module Overview
+
+| Module | Lines | Purpose |
+|--------|-------|---------|
+| `main.c` | ~350 | App entry, WiFi, main loop |
+| `smp_globals.c` | ~25 | Global variable definitions |
+| `smp_utils.c` | ~100 | Base64, URL encoding |
+| `smp_crypto.c` | ~80 | Ed25519, X25519, crypto_box |
+| `smp_network.c` | ~160 | TLS, TCP, send/receive |
+| `smp_contacts.c` | ~380 | Contact CRUD, NVS |
+| `smp_parser.c` | ~260 | Agent Protocol, auto-connect |
+| `smp_peer.c` | ~220 | Peer server connection |
+
+**Total:** ~1575 lines (organized) vs ~1800 lines (monolithic)
+
+---
+
+## Adding New Code
+
+### Adding a New Function
+
+1. **Decide which module** it belongs to
+2. **Add declaration** to appropriate header in `include/`
+3. **Add implementation** to the `.c` file
+4. **Include header** where needed
+
+Example: Adding a new crypto function
 
 ```c
-// URL decode (in-place, call repeatedly!)
-static void url_decode_inplace(char *str);
+// 1. In include/smp_crypto.h
+int my_new_crypto_function(const uint8_t *data, size_t len);
 
-// Message type finding with '_' delimiter
-int toff = -1;
-for (int i = 0; i < 10 && i < dec_len - 3; i++) {
-    if (decrypted[i] == '_') { toff = i; break; }
+// 2. In smp_crypto.c
+int my_new_crypto_function(const uint8_t *data, size_t len) {
+    // Implementation
 }
-uint16_t ver = (decrypted[toff + 1] << 8) | decrypted[toff + 2];
-char type = decrypted[toff + 3];
+
+// 3. In other file that needs it
+#include "smp_crypto.h"
+my_new_crypto_function(data, len);
 ```
 
-### New Structure (v0.1.13)
+### Adding a New Module
 
-```c
-typedef struct {
-    char host[64];           // Peer Server
-    int port;                // Port (default 5223)
-    uint8_t key_hash[32];    // Server Key Hash
-    uint8_t queue_id[32];    // Queue ID
-    int queue_id_len;
-    uint8_t dh_public[32];   // Peer's DH Public Key
-    int has_dh;
-    int valid;
-} peer_queue_t;
+1. Create `smp_newmodule.c` in `main/`
+2. Create `include/smp_newmodule.h`
+3. Add to `CMakeLists.txt`:
+
+```cmake
+idf_component_register(
+    SRCS 
+        "main.c"
+        "smp_globals.c"
+        ...
+        "smp_newmodule.c"  # Add here
+    INCLUDE_DIRS 
+        "include"
+    ...
+)
 ```
 
 ---
 
 ## Debugging
 
-### Log Levels
+### Common Issues (v0.1.14)
 
+#### tcp_connect Undefined
+
+**Cause:** Was renamed to `smp_tcp_connect()`
+
+**Fix:** Use `smp_tcp_connect()` everywhere
+
+#### DH Key Decode Fails
+
+**Cause:** Invitation URIs use Standard Base64 (`+/=`)
+
+**Fix:** Convert to Base64URL first:
 ```c
-esp_log_level_set("*", ESP_LOG_INFO);
-esp_log_level_set("SMP", ESP_LOG_DEBUG);
-```
-
-### Common Issues (v0.1.13)
-
-#### Message Type Always Shows '_' or Wrong Character
-
-**Cause**: Type searched at fixed offset instead of after '_' delimiter.
-
-**Fix**: Search for '_' first, then read type at +3:
-
-```c
-int toff = -1;
-for (int i = 0; i < 10 && i < dec_len - 3; i++) {
-    if (decrypted[i] == '_') { toff = i; break; }
+// Strip padding
+while (len > 0 && dh[len-1] == '=') dh[--len] = '\0';
+// Convert chars
+for (int i = 0; i < len; i++) {
+    if (dh[i] == '+') dh[i] = '-';
+    if (dh[i] == '/') dh[i] = '_';
 }
-char type = decrypted[toff + 3];
 ```
 
-#### URL Parameters Not Found (dh=, smp=, etc.)
+#### Peer Connection Fails
 
-**Cause**: Multi-level URL encoding.
-
-**Fix**: Decode in loop until stable:
-
-```c
-size_t old_len;
-do {
-    old_len = strlen(uri);
-    url_decode_inplace(uri);
-} while (strlen(uri) < old_len);
-```
-
-#### DH Key Not Found
-
-**Cause**: `dh=` may be encoded as `dh%3D` or `%26dh%3D`.
-
-**Fix**: Search multiple patterns:
+**Check:**
+1. Host extracted correctly?
+2. Port is 5223?
+3. TLS handshake succeeds?
+4. SMP handshake succeeds?
 
 ```c
-char *dh_pos = strstr(uri, "dh=");
-if (!dh_pos) dh_pos = strstr(uri, "dh%3D");
-if (!dh_pos) dh_pos = strstr(uri, "%26dh%3D");
-```
-
-### Hex Dump Helper
-
-```c
-void hex_dump(const char *label, const uint8_t *data, size_t len) {
-    ESP_LOGI("HEX", "%s (%d bytes):", label, len);
-    for (size_t i = 0; i < len; i++) {
-        printf("%02x ", data[i]);
-        if ((i + 1) % 16 == 0) printf("\n");
-    }
-    printf("\n");
-}
+ESP_LOGI(TAG, "Peer: %s:%d", pending_peer.host, pending_peer.port);
 ```
 
 ---
 
 ## Testing
 
-### Message Type Test (v0.1.13)
+### Peer Connection Test (v0.1.14)
 
-1. Create a contact with `add_contact("Test")`
-2. Copy the Web Link and scan with SimpleX App
-3. Click "Connect" in SimpleX App
+1. Build and flash
+2. Copy Web Link from ESP32 output
+3. Scan with SimpleX App
 4. Watch ESP32 output:
 
 **Expected:**
 ```
 💬 MESSAGE for [Test]!
-🔓 Layer 3 Decrypted: 16106 bytes
-🔓 Layer 5 Decrypted: 847 bytes
-📋 Agent: Version=7, Type='I' (Invitation)   ← Correct!
-📡 Peer Server: smp15.simplex.im:5223
-📮 Queue ID: ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK
-✅ READY TO SEND CONFIRMATION
+📋 Agent: Version=7, Type='I'
+📡 Peer: smp15.simplex.im:5223
+🔑 DH Key extracted (32 bytes)
+🔌 Connecting to peer server...
+✅ Peer TLS OK
+✅ Peer Handshake OK
+📤 Sending AgentConfirmation...
+✅ Server: OK
 ```
 
-**If Wrong:**
+### Module Isolation Test
+
+Each module should compile independently:
+
+```bash
+# Test single module compilation
+idf.py build 2>&1 | grep -i error
 ```
-📋 Agent: Version=???, Type='_'   ← BUG! Not finding delimiter
-```
-
-### URL Decode Test
-
-```c
-// Test with multi-encoded string
-char test[] = "%253D%2526";
-url_decode_inplace(test);  // → "%3D%26"
-url_decode_inplace(test);  // → "=&"
-```
-
-### Peer Queue Extraction Test
-
-| Field | Expected |
-|-------|----------|
-| Type | `'I'` (Invitation) |
-| Server | `smpXX.simplex.im` |
-| Port | `5223` |
-| Queue ID | 24+ character Base64URL |
-| Status | "READY TO SEND CONFIRMATION" |
 
 ---
 
 ## Git Workflow
 
+### .gitignore (NEW!)
+
+```gitignore
+build/
+managed_components/
+sdkconfig.old
+sdkconfig.defaults.old
+*.pyc
+__pycache__/
+.vscode/
+```
+
 ### Commit Style
 
 ```bash
-git commit -m "type(scope): description"
+git commit -m "type(module): description"
 ```
+
+Types: `feat`, `fix`, `refactor`, `docs`
+
+Modules: `peer`, `parser`, `contacts`, `network`, `crypto`, `utils`
 
 Examples:
 ```bash
-git commit -m "fix(agent): find message type after '_' delimiter"
-git commit -m "feat(url): add multi-pass url_decode_inplace()"
-git commit -m "feat(peer): add peer_queue_t structure"
+git commit -m "feat(peer): add peer_connect function"
+git commit -m "fix(utils): convert Standard Base64 to URL"
+git commit -m "refactor(all): split into 8 modules"
 ```
 
 ---
@@ -265,9 +242,9 @@ git commit -m "feat(peer): add peer_queue_t structure"
 
 - [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/)
 - [libsodium Documentation](https://doc.libsodium.org/)
-- [SimpleX Protocol Spec](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md)
-- [SimpleX Agent Protocol](https://github.com/simplex-chat/simplexmq/tree/stable/src/Simplex/Messaging/Agent)
+- [SimpleX Protocol](https://github.com/simplex-chat/simplexmq)
+- [Architecture Guide](ARCHITECTURE.md)
 
 ---
 
-*Last updated: January 21, 2026 — v0.1.13-alpha*
+*Last updated: January 21, 2026 — v0.1.14-alpha*
