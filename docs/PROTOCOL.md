@@ -1,256 +1,458 @@
-# SimpleX Messaging Protocol (SMP) - Implementation Guide
+# SimpleGo Protocol Documentation
 
-> Deep technical documentation for implementing SMP on embedded systems
-
----
-
-## Table of Contents
-
-1. [Protocol Overview](#protocol-overview)
-2. [Message Layer Stack](#message-layer-stack)
-3. [Agent Protocol](#agent-protocol)
-4. [Peer Connection](#peer-connection)
-5. [Base64 Encoding Variants](#base64-encoding-variants)
-6. [Command Reference](#command-reference)
+Complete documentation of the SimpleX SMP protocol implementation in SimpleGo.
 
 ---
 
-## Protocol Overview
+## Overview
 
-The **SimpleX Messaging Protocol (SMP)** uses unidirectional message queues:
-
-- **Sender** can only send messages
-- **Recipient** can only receive messages
-- **Server** cannot correlate sender and recipient
+SimpleGo implements the SimpleX Messaging Protocol (SMP) for secure, decentralized messaging. This document describes the protocol layers, message flow, and implementation details.
 
 ---
 
-## Message Layer Stack
+## Protocol Stack
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  Layer 1: TLS 1.3 Transport (ALPN: "smp/1")                     │
-├─────────────────────────────────────────────────────────────────┤
-│  Layer 2: SMP Transport Block (16KB padded)                     │
-├─────────────────────────────────────────────────────────────────┤
-│  Layer 3: SMP E2E Encryption (server DH)                        │
-├─────────────────────────────────────────────────────────────────┤
-│  Layer 4: SMP Client Message                                    │
-├─────────────────────────────────────────────────────────────────┤
-│  Layer 5: Contact DH Encryption (initial messages)              │
-├─────────────────────────────────────────────────────────────────┤
-│  Layer 6: Agent Protocol Message                                │
-└─────────────────────────────────────────────────────────────────┘
-```
+| Layer | Protocol | Description |
+|-------|----------|-------------|
+| 5 | Application | User messages, contacts |
+| 4 | Agent Protocol | E2E encryption, connection management |
+| 3 | SMP | Queue-based message delivery |
+| 2 | TLS 1.3 | Transport security |
+| 1 | TCP | Network transport |
+
+---
+
+## SMP Protocol
+
+The SimpleX Messaging Protocol provides queue-based message delivery without user identifiers.
+
+### Key Concepts
+
+| Concept | Description |
+|---------|-------------|
+| Queue | Unidirectional message channel |
+| Sender | Party that sends messages to queue |
+| Recipient | Party that receives messages from queue |
+| Relay | Server that hosts queues |
+
+### Queue Addresses
+
+Each queue has two addresses:
+
+| Address Type | Used By | Contains |
+|--------------|---------|----------|
+| Recipient Address | Recipient | Queue ID, recipient keys |
+| Sender Address | Sender | Queue ID, sender keys |
+
+### SMP Commands
+
+| Command | Direction | Description |
+|---------|-----------|-------------|
+| NEW | Client → Server | Create new queue |
+| SUB | Client → Server | Subscribe to queue |
+| SEND | Client → Server | Send message to queue |
+| ACK | Client → Server | Acknowledge message receipt |
+| OFF | Client → Server | Suspend queue |
+| DEL | Client → Server | Delete queue |
+
+### SMP Responses
+
+| Response | Description |
+|----------|-------------|
+| OK | Command succeeded |
+| ERR | Command failed with error code |
+| MSG | Message delivered |
+| NMSG | New message notification |
+
+### SMP Command Format
+`
+<corrId> <queueId> <command> [parameters]
+`
+
+| Field | Size | Description |
+|-------|------|-------------|
+| corrId | 24 bytes | Correlation ID (base64) |
+| queueId | 24 bytes | Queue ID (base64) |
+| command | Variable | Command name |
+| parameters | Variable | Command-specific data |
 
 ---
 
 ## Agent Protocol
 
-### Message Format (After Layer 5 Decryption)
+The Agent Protocol provides end-to-end encryption and connection management on top of SMP.
 
-```
-[prefix]['_'][version:2 BE][type][body]
-        ^^^^
-        Find this delimiter first!
-```
+### Connection States
 
-### Agent Message Types
+| State | Description |
+|-------|-------------|
+| NEW | Connection created, not confirmed |
+| PENDING | Invitation sent, waiting for confirmation |
+| CONFIRMED | Connection confirmed, ready for messaging |
+| ESTABLISHED | Fully established, bidirectional |
+| DELETED | Connection deleted |
 
-| Type | Name | Description |
-|------|------|-------------|
-| `'C'` | AgentConfirmation | Connection confirmation |
-| `'I'` | AgentInvitation | Reply queue + profile |
-| `'M'` | AgentMsgEnvelope | Double Ratchet message |
-| `'R'` | AgentRatchetKey | Key exchange |
+### Agent Messages
 
-### AgentConfirmation Format (Type 'C')
+| Message | Direction | Description |
+|---------|-----------|-------------|
+| CONF | A → B | Connection confirmation |
+| INFO | A ↔ B | Connection information |
+| HELLO | A → B | Initial greeting |
+| MSG | A ↔ B | User message |
+| ACK | A ↔ B | Message acknowledgment |
 
-From Haskell source:
-```haskell
-AgentConfirmation {
-    agentVersion :: Version,           -- 2 bytes BE
-    e2eEncryption_ :: Maybe E2EParams, -- '0' or '1' + data
-    encConnInfo :: ByteString          -- Encrypted profile/conn info
-}
-```
+### AgentConfirmation (CONF)
 
-**Maybe Encoding:**
-- `'0'` = Nothing (no data)
-- `'1'` + data = Just (has data)
+Sent to confirm a connection request.
 
----
+| Field | Type | Description |
+|-------|------|-------------|
+| agentVersion | Word16 | Protocol version (7) |
+| connType | Char | 'C' for confirmation |
+| e2eEnabled | Char | '1' if E2E enabled |
+| e2eVersion | Word16 | E2E protocol version (2) |
+| e2eKeys | Keys | X448 public keys for E2E |
+| encConnInfo | Encrypted | Encrypted connection info |
 
-## Peer Connection
+### HELLO Message
 
-### Why Peer Connection?
+First message sent after connection confirmation.
 
-Each SimpleX user has their own SMP server. To complete a connection:
-
-1. **Our Server** — Where we receive messages
-2. **Peer's Server** — Where we send confirmations/messages
-
-```
-┌──────────┐        ┌────────────────┐        ┌──────────┐
-│  ESP32   │──TLS──>│ smp3 (our)     │<──TLS──│ SimpleX  │
-│          │        └────────────────┘        │   App    │
-│          │        ┌────────────────┐        │          │
-│          │──TLS──>│ smp15 (peer's) │<───────│          │
-└──────────┘        └────────────────┘        └──────────┘
-```
-
-### Peer Connection Flow
-
-```c
-// 1. Parse invitation to get peer server info
-parse_smp_uri(invitation, &pending_peer);
-// → pending_peer.host = "smp15.simplex.im"
-// → pending_peer.port = 5223
-// → pending_peer.queue_id = [24 bytes]
-// → pending_peer.dh_public = [32 bytes]
-
-// 2. Connect to peer's server
-peer_connect("smp15.simplex.im", 5223);
-// → TLS handshake
-// → SMP handshake (ServerHello/ClientHello)
-
-// 3. Send AgentConfirmation
-send_agent_confirmation(contact);
-// → SEND command to peer's queue_id
-// → Server responds "OK"
-
-// 4. Disconnect
-peer_disconnect();
-```
-
-### SEND to Peer's Queue
-
-```
-SEND ' ' [flags] ' ' [encrypted_confirmation]
-```
-
-**Key Differences from Receiving:**
-- **entityId** = peer's queue_id (NOT our queue!)
-- **No signature** needed (we're sender, not recipient)
-- **Encrypted** with peer's DH public key
+| Field | Type | Description |
+|-------|------|-------------|
+| prevMsgHash | ByteString | Hash of previous message |
+| messageBody | ByteString | Message content |
 
 ---
 
-## Base64 Encoding Variants
+## E2E Encryption Protocol
 
-### CRITICAL: Different Contexts Use Different Encodings!
+End-to-end encryption uses the Double Ratchet algorithm with X3DH key agreement.
 
-| Context | Encoding | Alphabet |
-|---------|----------|----------|
-| **Our Contact Links** | Base64URL | `-_` (no padding) |
-| **Invitation URIs** | Standard Base64 | `+/=` |
-| **Queue IDs** | Base64URL | `-_` |
-| **DH Keys in Invitations** | Standard Base64 | `+/=` |
+### Key Exchange (X3DH)
 
-### DH Key Extraction Fix (v0.1.14)
+Initial key exchange establishes shared secrets.
 
-**Problem:** DH Keys from Invitation URIs use Standard Base64!
+| Step | Operation |
+|------|-----------|
+| 1 | Sender generates ephemeral X448 key pair |
+| 2 | Sender performs 3 DH operations |
+| 3 | Sender derives initial keys via HKDF |
+| 4 | Sender sends public keys to recipient |
+| 5 | Recipient performs same DH operations |
+| 6 | Both parties have same shared secrets |
 
-```c
-// Extract DH key from invitation
-char *dh_start = strstr(uri, "dh=");
-// dh= MCowBQYDK2VuAyEA+abc/xyz==
-//                     ^   ^   ^^
-//                     Standard Base64 chars!
+### Double Ratchet
 
-// Convert to Base64URL before decoding
-char dh_clean[64];
-strcpy(dh_clean, dh_value);
-int len = strlen(dh_clean);
+Provides forward secrecy through continuous key evolution.
 
-// Strip '=' padding
-while (len > 0 && dh_clean[len - 1] == '=') {
-    dh_clean[--len] = '\0';
-}
+| Ratchet | Trigger | Derives |
+|---------|---------|---------|
+| Root | DH ratchet step | New root key, chain key, header key |
+| Chain | Each message | Message key, new chain key, IVs |
 
-// Convert +/ to -_
-for (int x = 0; x < len; x++) {
-    if (dh_clean[x] == '+') dh_clean[x] = '-';
-    if (dh_clean[x] == '/') dh_clean[x] = '_';
-}
+### Message Encryption
 
-// Now decode as Base64URL
-base64url_decode(dh_clean, peer->dh_public);
-```
+Each message is encrypted in two layers.
+
+| Layer | Key | Content |
+|-------|-----|---------|
+| Header | header_key | MsgHeader (sender's DH key, counters) |
+| Body | message_key | Actual message content |
 
 ---
 
-## Command Reference
+## Connection Establishment Flow
 
-### SMP Commands
+### Step 1: Create Invitation
+`
+Recipient:
+1. Generate X448 key pairs (semi-permanent, ratchet)
+2. Create queue on SMP server
+3. Build invitation with server address and keys
+4. Share invitation (QR code, link, etc.)
+`
 
-| Command | EntityId | Signed? | Description |
-|---------|----------|---------|-------------|
-| NEW | empty | Yes | Create queue |
-| SUB | recipientId | Yes | Subscribe |
-| SEND | senderId | No | Send message |
-| ACK | recipientId | Yes | Acknowledge |
-| DEL | recipientId | Yes | Delete |
+### Step 2: Accept Invitation
+`
+Sender:
+1. Parse invitation
+2. Extract server address and recipient keys
+3. Connect to SMP server
+4. Create sender queue
+5. Perform X3DH key agreement
+6. Send AgentConfirmation with encrypted queue info
+`
 
-### SEND Command Format
+### Step 3: Confirm Connection
+`
+Recipient:
+1. Receive AgentConfirmation
+2. Decrypt connection info
+3. Extract sender's queue address
+4. Perform X3DH (recipient side)
+5. Initialize Double Ratchet state
+6. Connection ready
+`
 
-```
-"SEND" ' ' [flags] ' ' [body]
-```
-
-- **flags:** ASCII `'T'` or `'F'`
-- **body:** Encrypted message content
-
----
-
-## Connection Sequences
-
-### Contact Address Flow (q=c)
-
-```
-SimpleX App                                ESP32
-     │                                        │
-     │  1. Scans https://simplex.chat/...     │
-     │                                        │
-     │  2. Connects to ESP32's server         │
-     │     (smp3.simplexonflux.com)           │
-     │                                        │
-     │  3. SEND AgentInvitation ──────────────>
-     │     [Type 'I'][Reply Queue][Profile]   │
-     │                                        │
-     │  4. ESP32 parses invitation            │
-     │     - Peer server: smp15.simplex.im    │
-     │     - Queue ID: ahjPk2jl...            │
-     │     - DH Key: MCowBQ...                │
-     │                                        │
-     │  5. ESP32 connects to Peer's server    │
-     │     (smp15.simplex.im)                 │
-     │                                        │
-     │  6. SEND AgentConfirmation             │
-     │     <────────────────────────────────────
-     │     Server: "OK"                       │
-     │                                        │
-     │  7. App shows "Connected" (pending)    │
-```
+### Step 4: Exchange Messages
+`
+Both parties:
+1. Derive message keys via Chain KDF
+2. Encrypt message header
+3. Encrypt message body
+4. Send via SMP queue
+5. Receive and decrypt incoming messages
+`
 
 ---
 
-## Performance (ESP32-S3)
+## Message Format
 
-| Operation | Time |
-|-----------|------|
-| TLS handshake | ~800ms |
-| SMP handshake | ~100ms |
-| Peer connect total | ~1000ms |
-| SEND command | ~50ms |
+### Outgoing Message Structure
+`
+[SMP Header]
+  [Correlation ID: 24 bytes]
+  [Queue ID: 24 bytes]
+  [Command: SEND]
+[Agent Message]
+  [Agent Header]
+  [Encrypted Content]
+    [EncRatchetMessage]
+      [EncMessageHeader: 123 bytes]
+      [Auth Tag: 16 bytes]
+      [Encrypted Body: variable]
+[Padding]
+`
+
+### EncRatchetMessage Structure
+`
+Offset  Size   Field
+0       1      emHeaderLen (123)
+1       123    emHeader (EncMessageHeader)
+124     16     emAuthTag
+140     REST   emBody (Tail encoded)
+`
+
+### EncMessageHeader Structure
+`
+Offset  Size   Field
+0       2      ehVersion (2)
+2       16     ehIV
+18      16     ehAuthTag
+34      1      ehBodyLen (88)
+35      88     ehBody (encrypted MsgHeader)
+`
+
+### MsgHeader Structure
+`
+Offset  Size   Field
+0       2      msgMaxVersion (2)
+2       1      dhKeyLen (68)
+3       68     msgDHRs (X448 SPKI)
+71      4      msgPN
+75      4      msgNs
+79      9      padding
+`
+
+---
+
+## Server Communication
+
+### Connection Setup
+`
+1. DNS resolution of server hostname
+2. TCP connection to server port (typically 5223)
+3. TLS 1.3 handshake
+4. SMP protocol version negotiation
+`
+
+### TLS Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Protocol | TLS 1.3 |
+| Certificate Verification | Enabled |
+| Server Name Indication | Enabled |
+
+### Keep-Alive
+
+SMP connections use periodic keep-alive messages to maintain connection state.
+
+| Parameter | Value |
+|-----------|-------|
+| Interval | 30 seconds |
+| Timeout | 60 seconds |
+
+---
+
+## Error Handling
+
+### SMP Errors
+
+| Error | Code | Description |
+|-------|------|-------------|
+| AUTH | 1 | Authentication failed |
+| NO_QUEUE | 2 | Queue does not exist |
+| QUOTA | 3 | Queue quota exceeded |
+| NO_MSG | 4 | No message available |
+| LARGE_MSG | 5 | Message too large |
+| INTERNAL | 6 | Server internal error |
+
+### Agent Errors
+
+| Error | Description |
+|-------|-------------|
+| A_DUPLICATE | Duplicate connection |
+| A_PROHIBITED | Operation not allowed |
+| A_MESSAGE | Message parsing error |
+| A_CRYPTO | Cryptographic error |
+
+### Recovery Strategies
+
+| Error Type | Strategy |
+|------------|----------|
+| Network error | Reconnect with exponential backoff |
+| Auth error | Re-authenticate or create new queue |
+| Parse error | Log and skip message |
+| Crypto error | Request message resend |
+
+---
+
+## Security Properties
+
+### Confidentiality
+
+- All messages encrypted with AES-256-GCM
+- Keys derived from DH shared secrets
+- Forward secrecy via Double Ratchet
+
+### Integrity
+
+- GCM authentication tags on all messages
+- Message counters prevent replay
+- Hash chains link messages
+
+### Authentication
+
+- X3DH provides mutual authentication
+- Ed25519 signatures on queue operations
+- TLS server authentication
+
+### Privacy
+
+- No user identifiers in protocol
+- Queue IDs are random
+- Servers cannot read message content
+- Metadata minimization
+
+---
+
+## Protocol Versions
+
+### SMP Versions
+
+| Version | Features |
+|---------|----------|
+| 1-3 | Legacy versions |
+| 4 | Current stable |
+| 5+ | Reserved |
+
+### Agent Versions
+
+| Version | Features |
+|---------|----------|
+| 1-6 | Legacy versions |
+| 7 | Current (E2E v2) |
+| 8+ | Reserved |
+
+### E2E Versions
+
+| Version | Features |
+|---------|----------|
+| 1 | X25519 + AES-GCM |
+| 2 | X448 + Double Ratchet |
+
+---
+
+## Implementation Notes
+
+### Threading Model
+`
+Main Thread:
+  - User interface
+  - Message composition
+  
+Network Thread:
+  - TLS connection management
+  - Send/receive operations
+  
+Crypto Thread:
+  - Key derivation
+  - Encryption/decryption
+`
+
+### Buffer Management
+
+| Buffer | Size | Purpose |
+|--------|------|---------|
+| Send buffer | 16 KB | Outgoing messages |
+| Receive buffer | 16 KB | Incoming messages |
+| Crypto buffer | 4 KB | Encryption workspace |
+
+### Memory Considerations
+
+- Ratchet state: ~300 bytes per connection
+- TLS context: ~40 KB
+- Message buffers: ~32 KB total
+
+---
+
+## Testing
+
+### Unit Tests
+
+| Component | Test Coverage |
+|-----------|---------------|
+| KDF functions | Input/output verification |
+| Encryption | Known-answer tests |
+| Encoding | Round-trip tests |
+
+### Integration Tests
+
+| Test | Description |
+|------|-------------|
+| Server connection | Connect to test server |
+| Queue creation | Create and verify queue |
+| Message delivery | Send and receive message |
+
+### Verification Tools
+
+| Tool | Purpose |
+|------|---------|
+| Python scripts | Crypto verification |
+| Wireshark | Protocol analysis |
+| Test server | Local testing |
 
 ---
 
 ## References
 
-- [SMP Protocol Spec](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md)
-- [SimpleX Agent](https://github.com/simplex-chat/simplexmq/tree/stable/src/Simplex/Messaging/Agent)
+### Specifications
+
+- SMP Protocol: https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md
+- Agent Protocol: https://github.com/simplex-chat/simplexmq/blob/stable/protocol/agent-protocol.md
+- Double Ratchet: https://signal.org/docs/specifications/doubleratchet/
+- X3DH: https://signal.org/docs/specifications/x3dh/
+
+### Source Code
+
+- SimpleX Haskell: https://github.com/simplex-chat/simplexmq
+- SimpleX Chat: https://github.com/simplex-chat/simplex-chat
 
 ---
 
-*Last updated: January 21, 2026 — v0.1.14-alpha*
+## License
+
+AGPL-3.0 - See [LICENSE](../LICENSE)
