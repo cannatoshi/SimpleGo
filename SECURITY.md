@@ -2,23 +2,23 @@
 
 ## Reporting a Vulnerability
 
-**Please do NOT report security vulnerabilities through public GitHub issues.**
+Please do NOT report security vulnerabilities through public GitHub issues.
 
 ### Preferred Method: GitHub Private Vulnerability Reporting
 
-1. Go to the [Security tab](https://github.com/cannatoshi/SimpleGo/security)
-2. Click **"Report a vulnerability"**
+1. Go to the Security tab: https://github.com/cannatoshi/SimpleGo/security
+2. Click Report a vulnerability
 3. Fill out the form with details
 
 ---
 
 ## What to Include
 
-- **Type of vulnerability** (e.g., buffer overflow, crypto weakness)
-- **Affected component** (e.g., smp_ratchet.c, smp_x448.c)
-- **Step-by-step reproduction**
-- **Impact assessment**
-- **Your suggested fix** (if any)
+- Type of vulnerability (e.g., buffer overflow, crypto weakness)
+- Affected component (e.g., smp_ratchet.c, smp_x448.c)
+- Step-by-step reproduction
+- Impact assessment
+- Your suggested fix (if any)
 
 ---
 
@@ -61,8 +61,8 @@ We consider security research conducted consistent with this policy to be author
 
 ## Security Hall of Fame
 
-*No vulnerabilities reported yet. Be the first!*
+No vulnerabilities reported yet. Be the first!
 
 ---
 
-*This security policy was last updated on January 24, 2026.*
+This security policy was last updated on January 24, 2026.

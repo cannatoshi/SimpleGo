@@ -2,7 +2,7 @@
 
 All notable changes to SimpleGo are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+The format is based on Keep a Changelog (https://keepachangelog.com/en/1.0.0/).
 
 ---
 
@@ -14,8 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - X3DH key agreement protocol
 - X448 key generation and Diffie-Hellman operations
 - wolfSSL integration for Curve448 cryptography
-- Root KDF function (HKDF-SHA512, info: "SimpleXRootRatchet")
-- Chain KDF function (HKDF-SHA512, info: "SimpleXChainRatchet")
+- Root KDF function (HKDF-SHA512, info: SimpleXRootRatchet)
+- Chain KDF function (HKDF-SHA512, info: SimpleXChainRatchet)
 - AES-256-GCM encryption with 16-byte IV
 - EncMessageHeader encoding (123 bytes)
 - EncRatchetMessage encoding
@@ -40,13 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Bug #9: wolfSSL X448 byte-order reversal
 - Bug #10: SMPQueueInfo port encoding (space to length prefix)
 - Bug #11: smpQueues list count encoding (1-byte to Word16 BE)
-- Bug #12: queueMode Nothing encoding (removed '0' byte)
-
-### Changed
-
-- Refactored cryptographic operations into dedicated modules
-- Improved separation of concerns in protocol handling
-- Enhanced error handling in encryption functions
+- Bug #12: queueMode Nothing encoding (removed 0 byte)
 
 ### Verified
 
@@ -71,13 +65,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Modular architecture refactoring
 - Separated protocol logic into distinct modules
 - New module structure with clear responsibilities
-- Improved code organization
-
-### Changed
-
-- Moved from monolithic main.c to modular design
-- Created separate files for peer, parser, network, crypto, contacts, utils
-- Improved maintainability and testability
 
 ### Modules Created
 
@@ -100,11 +87,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Better error reporting
 - Connection state management
 
-### Fixed
-
-- Various protocol encoding issues
-- Connection stability improvements
-
 ---
 
 ## [0.1.12-alpha] - 2026-01-17
@@ -113,12 +95,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Message sending functionality
 - SEND command implementation
-- Basic message encryption
-
-### Fixed
-
-- Queue subscription handling
-- Server response parsing
 
 ---
 
@@ -128,7 +104,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Queue subscription (SUB command)
 - Message receiving capability
-- Basic notification handling
 
 ---
 
@@ -138,7 +113,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Queue creation (NEW command)
 - Queue ID handling
-- Server queue management
 
 ---
 
@@ -147,8 +121,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - X25519 key exchange for per-queue encryption
-- Improved key management
-- Session key derivation
 
 ---
 
@@ -157,8 +129,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - Ed25519 signature verification
-- Server authentication
-- Signature validation
 
 ---
 
@@ -168,7 +138,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Ed25519 signature generation
 - libsodium integration
-- Key pair management
 
 ---
 
@@ -178,7 +147,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - SMP response parsing
 - Protocol state machine
-- Error handling for server responses
 
 ---
 
@@ -187,8 +155,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - SMP command encoding
-- Protocol message formatting
-- Command serialization
 
 ---
 
@@ -198,7 +164,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Basic SMP handshake
 - Protocol version negotiation
-- Initial server communication
 
 ---
 
@@ -208,7 +173,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - TLS 1.3 connection to SMP servers
 - mbedTLS integration
-- Certificate handling
 
 ---
 
@@ -217,8 +181,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - TCP socket implementation
-- Basic networking layer
-- Connection management
 
 ---
 
@@ -227,8 +189,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 
 - WiFi connectivity
-- Network initialization
-- ESP-IDF networking stack
 
 ---
 
@@ -238,9 +198,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - Initial project setup
 - ESP-IDF project structure
-- Basic build configuration
-- CMakeLists.txt configuration
-- Partition table setup
 
 ---
 
@@ -250,20 +207,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 |---------|------|------------|
 | 0.1.15-alpha | 2026-01-24 | Double Ratchet, X3DH, 12 bugs fixed |
 | 0.1.14-alpha | 2026-01-21 | Modular architecture |
-| 0.1.13-alpha | 2026-01-19 | Command handling improvements |
+| 0.1.13-alpha | 2026-01-19 | Command handling |
 | 0.1.12-alpha | 2026-01-17 | Message sending |
 | 0.1.11-alpha | 2026-01-15 | Queue subscription |
 | 0.1.10-alpha | 2026-01-13 | Queue creation |
-| 0.1.9-alpha | 2026-01-11 | X25519 key exchange |
+| 0.1.9-alpha | 2026-01-11 | X25519 |
 | 0.1.8-alpha | 2026-01-09 | Signature verification |
-| 0.1.7-alpha | 2026-01-07 | Ed25519 signatures |
+| 0.1.7-alpha | 2026-01-07 | Ed25519 |
 | 0.1.6-alpha | 2026-01-05 | Response parsing |
 | 0.1.5-alpha | 2026-01-03 | Command encoding |
 | 0.1.4-alpha | 2026-01-01 | SMP handshake |
 | 0.1.3-alpha | 2025-12-30 | TLS 1.3 |
 | 0.1.2-alpha | 2025-12-28 | TCP sockets |
-| 0.1.1-alpha | 2025-12-26 | WiFi connectivity |
-| 0.1.0-alpha | 2025-12-24 | Project initialization |
+| 0.1.1-alpha | 2025-12-26 | WiFi |
+| 0.1.0-alpha | 2025-12-24 | Project init |
 
 ---
 
@@ -271,4 +228,3 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - [ROADMAP.md](ROADMAP.md) - Development plan
 - [docs/BUGS.md](docs/BUGS.md) - Detailed bug documentation
-- [docs/release-info/](docs/release-info/) - Detailed release notes

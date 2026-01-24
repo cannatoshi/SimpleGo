@@ -4,16 +4,22 @@
 
 | Channel | Use For |
 |---------|---------|
-| [README](README.md) | Installation, setup, features |
-| [Discussions](https://github.com/cannatoshi/SimpleGo/discussions) | Questions, ideas |
-| [Issues](https://github.com/cannatoshi/SimpleGo/issues) | Bug reports, feature requests |
-| [Security](SECURITY.md) | Vulnerability reports (private!) |
+| README | Installation, setup, features |
+| Discussions | Questions, ideas |
+| Issues | Bug reports, feature requests |
+| Security | Vulnerability reports (private!) |
+
+Links:
+- README: https://github.com/cannatoshi/SimpleGo/blob/main/README.md
+- Discussions: https://github.com/cannatoshi/SimpleGo/discussions
+- Issues: https://github.com/cannatoshi/SimpleGo/issues
+- Security: https://github.com/cannatoshi/SimpleGo/security
 
 ## Before Asking
 
-1. Check the [README](README.md)
-2. Check [docs/](docs/) folder
-3. Search existing [Issues](https://github.com/cannatoshi/SimpleGo/issues)
+1. Check the README
+2. Check docs/ folder
+3. Search existing Issues
 
 ## Hardware Support
 
@@ -34,4 +40,4 @@
 
 ---
 
-*Last updated: January 24, 2026*
+Last updated: January 24, 2026

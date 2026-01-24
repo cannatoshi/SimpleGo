@@ -1,6 +1,6 @@
 # SimpleGo Development Guide
 
-Guide for developers who want to contribute to or build upon SimpleGo.
+Guide for developers who want to contribute to SimpleGo.
 
 ---
 
@@ -10,10 +10,10 @@ Guide for developers who want to contribute to or build upon SimpleGo.
 
 | Requirement | Version | Notes |
 |-------------|---------|-------|
-| ESP-IDF | 5.5.2+ | Espressif IoT Development Framework |
-| Python | 3.8+ | Build tools and verification scripts |
+| ESP-IDF | 5.5.2+ | Espressif framework |
+| Python | 3.8+ | Build tools |
 | Git | 2.30+ | Version control |
-| Hardware | ESP32-S3 | T-Deck recommended for full testing |
+| Hardware | ESP32-S3 | T-Deck recommended |
 
 ### Clone Repository
 
@@ -25,16 +25,16 @@ Run: git clone https://github.com/cannatoshi/SimpleGo.git
 
 ### Windows
 
-1. Create directory: C:\Espressif
-2. Clone ESP-IDF: git clone --recursive https://github.com/espressif/esp-idf.git
-3. Run installer: .\install.ps1 esp32s3
+1. Create directory: mkdir C:\Espressif
+2. Clone: git clone --recursive https://github.com/espressif/esp-idf.git
+3. Install: .\install.ps1 esp32s3
 4. Activate: C:\Espressif\esp-idf\export.ps1
 
 ### Linux / macOS
 
 1. Create directory: mkdir -p ~/esp
-2. Clone ESP-IDF: git clone --recursive https://github.com/espressif/esp-idf.git
-3. Run installer: ./install.sh esp32s3
+2. Clone: git clone --recursive https://github.com/espressif/esp-idf.git
+3. Install: ./install.sh esp32s3
 4. Activate: source ~/esp/esp-idf/export.sh
 
 ---
@@ -46,15 +46,12 @@ Run: git clone https://github.com/cannatoshi/SimpleGo.git
 | main/ | Application source code |
 | main/main.c | Entry point |
 | main/smp_*.c | Protocol modules |
-| main/CMakeLists.txt | Component build file |
 | include/ | Header files |
-| include/smp_*.h | Module headers |
-| components/wolfssl/ | X448 cryptography library |
-| components/kyber/ | Post-quantum crypto (future) |
+| components/wolfssl/ | X448 cryptography |
+| components/kyber/ | Post-quantum (future) |
 | docs/ | Documentation |
 | CMakeLists.txt | Project build file |
 | partitions.csv | Flash partition table |
-| sdkconfig | ESP-IDF configuration |
 
 ---
 
@@ -68,10 +65,7 @@ Run: git clone https://github.com/cannatoshi/SimpleGo.git
 | idf.py monitor -p COM5 | Serial monitor |
 | idf.py build flash monitor -p COM5 | All in one |
 | idf.py clean | Clean build |
-| idf.py fullclean | Full clean |
-| idf.py menuconfig | Configuration menu |
-| idf.py size | Binary size analysis |
-| idf.py size-components | Component sizes |
+| idf.py menuconfig | Configuration |
 
 ---
 
@@ -79,46 +73,15 @@ Run: git clone https://github.com/cannatoshi/SimpleGo.git
 
 ### WiFi Credentials
 
-Edit main/main.c and set:
-- WIFI_SSID: Your network name
-- WIFI_PASS: Your password
+Edit main/main.c:
+- Set WIFI_SSID to your network name
+- Set WIFI_PASS to your password
 
 ### SimpleX Server
 
-Edit main/smp_network.c and set:
-- SMP_SERVER_HOST: Server hostname
-- SMP_SERVER_PORT: Server port (default 5223)
-
-### ESP-IDF Settings
-
-Run idf.py menuconfig to configure:
-
-| Path | Setting | Value |
-|------|---------|-------|
-| Serial flasher config | Flash size | 4 MB |
-| Component config - mbedTLS | TLS 1.3 | Enabled |
-| Component config - ESP-TLS | Certificate verification | Enabled |
-| Component config - FreeRTOS | Tick rate | 1000 Hz |
-
----
-
-## Adding New Modules
-
-### Step 1: Create Source File
-
-Create main/smp_newmodule.c with your implementation.
-
-### Step 2: Create Header File
-
-Create include/smp_newmodule.h with function declarations.
-
-### Step 3: Update CMakeLists.txt
-
-Add the new .c file to SRCS in main/CMakeLists.txt.
-
-### Step 4: Build and Test
-
-Run: idf.py build
+Edit main/smp_network.c:
+- Set SMP_SERVER_HOST
+- Set SMP_SERVER_PORT (default 5223)
 
 ---
 
@@ -142,14 +105,10 @@ Run: idf.py build
 | Level | Macro | Use Case |
 |-------|-------|----------|
 | Error | ESP_LOGE | Critical failures |
-| Warning | ESP_LOGW | Unexpected but handled |
+| Warning | ESP_LOGW | Unexpected |
 | Info | ESP_LOGI | Normal operation |
-| Debug | ESP_LOGD | Development info |
+| Debug | ESP_LOGD | Development |
 | Verbose | ESP_LOGV | Detailed tracing |
-
-### Set Log Level Per Module
-
-In code: esp_log_level_set("SMP_NETWORK", ESP_LOG_DEBUG);
 
 ---
 
@@ -187,16 +146,9 @@ Example: feat(crypto): add X448 key generation
 
 | Error | Solution |
 |-------|----------|
-| Failed to connect | Check USB cable and port |
+| Failed to connect | Check USB cable |
 | Wrong chip | Run idf.py set-target esp32s3 |
-| Timeout | Hold BOOT button while flashing |
-
-### Runtime Errors
-
-| Error | Solution |
-|-------|----------|
-| Stack overflow | Increase task stack size |
-| Heap exhausted | Check for memory leaks |
+| Timeout | Hold BOOT button |
 
 ---
 
@@ -206,7 +158,6 @@ Example: feat(crypto): add X448 key generation
 
 - ESP-IDF: https://docs.espressif.com/projects/esp-idf/en/latest/
 - wolfSSL: https://www.wolfssl.com/documentation/
-- mbedTLS: https://tls.mbed.org/api/
 - SimpleX: https://github.com/simplex-chat/simplexmq
 
 ### Community

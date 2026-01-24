@@ -6,12 +6,12 @@ Thank you for considering supporting this project!
 
 ## About the Project
 
-**SimpleGo** is developed by **cannatoshi** - Independent Security Researcher & FOSS Developer
+SimpleGo is developed by cannatoshi - Independent Security Researcher and FOSS Developer
 
 This project is:
 - 100% Open Source (AGPL-3.0)
 - Privacy-focused
-- The FIRST native SimpleX client for ESP32
+- Native SimpleX client for ESP32
 - No corporate backing
 
 ---
@@ -20,25 +20,25 @@ This project is:
 
 ### GitHub Sponsors
 
-[![Sponsor cannatoshi](https://img.shields.io/badge/Sponsor-cannatoshi-EA4AAA?style=for-the-badge&logo=github-sponsors)](https://github.com/sponsors/cannatoshi)
+https://github.com/sponsors/cannatoshi
 
 ### Cryptocurrency
 
 | Currency | Address |
 |----------|---------|
-| Bitcoin (BTC) | *Coming soon* |
-| Monero (XMR) | *Coming soon* |
+| Bitcoin (BTC) | Coming soon |
+| Monero (XMR) | Coming soon |
 
 ---
 
 ## Legal Entity
 
-**Sascha Daemgen IT and More Systems**
+Sascha Daemgen IT and More Systems
 Am Neumarkt 22
 45663 Recklinghausen
 Germany
 
-- **Website:** [www.it-and-more.systems](https://www.it-and-more.systems)
+Website: https://www.it-and-more.systems
 
 ---
 
@@ -53,15 +53,15 @@ Germany
 
 ### Roadmap Items Seeking Funding
 
-- [ ] T-Deck Display Integration
-- [ ] Group Messaging Support
-- [ ] File Transfer
-- [ ] Security Audit
+- T-Deck Display Integration
+- Group Messaging Support
+- File Transfer
+- Security Audit
 
 ---
 
-*"Privacy is not about having something to hide. Privacy is about having something to protect."*
+Privacy is not about having something to hide. Privacy is about having something to protect.
 
 ---
 
-**i(N) cOD(E) w(E) tRUS(T)**
+i(N) cOD(E) w(E) tRUS(T)

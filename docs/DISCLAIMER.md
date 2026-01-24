@@ -1,6 +1,6 @@
 # Disclaimer / Haftungsausschluss
 
-> **SimpleGo** - Liability Disclaimer
+SimpleGo - Liability Disclaimer
 
 ---
 
@@ -8,13 +8,13 @@
 
 ### General Disclaimer
 
-**SimpleGo** is provided "AS IS" and "AS AVAILABLE" without warranty of any kind. The authors make no representations concerning the safety, suitability, or security of this software.
+SimpleGo is provided AS IS and AS AVAILABLE without warranty of any kind. The authors make no representations concerning the safety, suitability, or security of this software.
 
 ### No Warranty
 
-1. **No Express or Implied Warranties**
-2. **No Guarantee of Functionality**
-3. **No Professional Security Advice**
+1. No Express or Implied Warranties
+2. No Guarantee of Functionality
+3. No Professional Security Advice
 
 ### Limitation of Liability
 
@@ -29,11 +29,10 @@ This software is designed for:
 
 ### Security Notice
 
-**IMPORTANT:**
-
-1. **Alpha Software:** May contain security vulnerabilities
-2. **Cryptographic Code:** Not professionally audited
-3. **No Security Guarantee:** Use at your own risk
+IMPORTANT:
+1. Alpha Software: May contain security vulnerabilities
+2. Cryptographic Code: Not professionally audited
+3. No Security Guarantee: Use at your own risk
 
 ### Acknowledgment
 
@@ -45,11 +44,11 @@ By using this software, you accept all associated risks.
 
 ### Allgemeiner Haftungsausschluss
 
-**SimpleGo** wird "WIE BESEHEN" ohne jegliche Gewaehrleistung bereitgestellt.
+SimpleGo wird WIE BESEHEN ohne jegliche Gewaehrleistung bereitgestellt.
 
 ### Keine Gewaehrleistung
 
-1. Es bestehen keine Gewaehrleistungen der Marktgaengigkeit oder Eignung
+1. Keine Gewaehrleistungen der Marktgaengigkeit oder Eignung
 2. Keine Garantie der Funktionalitaet
 3. Keine professionelle Sicherheitsberatung
 
@@ -65,9 +64,9 @@ Die Autoren haften nicht fuer Schaeden aus der Nutzung der Software.
 
 ### Sicherheitshinweis
 
-1. **Alpha-Software:** Kann Sicherheitsluecken enthalten
-2. **Kryptographischer Code:** Nicht professionell geprueft
-3. **Nutzung auf eigene Gefahr**
+1. Alpha-Software: Kann Sicherheitsluecken enthalten
+2. Kryptographischer Code: Nicht professionell geprueft
+3. Nutzung auf eigene Gefahr
 
 ---
 
@@ -77,4 +76,4 @@ This disclaimer is governed by the laws of the Federal Republic of Germany.
 
 ---
 
-*Last updated: January 24, 2026*
+Last updated: January 24, 2026

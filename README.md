@@ -110,49 +110,31 @@ All cryptographic operations verified against Python reference implementations:
 - USB cable for flashing
 
 ### Build Commands
-```bash
-cd C:\Espressif\projects\simplex_client
-idf.py build
-idf.py flash -p COM5
-idf.py monitor -p COM5
-```
 
-Or combined:
-```bash
-idf.py build flash monitor -p COM5
-```
+| Command | Description |
+|---------|-------------|
+| idf.py build | Compile project |
+| idf.py flash -p COM5 | Flash to device |
+| idf.py monitor -p COM5 | Serial monitor |
+| idf.py build flash monitor -p COM5 | All combined |
 
 ---
 
 ## Project Structure
-```
-simplex_client/
-├── main/
-│   ├── main.c
-│   ├── smp_x448.c
-│   ├── smp_ratchet.c
-│   ├── smp_handshake.c
-│   ├── smp_queue.c
-│   ├── smp_peer.c
-│   ├── smp_parser.c
-│   ├── smp_network.c
-│   ├── smp_crypto.c
-│   ├── smp_contacts.c
-│   └── smp_utils.c
-├── include/
-│   └── [header files]
-├── components/
-│   ├── wolfssl/
-│   └── kyber/
-├── docs/
-│   ├── ARCHITECTURE.md
-│   ├── CRYPTO.md
-│   ├── WIRE_FORMAT.md
-│   └── BUGS.md
-├── CHANGELOG.md
-├── ROADMAP.md
-└── README.md
-```
+
+| Path | Description |
+|------|-------------|
+| main/ | Application source code |
+| main/main.c | Entry point |
+| main/smp_*.c | Protocol modules |
+| include/ | Header files |
+| include/smp_*.h | Module headers |
+| components/wolfssl/ | X448 cryptography |
+| components/kyber/ | Post-quantum (future) |
+| docs/ | Documentation |
+| CMakeLists.txt | Project build file |
+| partitions.csv | Flash partition table |
+| sdkconfig | ESP-IDF configuration |
 
 ---
 
@@ -166,6 +148,9 @@ simplex_client/
 | [docs/CRYPTO.md](docs/CRYPTO.md) | Cryptographic implementation details |
 | [docs/WIRE_FORMAT.md](docs/WIRE_FORMAT.md) | Protocol encoding specification |
 | [docs/BUGS.md](docs/BUGS.md) | Known issues and fixes |
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | Protocol documentation |
+| [docs/TECHNICAL.md](docs/TECHNICAL.md) | Technical details |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Development guide |
 
 ---
 
