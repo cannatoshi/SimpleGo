@@ -1,6 +1,6 @@
 # SimpleGo 🔐
 
-**The first native implementation of the SimpleX Messaging Protocol (SMP) for embedded systems.**
+**Native implementation of the SimpleX Messaging Protocol (SMP) for embedded systems.**
 
 Secure messaging without smartphones.
 
@@ -27,7 +27,7 @@ SimpleGo takes a different approach: **minimal trusted computing base**.
 | Aspect | Smartphone | SimpleGo |
 |--------|------------|----------|
 | Lines of Code | ~50 million | ~50,000 |
-| Baseband Processor | ✅ Closed-source black box | ❌ WiFi only, open source |
+| Baseband Processor | ✅ Closed-source black box | ❌ WiFi +4G only, open source |
 | Background Processes | Hundreds | One |
 | Telemetry | Google/Apple services | None |
 | Attack Surface | Massive | Minimal |
@@ -40,7 +40,7 @@ For a detailed analysis, see [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
 
 ---
 
-## Current Status: v0.1.29-alpha
+## Current Status: v0.1.15-alpha
 
 🏆 **First native SMP protocol implementation outside the official Haskell codebase.**
 
