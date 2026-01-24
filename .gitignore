@@ -1,0 +1,20 @@
+# ESP-IDF Build
+build/
+sdkconfig.old
+
+# Dependencies
+managed_components/
+dependencies.lock
+
+# VS Code
+.vscode/
+
+# Windows
+*.Zone.Identifier
+Thumbs.db
+
+# Compiled
+*.o
+*.elf
+*.bin
+*.map
