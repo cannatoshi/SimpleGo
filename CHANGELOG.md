@@ -8,9 +8,56 @@ For detailed release information, see the [Release Notes](docs/release-info/).
 
 ## [Unreleased]
 
-- Fix encConnInfo format for App "Connected" status
-- Double Ratchet Implementation
+- App compatibility (A_MESSAGE parsing)
 - UI Components
+
+---
+
+## [0.1.15-alpha] - 2026-01-24
+
+### 🔐 Double Ratchet + X3DH Implementation!
+
+**[Full Release Notes →](docs/release-info/v0.1.15-alpha.md)**
+
+This release represents a major cryptographic milestone - implementing the complete Double Ratchet algorithm with X3DH key agreement from scratch.
+
+#### 🏆 Historical Significance
+
+**SimpleGo is the FIRST native SMP protocol implementation worldwide!**  
+All other implementations are WebSocket API wrappers. SimpleGo speaks the real binary-level protocol.
+
+#### Added
+
+- **smp_x448.c** — X448 key generation and DH with wolfSSL byte-order fix
+- **smp_ratchet.c** — Complete Double Ratchet with root/chain KDF, AES-GCM
+- **smp_handshake.c** — E2E handshake and AgentConfirmation building
+- **smp_queue.c** — SMPQueueInfo encoding and queue management
+- **wolfSSL component** — X448/Curve448 cryptographic operations
+- **Kyber KEM components** — Post-quantum crypto preparation
+
+#### Fixed
+
+- **12 encoding bugs** discovered through protocol analysis:
+  - Bug #1-5: Length prefix corrections (Word16 BE vs 1-byte)
+  - Bug #6: Payload AAD size (236 → 235 bytes)
+  - Bug #7: KDF root output byte order
+  - Bug #8: Chain KDF IV order (header_iv before msg_iv)
+  - Bug #9: wolfSSL X448 byte-order reversal
+  - Bug #10: SMPQueueInfo port encoding (space → length)
+  - Bug #11: smpQueues count (Word16 BE)
+  - Bug #12: queueMode Nothing encoding
+
+#### Verified
+
+- ✅ All cryptography verified against Python reference (100% match)
+- ✅ AES-GCM with 16-byte IV verified
+- ✅ Wire format verified against Haskell source
+- ✅ Server accepts all messages with "OK"
+
+#### Status
+
+- Server: Accepts AgentConfirmation and HELLO ✅
+- App: Shows "error agent A_MESSAGE" (parsing issue) 🔧
 
 ---
 
@@ -136,7 +183,8 @@ For detailed release information, see the [Release Notes](docs/release-info/).
 
 | Version | Milestone | Details |
 |---------|-----------|---------|
-| **v0.1.14** | 🏗️ Modular + Peer | [Release Notes](docs/release-info/v0.1.14-alpha.md) |
+| **v0.1.15** | 🔐 Double Ratchet | [Release Notes](docs/release-info/v0.1.15-alpha.md) |
+| v0.1.14 | 🏗️ Modular + Peer | [Release Notes](docs/release-info/v0.1.14-alpha.md) |
 | v0.1.13 | 🔧 Type Fix + Queue | Message parsing fixed |
 | v0.1.12 | 🔐 Agent Protocol | 6-layer decryption |
 | v0.1.11 | 🔗 Invitation Links | Apps can connect |
