@@ -13,6 +13,7 @@
 #include "esp_random.h"
 #include "nvs_flash.h"
 #include "sodium.h"
+#include "smp_queue.h"
 
 static const char *TAG = "SMP_CONT";
 
@@ -537,5 +538,53 @@ void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
     
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "📡 Subscriptions complete: %d/%d", success_count, contacts_db.num_contacts);
+    ESP_LOGI(TAG, "📡 Subscriptions complete: %d/%d", success_count, contacts_db.num_contacts);
+    
+    // ========== Subscribe to OUR REPLY QUEUE ==========
+    ESP_LOGI(TAG, "   Reply Queue rcv_id_len: %d", our_queue.rcv_id_len);
+    if (our_queue.rcv_id_len > 0) {
+        ESP_LOGI(TAG, "   [R] Reply Queue...");
+        uint8_t rq_body[64];
+        int rqp = 0;
+        rq_body[rqp++] = 1;
+        rq_body[rqp++] = 'R';
+        rq_body[rqp++] = our_queue.rcv_id_len;
+        memcpy(&rq_body[rqp], our_queue.rcv_id, our_queue.rcv_id_len);
+        rqp += our_queue.rcv_id_len;
+        rq_body[rqp++] = 'S';
+        rq_body[rqp++] = 'U';
+        rq_body[rqp++] = 'B';
+        
+        uint8_t rq_sign[1 + 32 + 64];
+        int rqs = 0;
+        rq_sign[rqs++] = 32;
+        memcpy(&rq_sign[rqs], session_id, 32);
+        rqs += 32;
+        memcpy(&rq_sign[rqs], rq_body, rqp);
+        rqs += rqp;
+        
+        uint8_t rq_sig[64];
+        crypto_sign_detached(rq_sig, NULL, rq_sign, rqs, our_queue.rcv_auth_private);
+        
+        uint8_t rq_trans[256];
+        int rqt = 0;
+        rq_trans[rqt++] = 64;
+        memcpy(&rq_trans[rqt], rq_sig, 64);
+        rqt += 64;
+        rq_trans[rqt++] = 32;
+        memcpy(&rq_trans[rqt], session_id, 32);
+        rqt += 32;
+        memcpy(&rq_trans[rqt], rq_body, rqp);
+        rqt += rqp;
+        
+        if (smp_write_command_block(ssl, block, rq_trans, rqt) == 0) {
+            if (smp_read_block(ssl, block, 5000) >= 0) {
+                ESP_LOGI(TAG, "       ✅ Reply Queue subscribed!");
+            }
+        }
+    }
+
     ESP_LOGI(TAG, "");
 }
+
+

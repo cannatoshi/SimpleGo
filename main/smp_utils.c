@@ -39,13 +39,70 @@ int base64url_encode(const uint8_t *input, int input_len, char *output, int outp
 
 // ============== Base64URL Decoding ==============
 
-int base64url_decode(const char *input, uint8_t *output, int output_max) {
-    size_t bin_len;
-    if (sodium_base642bin(output, output_max, input, strlen(input),
-                          NULL, &bin_len, NULL, sodium_base64_VARIANT_URLSAFE_NO_PADDING) != 0) {
-        return -1;
+// FIXED base64url_decode - handles padding and URL-safe chars
+int base64url_decode(const char *input, uint8_t *output, int max_output) {
+    if (!input || !output || max_output <= 0) return -1;
+    
+    // Standard Base64 decode table
+    static const int8_t decode_table[256] = {
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,  // 0-15
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,  // 16-31
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,62,-1,62,-1,63,  // 32-47:  + is 62, - is 62
+        52,53,54,55,56,57,58,59,60,61,-1,-1,-1,-1,-1,-1,  // 48-63:  0-9
+        -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,  // 64-79:  A-O
+        15,16,17,18,19,20,21,22,23,24,25,-1,-1,-1,-1,63,  // 80-95:  P-Z, _ is 63
+        -1,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,  // 96-111: a-o
+        41,42,43,44,45,46,47,48,49,50,51,-1,-1,-1,-1,-1,  // 112-127: p-z
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,  // 128+
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+        -1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,
+    };
+    
+    int input_len = strlen(input);
+    
+    // Skip trailing padding and whitespace
+    while (input_len > 0 && (input[input_len-1] == '=' || 
+                             input[input_len-1] == ' ' || 
+                             input[input_len-1] == '\n')) {
+        input_len--;
     }
-    return (int)bin_len;
+    
+    if (input_len == 0) return 0;
+    
+    // Calculate output length (3 bytes per 4 input chars)
+    int output_len = (input_len * 3) / 4;
+    if (output_len > max_output) return -1;
+    
+    int i = 0, j = 0;
+    uint32_t accum = 0;
+    int bits = 0;
+    
+    while (i < input_len) {
+        char c = input[i++];
+        int8_t val = decode_table[(uint8_t)c];
+        
+        if (val < 0) {
+            // Skip invalid characters (whitespace, etc)
+            continue;
+        }
+        
+        accum = (accum << 6) | val;
+        bits += 6;
+        
+        if (bits >= 8) {
+            bits -= 8;
+            if (j < max_output) {
+                output[j++] = (uint8_t)(accum >> bits);
+            }
+        }
+    }
+    
+    return j;
 }
 
 // ============== Base64 Decoding with Padding ==============

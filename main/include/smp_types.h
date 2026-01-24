@@ -1,7 +1,7 @@
 /**
  * SimpleGo - Native SimpleX SMP Client for ESP32
  * smp_types.h - Data structures and constants
- * v0.1.13-alpha
+ * v0.1.14-alpha - Added E2E ratchet key support
  */
 
 #ifndef SMP_TYPES_H
@@ -17,6 +17,9 @@
 #define MAX_CONTACTS        10
 #define NVS_NAMESPACE       "simplego"
 #define SPKI_KEY_SIZE       44  // 12 header + 32 key
+
+// X448 key size (for E2E ratchet)
+#define X448_KEY_SIZE       56  // 448 / 8 = 56 bytes
 
 // SPKI headers for key encoding
 extern const uint8_t ED25519_SPKI_HEADER[12];
@@ -56,8 +59,14 @@ typedef struct {
     char key_hash_b64[48];
     uint8_t queue_id[32];
     int queue_id_len;
-    uint8_t dh_public[32];
-    int has_dh;
+    uint8_t dh_public[32];              // X25519 for SMP-level encryption
+    int has_dh;                         // 1 if dh_public is valid
+    
+    // E2E Ratchet keys (X448) - received from peer's invitation
+    uint8_t e2e_key1[X448_KEY_SIZE];    // First X448 public key for X3DH
+    uint8_t e2e_key2[X448_KEY_SIZE];    // Second X448 public key for X3DH
+    int has_e2e;                        // 1 if e2e keys are present
+    
     int valid;
 } peer_queue_t;
 
