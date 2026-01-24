@@ -1,317 +1,180 @@
-# Security Model
+# SimpleGo 🔐
 
-Why dedicated hardware can offer security advantages over smartphones.
+**The first native implementation of the SimpleX Messaging Protocol (SMP) for embedded systems.**
 
----
+Secure messaging without smartphones.
 
-## The Smartphone Problem
-
-Modern smartphones are powerful, but their complexity creates inherent security challenges:
-
-| Aspect | Typical Smartphone |
-|--------|-------------------|
-| Lines of Code | ~50 million (Android/iOS) |
-| Running Processes | Hundreds |
-| Network Connections | Dozens (background) |
-| Trusted Parties | Google/Apple + carriers + app developers |
-| Update Control | Vendor-controlled |
-| Baseband Processor | Closed-source, always running |
-
-Even hardened mobile operating systems like GrapheneOS cannot fully mitigate these architectural limitations.
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.29--alpha-green.svg)](CHANGELOG.md)
+[![Platform](https://img.shields.io/badge/platform-ESP32--S3-orange.svg)](https://www.espressif.com/)
 
 ---
 
-## The Dedicated Hardware Approach
+## Vision
 
-SimpleGo takes a fundamentally different approach: **minimal trusted computing base (TCB)**.
+What if secure messaging didn't require a smartphone?
 
-### Attack Surface Comparison
-
-```
-Smartphone (Android/iOS):
-├── Operating System (~20M lines)
-├── System Services (~10M lines)
-├── Browser Engine (~5M lines)
-├── JavaScript Runtime
-├── App Framework
-├── Hundreds of Apps
-├── Google/Apple Services
-├── Baseband Processor (closed source)
-├── Bluetooth Stack
-├── NFC Stack
-└── Telemetry Services
-
-SimpleGo (ESP32):
-├── FreeRTOS Kernel (~10K lines)
-├── Network Stack (~20K lines)
-├── Crypto Libraries (~15K lines)
-└── SimpleGo Application (~5K lines)
-    └── Total: ~50K lines (1000x smaller)
-```
-
-### What This Means
-
-| Threat Vector | Smartphone | SimpleGo |
-|---------------|------------|----------|
-| Remote Code Execution | Large attack surface | Minimal attack surface |
-| Supply Chain | Many dependencies | Few, auditable dependencies |
-| Malicious Apps | Possible | No app installation |
-| Browser Exploits | Major risk | No browser |
-| JavaScript Attacks | Possible | No JavaScript engine |
-| Telemetry/Tracking | Built-in | None |
-| Forced Updates | Yes | User-controlled |
-| Baseband Attacks | Always possible | No baseband processor |
+SimpleGo brings the SimpleX protocol to ESP32 microcontrollers, enabling truly private communication on minimal, auditable hardware. No app stores. No telemetry. No bloat. Just cryptography.
 
 ---
 
-## No Baseband Processor
+## Why Dedicated Hardware?
 
-This deserves special attention.
+Modern smartphones contain ~50 million lines of code, hundreds of background processes, and a closed-source baseband processor that can never be fully audited or disabled.
 
-Every smartphone contains a **baseband processor** - a separate computer running its own operating system that handles cellular communication. This processor:
+SimpleGo takes a different approach: **minimal trusted computing base**.
 
-- Runs closed-source firmware
-- Has direct memory access (DMA) on many devices
-- Is always active when the phone has signal
-- Cannot be audited or disabled
-- Has known vulnerabilities (Qualcomm, MediaTek, etc.)
-
-**SimpleGo has no baseband processor.** The ESP32 uses WiFi only, with an open-source network stack. When offline, no radio is active. When online, you know exactly what's transmitting.
-
----
-
-## ESP32 Hardware Security Features
-
-The ESP32-S3 provides hardware-level security:
-
-### Secure Boot
-
-```
-Boot Process:
-1. ROM bootloader (unchangeable)
-2. Verify second-stage bootloader signature
-3. Verify application signature
-4. Execute only if all signatures valid
-```
-
-- RSA-3072 or ECDSA signature verification
-- Public key burned into eFuse (one-time programmable)
-- Prevents unsigned/modified firmware from running
-
-### Flash Encryption
-
-```
-Storage:
-┌─────────────────────────────────────┐
-│     Encrypted Flash (AES-256)       │
-│  ┌─────────────────────────────┐    │
-│  │  Firmware + Keys + Data     │    │
-│  └─────────────────────────────┘    │
-└─────────────────────────────────────┘
-         │
-         ▼ Decrypted only in CPU
-┌─────────────────────────────────────┐
-│           ESP32 CPU                 │
-│     (plaintext never leaves)        │
-└─────────────────────────────────────┘
-```
-
-- AES-256-XTS encryption
-- Key stored in eFuse, not readable by software
-- Protects against physical flash reading
-
-### eFuse Protection
-
-One-time programmable bits that can:
-
-- Disable JTAG debugging permanently
-- Disable UART bootloader
-- Lock flash encryption key
-- Lock secure boot key
-- Enable read/write protection on sensitive fuses
-
-### Hardware Crypto Acceleration
-
-- AES: Hardware accelerated
-- SHA: Hardware accelerated
-- RSA: Hardware accelerated
-- Random Number Generator: Hardware TRNG
-
----
-
-## Comparison with GrapheneOS
-
-GrapheneOS is excellent - but it still runs on smartphone hardware.
-
-| Feature | GrapheneOS | SimpleGo |
-|---------|------------|----------|
-| Verified Boot | ✅ | ✅ |
-| Full Storage Encryption | ✅ | ✅ |
-| Hardened Memory Allocator | ✅ | Possible |
-| ASLR | ✅ | Limited (RAM constraints) |
-| Sandboxing | ✅ | ✅ (only one app exists) |
-| No Google Services | ✅ | ✅ |
-| No Baseband | ❌ | ✅ |
-| Minimal TCB | ~50M lines | ~50K lines |
-| Physical Deniability | ❌ (it's a phone) | ✅ (looks like dev board) |
-| Disposable | ❌ (~$500+) | ✅ (~$15-50) |
-| Air-Gap Capable | Difficult | Easy |
-
----
-
-## Operational Security Advantages
-
-### Physical Characteristics
-
-**Smartphones:**
-- Recognizable as communication devices
-- Expensive, not easily disposed
-- Biometric data (face/fingerprint) stored
-- Location history embedded
-
-**SimpleGo Device:**
-- Looks like generic development board
-- Cheap enough to be disposable
-- No biometrics
-- No location history
-- Can be hidden easily
-
-### Network Behavior
-
-**Smartphones:**
-- Constantly connected
-- Background sync to multiple services
-- Push notifications require persistent connection
-- Carrier can track location via cell towers
-
-**SimpleGo:**
-- Online only when you choose
-- Single connection (to SMP server via Tor possible)
-- No background activity
-- No carrier relationship
-
-### Plausible Deniability
-
-A smartphone is obviously a communication device. An ESP32 board could be:
-- A weather station
-- A home automation controller
-- A learning project
-- An IoT sensor
-- A development prototype
-
----
-
-## Threat Model
-
-### What SimpleGo Protects Against
-
-| Threat | Protection |
-|--------|------------|
-| Mass surveillance | E2E encryption, no metadata to provider |
-| Network monitoring | TLS 1.3, encrypted payload |
-| Server compromise | Server never sees plaintext |
-| Device theft (locked) | Flash encryption, secure boot |
-| Physical flash extraction | AES-256 encrypted |
-| Supply chain attacks | Auditable codebase, reproducible builds |
-| Carrier tracking | No cellular, WiFi only |
-| App-based attacks | No app installation possible |
-| Browser exploits | No browser |
-| Telemetry | None exists |
-
-### What SimpleGo Does NOT Protect Against
-
-| Threat | Limitation |
-|--------|------------|
-| Physical access (unlocked) | Device in use is vulnerable |
-| Nation-state with physical access | eFuse can potentially be read with equipment |
-| WiFi network monitoring | Connection timing visible (use Tor) |
-| Implementation bugs | Code must be audited |
-| Side-channel attacks | Not hardened against power analysis etc. |
-| Social engineering | User must verify contacts |
-
-### Recommended Practices
-
-1. **Enable Secure Boot and Flash Encryption** before deployment
-2. **Disable JTAG** via eFuse for production devices
-3. **Use Tor** if network-level privacy required
-4. **Verify contacts** through secondary channel
-5. **Store device securely** when not in use
-6. **Consider device disposable** - replace if compromised
-
----
-
-## Code Quality and Stability
-
-### Why C?
-
-SimpleGo is written in C, which requires careful memory management but offers:
-
-| Aspect | C | Managed Languages |
-|--------|---|-------------------|
-| Garbage Collector | None (deterministic) | Unpredictable pauses |
-| Runtime Size | Minimal | Large |
-| Memory Control | Complete | Abstracted |
-| Binary Size | Small | Large |
-| Timing Attacks | Easier to prevent | GC complicates |
-| Audit Surface | Code only | Code + runtime + JIT |
-
-### Memory Safety Mitigations
-
-```c
-// Compiler hardening flags
--fstack-protector-strong    // Stack canaries
--D_FORTIFY_SOURCE=2         // Buffer overflow detection
--Wformat-security           // Format string checks
-
-// Coding practices
-- Bounds checking on all buffer operations
-- No sprintf, only snprintf
-- Input validation on all external data
-- Static analysis with cppcheck
-- Valgrind testing where possible
-```
-
-### Deterministic Behavior
-
-No garbage collector means:
-- Predictable timing (important for crypto)
-- No memory allocation during critical operations
-- Consistent performance under load
-- Easier to audit for timing leaks
-
----
-
-## Future Security Enhancements
-
-| Enhancement | Status | Description |
-|-------------|--------|-------------|
-| Secure Boot Integration | Planned | Document and test secure boot setup |
-| Flash Encryption Guide | Planned | Step-by-step encryption setup |
-| eFuse Configuration | Planned | Production lockdown guide |
-| Memory Sanitizers | Planned | ASAN/MSAN testing |
-| Fuzzing | Planned | Protocol parser fuzzing |
-| Tor Integration | Research | Onion routing for traffic analysis resistance |
-| External Secure Element | Research | Hardware key storage (ATECC608) |
-
----
-
-## Summary
-
-SimpleGo's security model is based on **simplicity and control**:
-
-1. **Minimal code** = fewer bugs = smaller attack surface
-2. **No baseband** = no cellular black box
-3. **No apps** = no malware vector
-4. **No browser** = no web exploits
-5. **No telemetry** = no data leakage
-6. **Hardware security** = protection at rest
-7. **User control** = you decide when it's online
-8. **Disposable** = compromise is recoverable
-
-This approach cannot match all security properties of a hardened smartphone (particularly ASLR and advanced sandboxing), but it eliminates entire categories of attacks that smartphone users must accept.
+| Aspect | Smartphone | SimpleGo |
+|--------|------------|----------|
+| Lines of Code | ~50 million | ~50,000 |
+| Baseband Processor | ✅ Closed-source black box | ❌ WiFi only, open source |
+| Background Processes | Hundreds | One |
+| Telemetry | Google/Apple services | None |
+| Attack Surface | Massive | Minimal |
+| Cost | $500+ | ~$15-50 |
+| Disposable | No | Yes |
 
 **The most secure system is often the simplest one.**
 
+For a detailed analysis, see [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
+
 ---
 
-*Last Updated: January 2026*
+## Current Status: v0.1.29-alpha
+
+🏆 **First native SMP protocol implementation outside the official Haskell codebase.**
+
+### What Works
+
+| Component | Status | Verification |
+|-----------|--------|--------------|
+| TLS 1.3 Connection | ✅ | ALPN "smp/1" |
+| SMP Handshake | ✅ | Version negotiation |
+| Queue Creation | ✅ | Server accepts |
+| X3DH Key Agreement | ✅ | Python-verified |
+| Double Ratchet | ✅ | Python-verified |
+| AES-256-GCM | ✅ | Python-verified |
+| HKDF-SHA512 | ✅ | Python-verified |
+| Wire Format | ✅ | Haskell source verified |
+| Server Response | ✅ | "OK" |
+
+### In Progress
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| App Compatibility | 90% | Final message parsing |
+
+### Cryptographic Verification
+
+All cryptographic operations have been verified byte-for-byte against Python reference implementations:
+
+- X448 Diffie-Hellman (with wolfSSL byte-order handling)
+- HKDF-SHA512 for X3DH, Root KDF, and Chain KDF
+- AES-256-GCM with 16-byte IV (GHASH transformation verified)
+- Complete wire format encoding
+
+---
+
+## Hardware Security
+
+The ESP32-S3 provides hardware-level security features:
+
+| Feature | Description |
+|---------|-------------|
+| **Secure Boot** | RSA-3072/ECDSA firmware signature verification |
+| **Flash Encryption** | AES-256-XTS encrypted storage |
+| **eFuse Protection** | One-time programmable security bits |
+| **JTAG Disable** | Permanently disable debug access |
+| **Hardware Crypto** | Accelerated AES, SHA, RSA, TRNG |
+
+Combined with a minimal codebase and no baseband processor, this creates a security model that eliminates entire categories of attacks that smartphone users must accept.
+
+---
+
+## Architecture
+
+### Module Structure
+
+| Module | Purpose |
+|--------|---------|
+| `smp_network.c` | TLS 1.3 transport |
+| `smp_handshake.c` | SMP protocol handshake |
+| `smp_x448.c` | X448 key exchange |
+| `smp_ratchet.c` | Double Ratchet state machine |
+| `smp_crypto.c` | Ed25519, X25519, AES-GCM |
+| `smp_peer.c` | Peer connection management |
+| `smp_parser.c` | Protocol message parsing |
+| `smp_queue.c` | Queue information encoding |
+| `smp_contacts.c` | Contact address handling |
+
+### Dependencies
+
+| Library | Purpose |
+|---------|---------|
+| mbedTLS | TLS 1.3, AES-GCM |
+| wolfSSL | X448/Curve448 |
+| libsodium | Ed25519, X25519 |
+
+---
+
+## Hardware Targets
+
+| Device | Status | Description |
+|--------|--------|-------------|
+| LilyGo T-Deck | Primary | ESP32-S3 with keyboard and display |
+| LilyGo T-Embed | Planned | Compact form factor |
+| Generic ESP32-S3 | Supported | PSRAM recommended |
+
+---
+
+## Building
+
+### Prerequisites
+
+- ESP-IDF 5.5.2 or newer
+- Python 3.8+
+
+### Build Commands
+
+```bash
+cd simplex_client
+idf.py build flash monitor -p COM5
+```
+
+---
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [CHANGELOG.md](CHANGELOG.md) | Version history |
+| [ROADMAP.md](ROADMAP.md) | Development plan |
+| [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) | Security architecture |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module structure |
+| [docs/CRYPTO.md](docs/CRYPTO.md) | Cryptographic details |
+| [docs/WIRE_FORMAT.md](docs/WIRE_FORMAT.md) | Protocol encoding |
+| [docs/BUGS.md](docs/BUGS.md) | Known issues |
+
+---
+
+## Contributing
+
+Contributions are welcome. Please see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Security
+
+For security vulnerabilities, please see [SECURITY.md](SECURITY.md).
+
+---
+
+## License
+
+AGPL-3.0 - See [LICENSE](LICENSE).
+
+---
+
+## Disclaimer
+
+SimpleGo is an independent project not affiliated with SimpleX Chat Ltd. See [docs/TRADEMARK.md](docs/TRADEMARK.md).
