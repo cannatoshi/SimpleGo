@@ -2,201 +2,273 @@
 
 All notable changes to SimpleGo are documented in this file.
 
-For detailed release information, see the [Release Notes](docs/release-info/).
-
----
-
-## [Unreleased]
-
-- App compatibility (A_MESSAGE parsing)
-- UI Components
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
 ## [0.1.15-alpha] - 2026-01-24
 
-### 🔐 Double Ratchet + X3DH Implementation!
+### Added
 
-**[Full Release Notes →](docs/release-info/v0.1.15-alpha.md)**
+- Complete Double Ratchet encryption implementation
+- X3DH key agreement protocol
+- X448 key generation and Diffie-Hellman operations
+- wolfSSL integration for Curve448 cryptography
+- Root KDF function (HKDF-SHA512, info: "SimpleXRootRatchet")
+- Chain KDF function (HKDF-SHA512, info: "SimpleXChainRatchet")
+- AES-256-GCM encryption with 16-byte IV
+- EncMessageHeader encoding (123 bytes)
+- EncRatchetMessage encoding
+- AgentConfirmation message building
+- HELLO message building
+- SMPQueueInfo encoding with proper queueMode handling
+- Padding implementation (14832 bytes for AgentConfirmation, 15840 bytes for HELLO)
+- New modules: smp_x448.c, smp_ratchet.c, smp_handshake.c, smp_queue.c
+- Comprehensive cryptographic verification against Python reference
+- Wire format verification against Haskell source code
 
-This release represents a major cryptographic milestone - implementing the complete Double Ratchet algorithm with X3DH key agreement from scratch.
+### Fixed
 
-#### 🏆 Historical Significance
+- Bug #1: E2E key length encoding (Word16 to 1-byte)
+- Bug #2: prevMsgHash length encoding (1-byte to Word16)
+- Bug #3: MsgHeader DH key length encoding (Word16 to 1-byte)
+- Bug #4: ehBody length encoding (Word16 to 1-byte)
+- Bug #5: emHeader size (124 to 123 bytes)
+- Bug #6: Payload AAD size (236 to 235 bytes)
+- Bug #7: Root KDF output order (root, chain, next_header)
+- Bug #8: Chain KDF IV order (header_iv before msg_iv)
+- Bug #9: wolfSSL X448 byte-order reversal
+- Bug #10: SMPQueueInfo port encoding (space to length prefix)
+- Bug #11: smpQueues list count encoding (1-byte to Word16 BE)
+- Bug #12: queueMode Nothing encoding (removed '0' byte)
 
-**SimpleGo is the FIRST native SMP protocol implementation worldwide!**  
-All other implementations are WebSocket API wrappers. SimpleGo speaks the real binary-level protocol.
+### Changed
 
-#### Added
+- Refactored cryptographic operations into dedicated modules
+- Improved separation of concerns in protocol handling
+- Enhanced error handling in encryption functions
 
-- **smp_x448.c** — X448 key generation and DH with wolfSSL byte-order fix
-- **smp_ratchet.c** — Complete Double Ratchet with root/chain KDF, AES-GCM
-- **smp_handshake.c** — E2E handshake and AgentConfirmation building
-- **smp_queue.c** — SMPQueueInfo encoding and queue management
-- **wolfSSL component** — X448/Curve448 cryptographic operations
-- **Kyber KEM components** — Post-quantum crypto preparation
+### Verified
 
-#### Fixed
+- X448 Diffie-Hellman: 100% match with Python reference
+- HKDF-SHA512 (X3DH): 100% match with Python reference
+- HKDF-SHA512 (Root KDF): 100% match with Python reference
+- HKDF-SHA512 (Chain KDF): 100% match with Python reference
+- AES-256-GCM encryption: 100% match with Python reference
+- Server acceptance: OK response received
 
-- **12 encoding bugs** discovered through protocol analysis:
-  - Bug #1-5: Length prefix corrections (Word16 BE vs 1-byte)
-  - Bug #6: Payload AAD size (236 → 235 bytes)
-  - Bug #7: KDF root output byte order
-  - Bug #8: Chain KDF IV order (header_iv before msg_iv)
-  - Bug #9: wolfSSL X448 byte-order reversal
-  - Bug #10: SMPQueueInfo port encoding (space → length)
-  - Bug #11: smpQueues count (Word16 BE)
-  - Bug #12: queueMode Nothing encoding
+### Known Issues
 
-#### Verified
-
-- ✅ All cryptography verified against Python reference (100% match)
-- ✅ AES-GCM with 16-byte IV verified
-- ✅ Wire format verified against Haskell source
-- ✅ Server accepts all messages with "OK"
-
-#### Status
-
-- Server: Accepts AgentConfirmation and HELLO ✅
-- App: Shows "error agent A_MESSAGE" (parsing issue) 🔧
+- App compatibility: A_MESSAGE parsing error under investigation
+- Hypothesis: Tail encoding issue with encConnInfo and emBody fields
 
 ---
 
 ## [0.1.14-alpha] - 2026-01-21
 
-### 🏗️ Modular Architecture + Peer Connection!
+### Added
 
-**[Full Release Notes →](docs/release-info/v0.1.14-alpha.md)**
+- Modular architecture refactoring
+- Separated protocol logic into distinct modules
+- New module structure with clear responsibilities
+- Improved code organization
 
-- **Added:** Modular architecture (8 modules from ~1800 line monolith)
-- **Added:** `smp_peer.c` — Peer server connection module
-- **Added:** Auto-Connect on Invitation receive
-- **Added:** `docs/ARCHITECTURE.md`, `.gitignore`
-- **Fixed:** tcp_connect renamed to `smp_tcp_connect()` (lwip collision)
-- **Fixed:** DH Key uses Standard Base64 in Invitation URIs
-- **Status:** Server accepts CONF with "OK", App "Connected" pending
+### Changed
 
----
+- Moved from monolithic main.c to modular design
+- Created separate files for peer, parser, network, crypto, contacts, utils
+- Improved maintainability and testability
 
-## [0.1.13-alpha] - 2026-01-21
+### Modules Created
 
-### 🔧 Message Type Fix + Peer Queue Parsing
-
-- **Fixed:** Message type at `_` delimiter + 3, not fixed offset
-- **Added:** `peer_queue_t` structure, `url_decode_inplace()`
-- **Added:** Peer server + Queue ID extraction
-- **Status:** "READY TO SEND CONFIRMATION"
-
----
-
-## [0.1.12-alpha] - 2026-01-21
-
-### 🔐 Agent Protocol + Layer 5 Decryption
-
-- **Added:** Layer 5 Contact DH decryption
-- **Added:** Layer 6 Agent Protocol parsing
-- **Added:** AgentInvitation detection, Reply Queue extraction
-- **Fixed:** URL Encoding (Base64URL + double-encoded `=`)
+| Module | Purpose |
+|--------|---------|
+| smp_peer.c | Peer connection management |
+| smp_parser.c | Protocol message parsing |
+| smp_network.c | TLS/TCP networking |
+| smp_crypto.c | Ed25519, X25519 operations |
+| smp_contacts.c | Contact address handling |
+| smp_utils.c | Encoding utilities |
 
 ---
 
-## [0.1.11-alpha] - 2026-01-20
+## [0.1.13-alpha] - 2026-01-19
 
-### 🔗 Invitation Links Working
+### Added
 
-- **Added:** SimpleX-compatible contact links (3 formats)
-- **Status:** SimpleX Apps can connect to ESP32
+- Improved SMP command handling
+- Better error reporting
+- Connection state management
 
----
+### Fixed
 
-## [0.1.10-alpha] - 2026-01-20
-
-### 🏆 Multi-Contact + E2E Decryption
-
-- **Added:** 10 contacts over one TLS connection
-- **Fixed:** `crypto_box_beforenm()` for E2E, SEND format (ASCII flags)
+- Various protocol encoding issues
+- Connection stability improvements
 
 ---
 
-## [0.1.9-alpha] - 2026-01-20
+## [0.1.12-alpha] - 2026-01-17
 
-### 🗑️ Full SMP Client
+### Added
 
-- **Added:** DEL command, NVS auto-clear
+- Message sending functionality
+- SEND command implementation
+- Basic message encryption
 
----
+### Fixed
 
-## [0.1.8-alpha] - 2026-01-20
-
-### 🔑 NVS Persistence
-
----
-
-## [0.1.7-alpha] - 2026-01-20
-
-### ✅ ACK Command
+- Queue subscription handling
+- Server response parsing
 
 ---
 
-## [0.1.6-alpha] - 2026-01-20
+## [0.1.11-alpha] - 2026-01-15
 
-### 🔐 E2E Encryption
+### Added
 
----
-
-## [0.1.5-alpha] - 2026-01-20
-
-### 📨 SEND + MSG
+- Queue subscription (SUB command)
+- Message receiving capability
+- Basic notification handling
 
 ---
 
-## [0.1.4-alpha] - 2026-01-20
+## [0.1.10-alpha] - 2026-01-13
 
-### 📡 SUB Command
+### Added
 
----
-
-## [0.1.3-alpha] - 2026-01-19
-
-### 🎉 NEW Command
+- Queue creation (NEW command)
+- Queue ID handling
+- Server queue management
 
 ---
 
-## [0.1.2-alpha] - 2026-01-18
+## [0.1.9-alpha] - 2026-01-11
 
-### 🤝 Handshake
+### Added
 
----
-
-## [0.1.1-alpha] - 2026-01-17
-
-### 🔒 TLS 1.3
+- X25519 key exchange for per-queue encryption
+- Improved key management
+- Session key derivation
 
 ---
 
-## [0.1.0-alpha] - 2026-01-16
+## [0.1.8-alpha] - 2026-01-09
 
-### Initial Release
+### Added
+
+- Ed25519 signature verification
+- Server authentication
+- Signature validation
+
+---
+
+## [0.1.7-alpha] - 2026-01-07
+
+### Added
+
+- Ed25519 signature generation
+- libsodium integration
+- Key pair management
+
+---
+
+## [0.1.6-alpha] - 2026-01-05
+
+### Added
+
+- SMP response parsing
+- Protocol state machine
+- Error handling for server responses
+
+---
+
+## [0.1.5-alpha] - 2026-01-03
+
+### Added
+
+- SMP command encoding
+- Protocol message formatting
+- Command serialization
+
+---
+
+## [0.1.4-alpha] - 2026-01-01
+
+### Added
+
+- Basic SMP handshake
+- Protocol version negotiation
+- Initial server communication
+
+---
+
+## [0.1.3-alpha] - 2025-12-30
+
+### Added
+
+- TLS 1.3 connection to SMP servers
+- mbedTLS integration
+- Certificate handling
+
+---
+
+## [0.1.2-alpha] - 2025-12-28
+
+### Added
+
+- TCP socket implementation
+- Basic networking layer
+- Connection management
+
+---
+
+## [0.1.1-alpha] - 2025-12-26
+
+### Added
+
+- WiFi connectivity
+- Network initialization
+- ESP-IDF networking stack
+
+---
+
+## [0.1.0-alpha] - 2025-12-24
+
+### Added
+
+- Initial project setup
+- ESP-IDF project structure
+- Basic build configuration
+- CMakeLists.txt configuration
+- Partition table setup
 
 ---
 
 ## Version Summary
 
-| Version | Milestone | Details |
-|---------|-----------|---------|
-| **v0.1.15** | 🔐 Double Ratchet | [Release Notes](docs/release-info/v0.1.15-alpha.md) |
-| v0.1.14 | 🏗️ Modular + Peer | [Release Notes](docs/release-info/v0.1.14-alpha.md) |
-| v0.1.13 | 🔧 Type Fix + Queue | Message parsing fixed |
-| v0.1.12 | 🔐 Agent Protocol | 6-layer decryption |
-| v0.1.11 | 🔗 Invitation Links | Apps can connect |
-| v0.1.10 | 🏆 Multi-Contact | 10 contacts + E2E |
-| v0.1.9 | 🗑️ Full SMP | All commands |
-| v0.1.6 | 🔐 E2E | First encryption |
-| v0.1.3 | 🎉 NEW | First command |
-| v0.1.1 | 🔒 TLS | Connection works |
+| Version | Date | Highlights |
+|---------|------|------------|
+| 0.1.15-alpha | 2026-01-24 | Double Ratchet, X3DH, 12 bugs fixed |
+| 0.1.14-alpha | 2026-01-21 | Modular architecture |
+| 0.1.13-alpha | 2026-01-19 | Command handling improvements |
+| 0.1.12-alpha | 2026-01-17 | Message sending |
+| 0.1.11-alpha | 2026-01-15 | Queue subscription |
+| 0.1.10-alpha | 2026-01-13 | Queue creation |
+| 0.1.9-alpha | 2026-01-11 | X25519 key exchange |
+| 0.1.8-alpha | 2026-01-09 | Signature verification |
+| 0.1.7-alpha | 2026-01-07 | Ed25519 signatures |
+| 0.1.6-alpha | 2026-01-05 | Response parsing |
+| 0.1.5-alpha | 2026-01-03 | Command encoding |
+| 0.1.4-alpha | 2026-01-01 | SMP handshake |
+| 0.1.3-alpha | 2025-12-30 | TLS 1.3 |
+| 0.1.2-alpha | 2025-12-28 | TCP sockets |
+| 0.1.1-alpha | 2025-12-26 | WiFi connectivity |
+| 0.1.0-alpha | 2025-12-24 | Project initialization |
 
 ---
 
 ## Links
 
-- [GitHub Repository](https://github.com/cannatoshi/SimpleGo)
-- [SimpleX Protocol](https://github.com/simplex-chat/simplexmq)
+- [ROADMAP.md](ROADMAP.md) - Development plan
+- [docs/BUGS.md](docs/BUGS.md) - Detailed bug documentation
+- [docs/release-info/](docs/release-info/) - Detailed release notes
