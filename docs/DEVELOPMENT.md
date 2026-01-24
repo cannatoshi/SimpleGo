@@ -1,250 +1,492 @@
 # SimpleGo Development Guide
 
-> Complete setup guide and development documentation
+Guide for developers who want to contribute to or build upon SimpleGo.
 
 ---
 
-## Prerequisites
+## Getting Started
 
-### Hardware
+### Prerequisites
 
-| Component | Recommended |
-|-----------|-------------|
-| **MCU** | ESP32-S3 |
-| **Dev Board** | LilyGo T-Deck or T-Embed |
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| ESP-IDF | 5.5.2+ | Espressif IoT Development Framework |
+| Python | 3.8+ | Build tools and verification scripts |
+| Git | 2.30+ | Version control |
+| Hardware | ESP32-S3 | T-Deck recommended for full testing |
 
-### Software
+### Clone Repository
+`ash
+git clone https://github.com/cannatoshi/SimpleGo.git
+cd SimpleGo
+`
 
-| Component | Version |
-|-----------|---------|
-| **ESP-IDF** | 5.5.2+ |
-| **Python** | 3.8+ |
+### ESP-IDF Installation
+
+#### Windows
+`powershell
+# Download ESP-IDF installer from espressif.com
+# Or manual installation:
+mkdir C:\Espressif
+cd C:\Espressif
+git clone --recursive https://github.com/espressif/esp-idf.git
+cd esp-idf
+.\install.ps1 esp32s3
+
+# Activate environment (run in each new terminal)
+C:\Espressif\esp-idf\export.ps1
+`
+
+#### Linux
+`ash
+mkdir -p ~/esp
+cd ~/esp
+git clone --recursive https://github.com/espressif/esp-idf.git
+cd esp-idf
+./install.sh esp32s3
+
+# Activate environment
+source ~/esp/esp-idf/export.sh
+`
+
+#### macOS
+`ash
+mkdir -p ~/esp
+cd ~/esp
+git clone --recursive https://github.com/espressif/esp-idf.git
+cd esp-idf
+./install.sh esp32s3
+
+# Activate environment
+source ~/esp/esp-idf/export.sh
+`
 
 ---
 
-## Building & Flashing
-
-```powershell
-cd C:\Espressif\projects\simplex_client
-idf.py build flash monitor -p COM5
-```
-
----
-
-## Project Structure (v0.1.14)
-
-```
+## Project Structure
+`
 simplex_client/
-├── main/
-│   ├── main.c              # Application entry (~350 lines)
-│   ├── smp_globals.c       # Global variables
-│   ├── smp_utils.c         # Encoding utilities
-│   ├── smp_crypto.c        # Cryptography
-│   ├── smp_network.c       # TLS/TCP I/O
-│   ├── smp_contacts.c      # Contact management
-│   ├── smp_parser.c        # Agent Protocol
-│   ├── smp_peer.c          # Peer connection (NEW!)
-│   ├── include/
-│   │   ├── smp_types.h     # All structures
-│   │   ├── smp_utils.h
-│   │   ├── smp_crypto.h
-│   │   ├── smp_network.h
-│   │   ├── smp_contacts.h
-│   │   ├── smp_parser.h
-│   │   └── smp_peer.h      # NEW!
-│   ├── CMakeLists.txt
-│   └── idf_component.yml
-├── docs/
-│   ├── ARCHITECTURE.md     # Module documentation
-│   ├── PROTOCOL.md
-│   ├── TECHNICAL.md
-│   ├── DEVELOPMENT.md
-│   ├── DEVNOTES.md
-│   └── release-info/
-│       └── v0.1.14-alpha.md
-├── .gitignore              # NEW!
-├── CHANGELOG.md
-├── README.md
-└── ROADMAP.md
-```
+├── main/                    # Application source code
+│   ├── main.c               # Entry point
+│   ├── smp_*.c              # Protocol modules
+│   └── CMakeLists.txt       # Main component build file
+├── include/                 # Header files
+│   └── smp_*.h
+├── components/              # Third-party libraries
+│   ├── wolfssl/             # X448 cryptography
+│   └── kyber/               # Post-quantum (future)
+├── docs/                    # Documentation
+├── CMakeLists.txt           # Project build file
+├── partitions.csv           # Flash partition table
+└── sdkconfig                # ESP-IDF configuration
+`
 
 ---
 
-## Module Overview
+## Building
 
-| Module | Lines | Purpose |
-|--------|-------|---------|
-| `main.c` | ~350 | App entry, WiFi, main loop |
-| `smp_globals.c` | ~25 | Global variable definitions |
-| `smp_utils.c` | ~100 | Base64, URL encoding |
-| `smp_crypto.c` | ~80 | Ed25519, X25519, crypto_box |
-| `smp_network.c` | ~160 | TLS, TCP, send/receive |
-| `smp_contacts.c` | ~380 | Contact CRUD, NVS |
-| `smp_parser.c` | ~260 | Agent Protocol, auto-connect |
-| `smp_peer.c` | ~220 | Peer server connection |
+### Configure Target
+`ash
+idf.py set-target esp32s3
+`
 
-**Total:** ~1575 lines (organized) vs ~1800 lines (monolithic)
+### Build Project
+`ash
+idf.py build
+`
+
+### Flash to Device
+`ash
+# Windows
+idf.py flash -p COM5
+
+# Linux/macOS
+idf.py flash -p /dev/ttyUSB0
+`
+
+### Monitor Serial Output
+`ash
+# Windows
+idf.py monitor -p COM5
+
+# Linux/macOS
+idf.py monitor -p /dev/ttyUSB0
+`
+
+### Combined Command
+`ash
+idf.py build flash monitor -p COM5
+`
 
 ---
 
-## Adding New Code
+## Configuration
 
-### Adding a New Function
+### WiFi Credentials
 
-1. **Decide which module** it belongs to
-2. **Add declaration** to appropriate header in `include/`
-3. **Add implementation** to the `.c` file
-4. **Include header** where needed
+Edit main/main.c:
+`c
+#define WIFI_SSID "your_network_name"
+#define WIFI_PASS "your_password"
+`
 
-Example: Adding a new crypto function
+### SimpleX Server
 
-```c
-// 1. In include/smp_crypto.h
-int my_new_crypto_function(const uint8_t *data, size_t len);
+Edit main/smp_network.c:
+`c
+#define SMP_SERVER_HOST "smp.example.com"
+#define SMP_SERVER_PORT 5223
+`
 
-// 2. In smp_crypto.c
-int my_new_crypto_function(const uint8_t *data, size_t len) {
-    // Implementation
+### ESP-IDF Configuration
+`ash
+idf.py menuconfig
+`
+
+Key settings:
+
+| Path | Setting | Recommended |
+|------|---------|-------------|
+| Serial flasher config | Flash size | 4 MB |
+| Component config → mbedTLS | TLS 1.3 | Enabled |
+| Component config → ESP-TLS | Certificate verification | Enabled |
+| Component config → FreeRTOS | Tick rate | 1000 Hz |
+
+---
+
+## Adding New Modules
+
+### Step 1: Create Source File
+
+Create main/smp_newmodule.c:
+`c
+#include "smp_newmodule.h"
+#include "esp_log.h"
+
+static const char *TAG = "SMP_NEWMODULE";
+
+int smp_newmodule_init(void) {
+    ESP_LOGI(TAG, "Initializing new module");
+    return 0;
 }
+`
 
-// 3. In other file that needs it
-#include "smp_crypto.h"
-my_new_crypto_function(data, len);
-```
+### Step 2: Create Header File
 
-### Adding a New Module
+Create include/smp_newmodule.h:
+`c
+#ifndef SMP_NEWMODULE_H
+#define SMP_NEWMODULE_H
 
-1. Create `smp_newmodule.c` in `main/`
-2. Create `include/smp_newmodule.h`
-3. Add to `CMakeLists.txt`:
+#include <stdint.h>
 
-```cmake
+int smp_newmodule_init(void);
+
+#endif // SMP_NEWMODULE_H
+`
+
+### Step 3: Update CMakeLists.txt
+
+Edit main/CMakeLists.txt:
+`cmake
 idf_component_register(
     SRCS 
         "main.c"
-        "smp_globals.c"
-        ...
-        "smp_newmodule.c"  # Add here
+        "smp_newmodule.c"   # Add new file
+        # ... other files
     INCLUDE_DIRS 
-        "include"
-    ...
+        "../include"
+    REQUIRES 
+        nvs_flash esp_wifi esp_netif mbedtls libsodium
 )
-```
+`
+
+### Step 4: Build and Test
+`ash
+idf.py build
+`
 
 ---
 
-## Debugging
+## Code Style
 
-### Common Issues (v0.1.14)
+### Naming Conventions
 
-#### tcp_connect Undefined
+| Element | Convention | Example |
+|---------|------------|---------|
+| Functions | snake_case with prefix | smp_ratchet_init() |
+| Variables | snake_case | chain_key |
+| Constants | UPPER_SNAKE_CASE | SMP_MAX_MSG_SIZE |
+| Types | snake_case with _t suffix | ratchet_state_t |
+| Macros | UPPER_SNAKE_CASE | ESP_LOGI() |
 
-**Cause:** Was renamed to `smp_tcp_connect()`
+### File Header
+`c
+/**
+ * @file smp_module.c
+ * @brief Brief description of module
+ *
+ * Detailed description of module functionality.
+ *
+ * @author Your Name
+ * @date 2026-01-24
+ */
+`
 
-**Fix:** Use `smp_tcp_connect()` everywhere
+### Function Documentation
+`c
+/**
+ * @brief Brief description
+ *
+ * Detailed description.
+ *
+ * @param param1 Description of parameter
+ * @param param2 Description of parameter
+ * @return Description of return value
+ */
+int smp_function(int param1, const uint8_t *param2);
+`
 
-#### DH Key Decode Fails
-
-**Cause:** Invitation URIs use Standard Base64 (`+/=`)
-
-**Fix:** Convert to Base64URL first:
-```c
-// Strip padding
-while (len > 0 && dh[len-1] == '=') dh[--len] = '\0';
-// Convert chars
-for (int i = 0; i < len; i++) {
-    if (dh[i] == '+') dh[i] = '-';
-    if (dh[i] == '/') dh[i] = '_';
+### Error Handling
+`c
+int smp_some_function(void) {
+    int ret;
+    
+    ret = some_operation();
+    if (ret != 0) {
+        ESP_LOGE(TAG, "Operation failed: %d", ret);
+        return ret;
+    }
+    
+    return 0;
 }
-```
-
-#### Peer Connection Fails
-
-**Check:**
-1. Host extracted correctly?
-2. Port is 5223?
-3. TLS handshake succeeds?
-4. SMP handshake succeeds?
-
-```c
-ESP_LOGI(TAG, "Peer: %s:%d", pending_peer.host, pending_peer.port);
-```
+`
 
 ---
 
 ## Testing
 
-### Peer Connection Test (v0.1.14)
+### Manual Testing
 
-1. Build and flash
-2. Copy Web Link from ESP32 output
-3. Scan with SimpleX App
-4. Watch ESP32 output:
+1. Build and flash the firmware
+2. Open serial monitor
+3. Observe connection and message flow
+4. Test with SimpleX mobile app
 
-**Expected:**
-```
-💬 MESSAGE for [Test]!
-📋 Agent: Version=7, Type='I'
-📡 Peer: smp15.simplex.im:5223
-🔑 DH Key extracted (32 bytes)
-🔌 Connecting to peer server...
-✅ Peer TLS OK
-✅ Peer Handshake OK
-📤 Sending AgentConfirmation...
-✅ Server: OK
-```
+### Crypto Verification
 
-### Module Isolation Test
+Use Python scripts to verify cryptographic output:
+`ash
+cd tools
+python3 verify_kdf.py
+python3 verify_encryption.py
+`
 
-Each module should compile independently:
+### Test with Local Server
+`ash
+# Run local SimpleX server (Docker)
+docker run -d -p 5223:5223 simplexchat/smp-server
 
-```bash
-# Test single module compilation
-idf.py build 2>&1 | grep -i error
-```
+# Configure ESP32 to connect to local server
+# Change SMP_SERVER_HOST to your local IP
+`
+
+---
+
+## Debugging
+
+### Log Levels
+`c
+// Set per-module log level
+esp_log_level_set("SMP_NETWORK", ESP_LOG_DEBUG);
+esp_log_level_set("SMP_RATCHET", ESP_LOG_VERBOSE);
+`
+
+| Level | Macro | Use Case |
+|-------|-------|----------|
+| Error | ESP_LOGE | Critical failures |
+| Warning | ESP_LOGW | Unexpected but handled |
+| Info | ESP_LOGI | Normal operation |
+| Debug | ESP_LOGD | Development info |
+| Verbose | ESP_LOGV | Detailed tracing |
+
+### Hex Dump
+`c
+void hex_dump(const char *label, const uint8_t *data, size_t len) {
+    ESP_LOGI(TAG, "%s (%d bytes):", label, (int)len);
+    for (size_t i = 0; i < len; i += 16) {
+        char line[64] = {0};
+        for (size_t j = i; j < i + 16 && j < len; j++) {
+            sprintf(line + strlen(line), "%02x ", data[j]);
+        }
+        ESP_LOGI(TAG, "  %04x: %s", (int)i, line);
+    }
+}
+`
+
+### GDB Debugging
+`ash
+# Terminal 1: Start OpenOCD
+idf.py openocd
+
+# Terminal 2: Start GDB
+idf.py gdb
+`
+
+---
+
+## Common Tasks
+
+### Update wolfSSL
+`ash
+cd components/wolfssl
+git pull origin master
+# Reconfigure if needed
+`
+
+### Clean Build
+`ash
+idf.py fullclean
+idf.py build
+`
+
+### Check Binary Size
+`ash
+idf.py size
+idf.py size-components
+`
+
+### Generate Documentation
+`ash
+# If using Doxygen
+doxygen Doxyfile
+`
 
 ---
 
 ## Git Workflow
 
-### .gitignore (NEW!)
+### Branch Naming
 
-```gitignore
-build/
-managed_components/
-sdkconfig.old
-sdkconfig.defaults.old
-*.pyc
-__pycache__/
-.vscode/
-```
+| Type | Format | Example |
+|------|--------|---------|
+| Feature | feat/description | feat/group-messaging |
+| Bugfix | fix/description | fix/kdf-order |
+| Documentation | docs/description | docs/crypto-guide |
 
-### Commit Style
+### Commit Messages
 
-```bash
-git commit -m "type(module): description"
-```
+Follow Conventional Commits:
+`
+type(scope): description
 
-Types: `feat`, `fix`, `refactor`, `docs`
+[optional body]
 
-Modules: `peer`, `parser`, `contacts`, `network`, `crypto`, `utils`
+[optional footer]
+`
 
-Examples:
-```bash
-git commit -m "feat(peer): add peer_connect function"
-git commit -m "fix(utils): convert Standard Base64 to URL"
-git commit -m "refactor(all): split into 8 modules"
-```
+Types: feat, fix, docs, refactor, test, chore
+
+### Example Workflow
+`ash
+# Create feature branch
+git checkout -b feat/new-feature
+
+# Make changes
+# ...
+
+# Commit
+git add .
+git commit -s -m "feat(module): add new feature"
+
+# Push
+git push origin feat/new-feature
+
+# Create pull request on GitHub
+`
+
+---
+
+## Release Process
+
+### Version Numbering
+
+Format: 0.X.Y-alpha
+
+| Component | Meaning |
+|-----------|---------|
+| 0 | Major version (pre-1.0) |
+| X | Feature version |
+| Y | Patch version |
+| alpha | Pre-release status |
+
+### Creating a Release
+
+1. Update CHANGELOG.md
+2. Update version in code
+3. Create release commit
+4. Tag release
+5. Push to GitHub
+`ash
+# Update changelog and code
+git add CHANGELOG.md main/main.c
+git commit -m "chore(release): v0.1.16-alpha"
+
+# Tag
+git tag v0.1.16-alpha
+
+# Push
+git push origin main
+git push origin v0.1.16-alpha
+`
+
+---
+
+## Troubleshooting Development Issues
+
+### Build Errors
+
+| Error | Solution |
+|-------|----------|
+| Component not found | Run idf.py reconfigure |
+| Header not found | Check include paths in CMakeLists.txt |
+| Undefined reference | Add source file to CMakeLists.txt |
+| Out of memory | Increase partition size or optimize code |
+
+### Flash Errors
+
+| Error | Solution |
+|-------|----------|
+| Failed to connect | Check USB cable and port |
+| Wrong chip | Run idf.py set-target esp32s3 |
+| Timeout | Hold BOOT button while flashing |
+
+### Runtime Errors
+
+| Error | Solution |
+|-------|----------|
+| Stack overflow | Increase task stack size |
+| Heap exhausted | Check for memory leaks |
+| Assertion failed | Check preconditions |
 
 ---
 
 ## Resources
 
-- [ESP-IDF Programming Guide](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/)
-- [libsodium Documentation](https://doc.libsodium.org/)
-- [SimpleX Protocol](https://github.com/simplex-chat/simplexmq)
-- [Architecture Guide](ARCHITECTURE.md)
+### Documentation
+
+- ESP-IDF: https://docs.espressif.com/projects/esp-idf/en/latest/
+- wolfSSL: https://www.wolfssl.com/documentation/
+- mbedTLS: https://tls.mbed.org/api/
+- SimpleX: https://github.com/simplex-chat/simplexmq
+
+### Community
+
+- GitHub Issues: https://github.com/cannatoshi/SimpleGo/issues
+- GitHub Discussions: https://github.com/cannatoshi/SimpleGo/discussions
 
 ---
 
-*Last updated: January 21, 2026 — v0.1.14-alpha*
+## License
+
+AGPL-3.0 - See [LICENSE](../LICENSE)
