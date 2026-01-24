@@ -1,18 +1,8 @@
 /**
  * SimpleGo - Native SimpleX SMP Client for ESP32
- * v0.1.13-alpha - AgentConfirmation (Connection Accept)
+ * v0.1.17-alpha - AgentConfirmation with Reply Queue
  * github.com/cannatoshi/SimpleGo
  * Autor: cannatoshi
- * 
- * Features:
- *   - TLS 1.3 with ALPN "smp/1"
- *   - Ed25519 signing (libsodium)
- *   - X25519 DH key exchange
- *   - SMP v6 protocol
- *   - NVS persistent contact storage
- *   - Multiple contacts over single connection
- *   - Agent Protocol parsing
- *   - Peer connection for confirmation
  */
 
 #include <string.h>
@@ -45,6 +35,8 @@
 #include "smp_contacts.h"
 #include "smp_parser.h"
 #include "smp_peer.h"
+#include "smp_x448.h"
+#include "smp_queue.h"
 
 static const char *TAG = "SMP";
 
@@ -111,7 +103,7 @@ static void smp_connect(void) {
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║  SimpleGo v0.1.13-alpha Connection!    ║");
+    ESP_LOGI(TAG, "║  SimpleGo v0.1.17-alpha Connection!    ║");
     ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
     ESP_LOGI(TAG, "");
 
@@ -275,6 +267,13 @@ static void smp_connect(void) {
         
         int contact_idx = find_contact_by_recipient_id(entity_id, entLen);
         contact_t *contact = (contact_idx >= 0) ? &contacts_db.contacts[contact_idx] : NULL;
+        // Check if this is our Reply Queue
+        bool is_reply_queue = (our_queue.rcv_id_len > 0 && 
+                               entLen == our_queue.rcv_id_len &&
+                               memcmp(entity_id, our_queue.rcv_id, entLen) == 0);
+        if (is_reply_queue) {
+            ESP_LOGI(TAG, "   📬 Message on REPLY QUEUE from peer!");
+        }
         
         // Parse command
         if (p + 1 < content_len && resp[p] == 'O' && resp[p+1] == 'K') {
@@ -319,6 +318,17 @@ static void smp_connect(void) {
                     if (decrypt_smp_message(contact, &resp[p], enc_len, msg_id, msgIdLen, plain, &plain_len)) {
                         ESP_LOGI(TAG, "   🔓 SMP-Level Decryption OK! (%d bytes)", plain_len);
                         
+                        // === DEBUG: HEX-DUMP der entschlüsselten Agent-Nachricht ===
+                        ESP_LOGI(TAG, "");
+                        ESP_LOGI(TAG, "   📦 RAW AGENT MESSAGE (first 60 bytes):");
+                        printf("   ");
+                        for (int i = 0; i < plain_len && i < 60; i++) {
+                            printf("%02x ", plain[i]);
+                        }
+                        printf("\n");
+                        ESP_LOGI(TAG, "   === END DEBUG ===");
+                        ESP_LOGI(TAG, "");
+
                         // Parse agent message
                         parse_agent_message(contact, plain, plain_len);
                         
@@ -404,7 +414,7 @@ cleanup:
 
 void app_main(void) {
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "SimpleGo v0.1.13-alpha starting...");
+    ESP_LOGI(TAG, "SimpleGo v0.1.17-alpha starting...");
     
     // Initialize libsodium
     if (sodium_init() < 0) {
@@ -413,6 +423,13 @@ void app_main(void) {
     }
     ESP_LOGI(TAG, "libsodium initialized");
 
+    // Initialize X448 crypto
+    if (!x448_init()) {
+        ESP_LOGE(TAG, "X448 init failed!");
+        return;
+    }
+    ESP_LOGI(TAG, "X448 initialized (wolfSSL)");
+    
     // Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
@@ -432,7 +449,28 @@ void app_main(void) {
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    // Connect to SMP server
+    // ========== Step 0: Create our Reply Queue ==========
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "══════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "  STEP 0: Creating our reply queue on %s:%d", SMP_HOST, SMP_PORT);
+    ESP_LOGI(TAG, "══════════════════════════════════════════════════════════════");
+    
+    if (!queue_create(SMP_HOST, SMP_PORT)) {
+        ESP_LOGE(TAG, "❌ Failed to create reply queue!");
+        ESP_LOGW(TAG, "⚠️  Continuing without reply queue...");
+    } else {
+        ESP_LOGI(TAG, "✅ Reply queue created!");
+        ESP_LOGI(TAG, "   sndId: %02x%02x%02x%02x... (%d bytes)",
+                 our_queue.snd_id[0], our_queue.snd_id[1],
+                 our_queue.snd_id[2], our_queue.snd_id[3],
+                 our_queue.snd_id_len);
+    }
+    
+    // Close queue connection - main connection will be separate
+    queue_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(500));
+
+    // Main SMP connection
     smp_connect();
 
     ESP_LOGI(TAG, "Done!");

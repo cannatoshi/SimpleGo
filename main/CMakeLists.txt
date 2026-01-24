@@ -1,0 +1,27 @@
+idf_component_register(
+    SRCS
+        "main.c"
+        "smp_contacts.c"
+        "smp_crypto.c"
+        "smp_globals.c"
+        "smp_network.c"
+        "smp_parser.c"
+        "smp_peer.c"
+        "smp_queue.c"
+        "smp_utils.c"
+        "smp_x448.c"
+        "smp_ratchet.c"
+        "smp_handshake.c"
+    INCLUDE_DIRS
+        "include"
+        "../components/kem"
+        "../components/common"
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_netif
+        mbedtls
+        libsodium
+        wolfssl_config
+        wolfssl__wolfssl
+)
