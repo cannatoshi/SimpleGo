@@ -5,7 +5,7 @@
 Secure messaging without smartphones.
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.29--alpha-green.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.15--alpha-green.svg)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/platform-ESP32--S3-orange.svg)](https://www.espressif.com/)
 
 ---
