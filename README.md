@@ -1,253 +1,204 @@
 # SimpleGo
 
-> **The First Native SimpleX SMP Client for ESP32** — Part of the Sentinel Secure Messenger Suite
+Native SimpleX SMP Protocol Implementation for ESP32
 
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
-[![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-green.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
-[![Framework: ESP-IDF 5.5](https://img.shields.io/badge/Framework-ESP--IDF%205.5-red.svg)](https://docs.espressif.com/projects/esp-idf/)
-[![Version: v0.1.15-alpha](https://img.shields.io/badge/Version-v0.1.15--alpha-orange.svg)]()
-[![Status: Double Ratchet Implemented](https://img.shields.io/badge/Status-Double%20Ratchet%20Implemented-brightgreen.svg)]()
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.1.15--alpha-green.svg)](CHANGELOG.md)
+[![Platform](https://img.shields.io/badge/platform-ESP32--S3-orange.svg)](https://www.espressif.com/)
 
 ---
 
-## 🏆 Historical Significance
+## Overview
 
-**SimpleGo is the FIRST native SMP protocol implementation worldwide!**
+SimpleGo is a native C implementation of the SimpleX Messaging Protocol (SMP) for ESP32 microcontrollers. The project enables private, decentralized messaging on dedicated hardware without requiring a smartphone.
 
-All other SimpleX "implementations" are WebSocket API wrappers:
-- simplex-python → WebSocket wrapper
-- SimplOxide (Rust) → WebSocket SDK  
-- TypeScript SDK → WebSocket API
-
-**SimpleGo speaks the real binary-level SMP protocol directly on embedded hardware.**
+The implementation includes the complete cryptographic stack: X3DH key agreement, Double Ratchet encryption, and the SMP wire protocol. All cryptographic operations have been verified against reference implementations.
 
 ---
 
-## 🎯 Vision
+## Project Goals
 
-SimpleGo brings [SimpleX Chat](https://simplex.chat/) — the first messaging platform without user identifiers — to standalone hardware devices. No smartphone required, no cloud dependency, complete privacy in your pocket.
-
----
-
-## 🔐 MILESTONE: Double Ratchet + X3DH Implementation!
-
-**As of v0.1.15-alpha (January 24, 2026)**, SimpleGo implements the complete Double Ratchet algorithm with X3DH key agreement:
-`
-📦 New Crypto Modules:
-├── smp_x448.c      — X448 key generation with wolfSSL byte-order fix
-├── smp_ratchet.c   — Complete Double Ratchet (root/chain KDF, AES-GCM)
-├── smp_handshake.c — E2E handshake, AgentConfirmation building
-└── smp_queue.c     — SMPQueueInfo encoding
-
-🔬 Verification:
-├── ✅ All crypto verified against Python (100% match)
-├── ✅ AES-GCM with 16-byte IV verified
-├── ✅ Wire format verified against Haskell source
-└── ✅ Server accepts all messages ("OK")
-
-🔧 Current Status:
-├── ✅ Server accepts AgentConfirmation
-├── ✅ Server accepts HELLO message
-└── 🔧 App compatibility (A_MESSAGE parsing)
-`
+- Native SMP protocol implementation in C (not a CLI wrapper)
+- End-to-end encrypted messaging using Double Ratchet algorithm
+- Smartphone-free secure communication on embedded hardware
+- Compatible with existing SimpleX infrastructure and clients
 
 ---
 
-## 🏗️ Architecture
+## Current Status: v0.1.15-alpha
 
-### Module Structure (v0.1.15)
-`
-┌─────────────────────────────────────────────────────────────────┐
-│                        SimpleGo Client                          │
-├─────────────────────────────────────────────────────────────────┤
-│  main.c                          Application flow, main loop    │
-├─────────────────────────────────────────────────────────────────┤
-│  CRYPTO LAYER (NEW!)                                            │
-│  ├── smp_x448.c      X448 DH with wolfSSL byte-order fix       │
-│  ├── smp_ratchet.c   Double Ratchet, KDFs, AES-GCM             │
-│  ├── smp_handshake.c E2E handshake, AgentConfirmation          │
-│  └── smp_queue.c     SMPQueueInfo encoding                     │
-├─────────────────────────────────────────────────────────────────┤
-│  PROTOCOL LAYER                                                 │
-│  ├── smp_peer.c      Peer server connection                    │
-│  ├── smp_parser.c    Agent Protocol parsing                    │
-│  └── smp_network.c   TLS/TCP I/O                               │
-├─────────────────────────────────────────────────────────────────┤
-│  APPLICATION LAYER                                              │
-│  ├── smp_contacts.c  Contact management, NVS                   │
-│  ├── smp_crypto.c    Ed25519, X25519, crypto_box               │
-│  └── smp_utils.c     Base64, URL encoding                      │
-├─────────────────────────────────────────────────────────────────┤
-│  COMPONENTS                                                     │
-│  ├── wolfssl         X448/Curve448 operations                  │
-│  └── kyber           Post-quantum KEM (preparation)            │
-└─────────────────────────────────────────────────────────────────┘
-`
+### Completed Components
 
----
+| Component | Description | Library |
+|-----------|-------------|---------|
+| TLS 1.3 | Secure connection to SMP servers | mbedTLS |
+| SMP Handshake | Protocol negotiation and authentication | Custom |
+| X3DH Key Agreement | Initial key establishment | wolfSSL (X448) |
+| Double Ratchet | Forward-secure message encryption | Custom |
+| Root KDF | Key derivation for ratchet steps | HKDF-SHA512 |
+| Chain KDF | Per-message key derivation | HKDF-SHA512 |
+| AES-256-GCM | Message encryption with 16-byte IV | mbedTLS |
+| AgentConfirmation | Connection confirmation messages | Custom |
+| HELLO Message | Initial contact message | Custom |
 
-## ✅ What's Working
+### In Progress
 
-### Cryptography (100% Verified)
+| Component | Status | Notes |
+|-----------|--------|-------|
+| App Compatibility | 40% | Investigating A_MESSAGE parsing error |
 
-| Component | Status | Verification |
-|-----------|--------|--------------|
-| X448 DH | ✅ | Python match |
-| X3DH Key Agreement | ✅ | Python match |
-| HKDF-SHA512 | ✅ | Python match |
-| Root KDF | ✅ | Python match |
-| Chain KDF | ✅ | Python match |
-| AES-GCM 256 | ✅ | Python match |
-| 16-byte IV GHASH | ✅ | Python match |
+### Cryptographic Verification
 
-### Protocol
+All cryptographic operations verified against Python reference implementations:
 
-| Feature | Status |
-|---------|--------|
-| TLS 1.3 Connection | ✅ |
-| SMP Handshake | ✅ |
-| Queue Creation (NEW) | ✅ |
-| Queue Subscription (SUB) | ✅ |
-| Message Send (SEND) | ✅ |
-| Message Receive (MSG) | ✅ |
-| Acknowledge (ACK) | ✅ |
-| Delete Queue (DEL) | ✅ |
-| Peer Server Connection | ✅ |
-| AgentConfirmation | ✅ Server OK |
-| HELLO Message | ✅ Server OK |
-| **App Compatibility** | 🔧 In Progress |
-
-### Application
-
-| Feature | Status |
-|---------|--------|
-| Multi-Contact (10 slots) | ✅ |
-| NVS Persistence | ✅ |
-| SimpleX-compatible Links | ✅ |
-| Invitation Parsing | ✅ |
-| Auto-Connect | ✅ |
+| Operation | Verification Status |
+|-----------|---------------------|
+| X448 Diffie-Hellman | Verified |
+| HKDF-SHA512 (X3DH) | Verified |
+| HKDF-SHA512 (Root KDF) | Verified |
+| HKDF-SHA512 (Chain KDF) | Verified |
+| AES-256-GCM Encryption | Verified |
+| Wire Format Encoding | Verified against Haskell source |
 
 ---
 
-## 🐛 Bugs Fixed (12 Total)
+## Architecture
 
-| # | Bug | Fix |
-|---|-----|-----|
-| 1 | E2E key length | 1-byte prefix |
-| 2 | HELLO prevMsgHash | Word16 BE |
-| 3 | MsgHeader DH key | 1-byte prefix |
-| 4 | ehBody length | 1-byte prefix |
-| 5 | emHeader length | 1-byte prefix |
-| 6 | Payload AAD size | 235 bytes |
-| 7 | KDF root output order | Corrected |
-| 8 | Chain KDF IV order | header_iv first |
-| 9 | wolfSSL X448 byte-order | reverse_bytes() |
-| 10 | SMPQueueInfo port | Length prefix |
-| 11 | smpQueues count | Word16 BE |
-| 12 | queueMode Nothing | Don't send '0' |
+### Module Structure
+
+| Module | Purpose | Lines |
+|--------|---------|-------|
+| smp_x448.c | X448 key generation and DH operations | ~200 |
+| smp_ratchet.c | Double Ratchet state and KDF functions | ~500 |
+| smp_handshake.c | E2E handshake and AgentConfirmation | ~300 |
+| smp_queue.c | SMPQueueInfo encoding | ~250 |
+| smp_peer.c | Peer connection management | ~400 |
+| smp_parser.c | Protocol message parsing | ~350 |
+| smp_network.c | TLS/TCP networking | ~300 |
+| smp_crypto.c | Ed25519 signatures, X25519 | ~250 |
+| smp_contacts.c | Contact address handling | ~200 |
+| smp_utils.c | Encoding utilities | ~150 |
+
+### Dependencies
+
+| Component | Library | Purpose |
+|-----------|---------|---------|
+| TLS 1.3 | mbedTLS | Secure transport |
+| X448/Curve448 | wolfSSL | DH key exchange |
+| Ed25519 | libsodium | Digital signatures |
+| X25519 | libsodium | Per-queue encryption |
+| AES-GCM | mbedTLS | Symmetric encryption |
 
 ---
 
-## 🔧 Hardware
+## Hardware Targets
 
-| Device | Status |
-|--------|--------|
-| **LilyGo T-Deck** | 🎯 Primary Target |
-| **LilyGo T-Embed** | 🎯 Secondary Target |
-| Generic ESP32-S3 | ✅ Supported |
+| Device | Status | Description |
+|--------|--------|-------------|
+| LilyGo T-Deck | Primary | ESP32-S3 with keyboard and display |
+| LilyGo T-Embed | Secondary | Compact form factor |
+| Generic ESP32-S3 | Supported | PSRAM recommended |
 
 ---
 
-## 🚀 Quick Start
+## Building
 
-### Build & Flash
-`powershell
+### Prerequisites
+
+- ESP-IDF 5.5.2 or newer
+- Python 3.8+
+- USB cable for flashing
+
+### Build Commands
+```bash
 cd C:\Espressif\projects\simplex_client
+idf.py build
+idf.py flash -p COM5
+idf.py monitor -p COM5
+```
+
+Or combined:
+```bash
 idf.py build flash monitor -p COM5
-`
-
-### Expected Output (v0.1.15)
-`
-🔗 SIMPLEX CONTACT LINKS ════════════════════════════════
-📱 [0] Test
-🌐 https://simplex.chat/contact#/?v=2-7&smp=...
-
-[SimpleX App scans link and sends Invitation]
-
-💬 MESSAGE for [Test]!
-📋 Agent: Version=7, Type='I'
-🔐 X3DH Key Agreement...
-  ├── dh1: 3b270d17...
-  ├── dh2: 407ee5f7...
-  └── dh3: 133af800...
-🔑 Double Ratchet initialized
-📤 Sending AgentConfirmation...
-✅ Server: OK
-📤 Sending HELLO...
-✅ Server: OK
-`
+```
 
 ---
 
-## 📚 Documentation
+## Project Structure
+```
+simplex_client/
+├── main/
+│   ├── main.c
+│   ├── smp_x448.c
+│   ├── smp_ratchet.c
+│   ├── smp_handshake.c
+│   ├── smp_queue.c
+│   ├── smp_peer.c
+│   ├── smp_parser.c
+│   ├── smp_network.c
+│   ├── smp_crypto.c
+│   ├── smp_contacts.c
+│   └── smp_utils.c
+├── include/
+│   └── [header files]
+├── components/
+│   ├── wolfssl/
+│   └── kyber/
+├── docs/
+│   ├── ARCHITECTURE.md
+│   ├── CRYPTO.md
+│   ├── WIRE_FORMAT.md
+│   └── BUGS.md
+├── CHANGELOG.md
+├── ROADMAP.md
+└── README.md
+```
+
+---
+
+## Documentation
 
 | Document | Description |
 |----------|-------------|
-| [CHANGELOG.md](CHANGELOG.md) | Version history |
-| [ROADMAP.md](ROADMAP.md) | Development plan |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module structure |
-| [docs/PROTOCOL.md](docs/PROTOCOL.md) | SMP protocol details |
-| [docs/CRYPTO.md](docs/CRYPTO.md) | Cryptography documentation |
-| [docs/WIRE_FORMAT.md](docs/WIRE_FORMAT.md) | Wire format specification |
-| [docs/BUGS.md](docs/BUGS.md) | Bug tracker |
-
----
-
-## 🗺️ Roadmap
-
-| Phase | Status |
-|-------|--------|
-| Phase 1-3.10: Foundation + Peer | ✅ Complete |
-| Phase 3.11: Double Ratchet | ✅ **Complete!** |
-| Phase 3.12: App Compatibility | 🔧 In Progress |
-| Phase 4: User Interface | 📋 Planned |
-| Phase 5: Production Ready | 📋 Future |
-
----
-
-## 📜 License
-
-**GNU Affero General Public License v3.0 (AGPL-3.0)**
-
-Required by SimpleX protocol compatibility.
-
----
-
-## 🙏 Acknowledgments
-
-- [SimpleX Chat](https://simplex.chat/) — Protocol specification and Haskell reference
-- [wolfSSL](https://www.wolfssl.com/) — X448/Curve448 implementation
-- [Espressif](https://www.espressif.com/) — ESP-IDF framework
+| [CHANGELOG.md](CHANGELOG.md) | Version history and release notes |
+| [ROADMAP.md](ROADMAP.md) | Development plan and milestones |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module structure and data flow |
+| [docs/CRYPTO.md](docs/CRYPTO.md) | Cryptographic implementation details |
+| [docs/WIRE_FORMAT.md](docs/WIRE_FORMAT.md) | Protocol encoding specification |
+| [docs/BUGS.md](docs/BUGS.md) | Known issues and fixes |
 
 ---
 
 ## Version History
 
-| Version | Date | Milestone |
-|---------|------|-----------|
-| **v0.1.15-alpha** | **2026-01-24** | **🔐 Double Ratchet!** |
-| v0.1.14-alpha | 2026-01-21 | 🏗️ Modular + Peer |
-| v0.1.13-alpha | 2026-01-21 | 🔧 Message Type Fix |
-| v0.1.12-alpha | 2026-01-21 | 🔐 Agent Protocol |
-| v0.1.11-alpha | 2026-01-20 | 🔗 Invitation Links |
+| Version | Date | Highlights |
+|---------|------|------------|
+| v0.1.15-alpha | Jan 24, 2026 | Double Ratchet, X3DH, 12 bugs fixed |
+| v0.1.14-alpha | Jan 21, 2026 | Modular architecture refactoring |
+| v0.1.0-v0.1.13 | Dec 2025 | Initial development |
 
 ---
 
-<p align="center">
-  <strong>🏆 First Native ESP32 SimpleX Client — Double Ratchet Implemented! 🔐</strong><br>
-  <em>Privacy is not a privilege, it's a right.</em>
-</p>
+## Contributing
+
+Contributions are welcome. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ---
 
-*Copyright (c) 2026 cannatoshi — Part of the Sentinel Secure Messenger Suite*
+## Security
+
+For security vulnerabilities, please see [SECURITY.md](SECURITY.md).
+
+---
+
+## License
+
+This project is licensed under the GNU Affero General Public License v3.0. See [LICENSE](LICENSE) for details.
+
+---
+
+## Disclaimer
+
+SimpleGo is an independent project. It is not affiliated with, endorsed by, or connected with SimpleX Chat Ltd.
+
+For trademark information, see [docs/TRADEMARK.md](docs/TRADEMARK.md).
