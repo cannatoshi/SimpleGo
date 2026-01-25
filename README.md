@@ -47,7 +47,8 @@ SimpleGo takes a fundamentally different approach: minimize the trusted computin
 | Aspect | Smartphone | SimpleGo Device |
 |--------|------------|-----------------|
 | Lines of Code | ~50,000,000 | ~50,000 |
-| Baseband Processor | Yes (closed-source) | None |
+| Baseband Processor | Yes (closed-source, DMA access) | None |
+| Cellular Connectivity | Integrated, always-on baseband | Isolated module, data-only (Tier 2+) |
 | Background Services | Hundreds | One |
 | Telemetry | Built-in | None |
 | Key Storage | Software/TEE | Hardware Secure Element |
@@ -56,7 +57,9 @@ SimpleGo takes a fundamentally different approach: minimize the trusted computin
 | Cost | $500+ | $50-200 (Tier 1) |
 | Disposability | Impractical | Designed for it |
 
-This approach eliminates entire categories of attacks. No browser means no browser exploits. No app installation means no malware vector. No baseband means no cellular-based attacks.
+**Regarding cellular connectivity:** Tier 2 and Tier 3 devices can include 4G LTE or 5G modules for mobile data connectivity. Unlike smartphone baseband processors, these modules are architecturally isolated from the main processor with no direct memory access. They function purely as data modems with communication occurring through a defined serial interface. The cellular module can be physically disabled or removed without affecting device operation over WiFi.
+
+This approach eliminates entire categories of attacks. No browser means no browser exploits. No app installation means no malware vector. No baseband with DMA means no cellular-based memory attacks.
 
 ---
 
@@ -130,7 +133,7 @@ Enhanced security for users facing sophisticated threats.
 | Secure Elements | Dual-vendor (ATECC608B + OPTIGA Trust M) |
 | Security Features | TrustZone isolation, DPA-resistant crypto, PCB tamper mesh |
 | Tamper Detection | Light sensor, battery-backed SRAM |
-| Connectivity | WiFi 6, LoRa (optional) |
+| Connectivity | WiFi 6, LTE Cat-M/NB-IoT (isolated), LoRa |
 | Enclosure | CNC aluminum with security screws |
 | Target Price | EUR 400-600 |
 | Threat Model | Protection against skilled adversaries with equipment |
@@ -147,7 +150,7 @@ Maximum security for high-value targets facing state-level threats.
 | Secure Elements | Triple-vendor (ATECC608B + OPTIGA Trust M + NXP SE050) |
 | Tamper Supervisor | Maxim DS3645 (8 inputs, sub-microsecond zeroization) |
 | Security Features | Full environmental monitoring, active tamper mesh wrap |
-| Connectivity | WiFi, LTE-M (isolated), LoRa, Satellite (optional) |
+| Connectivity | WiFi 6, 4G LTE / 5G NR (isolated), LoRa, Satellite (optional) |
 | Enclosure | Potted CNC aluminum (aluminum-filled epoxy) |
 | Target Price | EUR 1000+ |
 | Threat Model | Protection against state-level adversaries with physical access |
