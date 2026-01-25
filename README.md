@@ -1,225 +1,392 @@
 # SimpleGo
 
-> **The First Native SimpleX SMP Client for ESP32 — Ready to Send Confirmation!** — Part of the Sentinel Secure Messenger Suite
+**Native SimpleX Protocol Implementation for Dedicated Secure Communication Devices**
 
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
-[![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-green.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
-[![Framework: ESP-IDF 5.5](https://img.shields.io/badge/Framework-ESP--IDF%205.5-red.svg)](https://docs.espressif.com/projects/esp-idf/)
-[![Version: v0.1.13-alpha](https://img.shields.io/badge/Version-v0.1.13--alpha-orange.svg)]()
-[![Status: Peer Queue Parsed](https://img.shields.io/badge/Status-Peer%20Queue%20Parsed-brightgreen.svg)]()
-
----
-
-## 🎯 Vision
-
-SimpleGo brings [SimpleX Chat](https://simplex.chat/) — the first messaging platform without user identifiers — to standalone hardware devices. No smartphone required, no cloud dependency, complete privacy in your pocket.
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
+[![Hardware: CERN-OHL-S-2.0](https://img.shields.io/badge/Hardware-CERN--OHL--S--2.0-green.svg)](docs/hardware/LICENSE)
+[![Version](https://img.shields.io/badge/version-0.2.0--alpha-orange.svg)](CHANGELOG.md)
+[![Platform](https://img.shields.io/badge/platform-Multi--MCU-lightgrey.svg)](#supported-platforms)
 
 ---
 
-## 🔧 MILESTONE: Peer Queue Parsing!
+## Overview
 
-**As of v0.1.13-alpha (January 21, 2026)**, SimpleGo correctly parses AgentInvitation and extracts peer server info!
+SimpleGo is the first native implementation of the [SimpleX Messaging Protocol](https://github.com/simplex-chat/simplexmq) (SMP) outside the official Haskell codebase. Written in C for embedded systems, it enables secure end-to-end encrypted communication on dedicated hardware devices that operate independently of smartphones.
+
+The project encompasses three components:
+
+1. **Protocol Stack** — Complete SMP implementation including Double Ratchet encryption
+2. **Hardware Abstraction Layer** — Unified interface supporting multiple hardware platforms
+3. **Hardware Designs** — Open-source schematics for three security tiers
+
+This is not another messaging application. It is an ecosystem for building purpose-built secure communication devices.
+
+---
+
+## Why Dedicated Hardware
+
+Modern smartphones present fundamental security challenges that cannot be fully mitigated through software alone.
+
+### The Smartphone Problem
+
+| Concern | Smartphone Reality |
+|---------|-------------------|
+| Attack Surface | Approximately 50 million lines of code in Android/iOS |
+| Baseband Processor | Closed-source firmware with direct memory access, always active |
+| Background Processes | Hundreds of services running, many with network access |
+| Telemetry | Continuous data collection by OS vendor and applications |
+| Update Control | Vendor-controlled, can introduce vulnerabilities or backdoors |
+| Physical Security | No tamper detection, keys stored in software or TEE |
+
+Even hardened mobile operating systems such as GrapheneOS, while significantly improving the security posture, cannot address these architectural limitations. GrapheneOS provides excellent sandboxing, verified boot, and hardened memory allocation. However, it still runs on hardware with a closed-source baseband processor, and the trusted computing base remains large by necessity.
+
+### The Dedicated Hardware Approach
+
+SimpleGo takes a fundamentally different approach: minimize the trusted computing base.
+
+| Aspect | Smartphone | SimpleGo Device |
+|--------|------------|-----------------|
+| Lines of Code | ~50,000,000 | ~50,000 |
+| Baseband Processor | Yes (closed-source) | None |
+| Background Services | Hundreds | One |
+| Telemetry | Built-in | None |
+| Key Storage | Software/TEE | Hardware Secure Element |
+| Tamper Detection | None | Active monitoring (Tier 2+) |
+| Physical Profile | Obviously a phone | Appears as generic electronics |
+| Cost | $500+ | $50-200 (Tier 1) |
+| Disposability | Impractical | Designed for it |
+
+This approach eliminates entire categories of attacks. No browser means no browser exploits. No app installation means no malware vector. No baseband means no cellular-based attacks.
+
+---
+
+## Project Status
+
+SimpleGo is under active development. The protocol implementation has reached a functional state with server acceptance confirmed.
+
+### Protocol Implementation
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| TLS 1.3 Transport | Complete | ALPN "smp/1" negotiation |
+| SMP Handshake | Complete | Version negotiation verified |
+| Queue Operations | Complete | CREATE, SUBSCRIBE, SEND, ACK |
+| X3DH Key Agreement | Complete | Cryptographically verified |
+| Double Ratchet | Complete | Forward secrecy implemented |
+| AES-256-GCM Encryption | Complete | 16-byte IV, verified against reference |
+| Wire Format Encoding | Complete | Matches Haskell implementation |
+| Server Acceptance | Complete | Servers respond with OK |
+| Application Compatibility | In Progress | Message parsing under investigation |
+
+### Hardware Abstraction Layer
+
+| Component | Status |
+|-----------|--------|
+| HAL Interface Definitions | Complete |
+| Display Abstraction | Complete |
+| Input Abstraction | Complete |
+| Storage Abstraction | Complete |
+| Network Abstraction | Complete |
+| T-Deck Plus Implementation | In Progress |
+| T-Embed CC1101 Implementation | Planned |
+
+### Cryptographic Verification
+
+All cryptographic operations have been verified byte-for-byte against Python reference implementations:
+
+- X448 Diffie-Hellman key exchange
+- HKDF-SHA512 key derivation (X3DH, Root KDF, Chain KDF)
+- AES-256-GCM authenticated encryption
+- Wire format encoding against Haskell source analysis
+
+---
+
+## Hardware Tiers
+
+SimpleGo defines three hardware security tiers to address different threat models and budgets.
+
+### Tier 1: DIY
+
+Entry-level configuration for developers, makers, and privacy enthusiasts.
+
+| Specification | Value |
+|---------------|-------|
+| Microcontroller | ESP32-S3 (Dual Xtensa LX7, 240 MHz) |
+| Secure Element | ATECC608B (single) |
+| Security Features | Secure Boot, Flash Encryption, eFuse Protection |
+| Connectivity | WiFi 4, Bluetooth 5.0 |
+| Target Price | EUR 100-200 |
+| Threat Model | Protection against casual adversaries |
+
+Suitable for: Personal use, development, learning, privacy-conscious individuals
+
+### Tier 2: Secure
+
+Enhanced security for users facing sophisticated threats.
+
+| Specification | Value |
+|---------------|-------|
+| Microcontroller | STM32U585 (Cortex-M33 with TrustZone) |
+| Secure Elements | Dual-vendor (ATECC608B + OPTIGA Trust M) |
+| Security Features | TrustZone isolation, DPA-resistant crypto, PCB tamper mesh |
+| Tamper Detection | Light sensor, battery-backed SRAM |
+| Connectivity | WiFi 6, LoRa (optional) |
+| Enclosure | CNC aluminum with security screws |
+| Target Price | EUR 400-600 |
+| Threat Model | Protection against skilled adversaries with equipment |
+
+Suitable for: Journalists, activists, researchers, legal professionals
+
+### Tier 3: Vault
+
+Maximum security for high-value targets facing state-level threats.
+
+| Specification | Value |
+|---------------|-------|
+| Microcontroller | STM32U5A9 (Cortex-M33, 4MB Flash) |
+| Secure Elements | Triple-vendor (ATECC608B + OPTIGA Trust M + NXP SE050) |
+| Tamper Supervisor | Maxim DS3645 (8 inputs, sub-microsecond zeroization) |
+| Security Features | Full environmental monitoring, active tamper mesh wrap |
+| Connectivity | WiFi, LTE-M (isolated), LoRa, Satellite (optional) |
+| Enclosure | Potted CNC aluminum (aluminum-filled epoxy) |
+| Target Price | EUR 1000+ |
+| Threat Model | Protection against state-level adversaries with physical access |
+
+Suitable for: Enterprise, government, high-risk individuals
+
+For detailed specifications, see [Hardware Tiers Documentation](docs/hardware/HARDWARE_TIERS.md).
+
+---
+
+## Architecture
+
+SimpleGo employs a layered architecture with strict separation between platform-independent and platform-specific code.
 
 ```
-💬 MESSAGE for [Test]!
-🔓 Layer 3 Decrypted: 16106 bytes
-🔓 Layer 5 Decrypted: 847 bytes
-📋 Agent: Version=7, Type='I' (Invitation)
-📡 Peer Server: smp15.simplex.im:5223
-📮 Queue ID: ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK
-✅ READY TO SEND CONFIRMATION
++-----------------------------------------------------------------------+
+|                         APPLICATION LAYER                             |
+|                    User Interface, Screen Management                  |
++-----------------------------------------------------------------------+
+|                          PROTOCOL LAYER                               |
+|        SimpleX SMP, Agent Protocol, Double Ratchet, X3DH              |
++-----------------------------------------------------------------------+
+|                   HARDWARE ABSTRACTION LAYER                          |
+|      hal_display | hal_input | hal_network | hal_storage | hal_audio  |
++-----------------------------------------------------------------------+
+|                      DEVICE IMPLEMENTATIONS                           |
++---------------+----------------+----------------+----------------------+
+|  T-Deck Plus  |  T-Embed CC1101|  SimpleGo DIY  |   Raspberry Pi      |
+|  ESP32-S3     |  ESP32-S3      |  STM32 + SE    |   Linux (Testing)   |
++---------------+----------------+----------------+----------------------+
 ```
 
-**ESP32 knows where to send the confirmation response!** 🎉
+The Protocol Layer and Application Layer are identical across all devices. Only the HAL implementations differ, enabling a single codebase to support diverse hardware platforms.
+
+### Directory Structure
+
+```
+simplex_client/
+├── main/
+│   ├── core/                 # Protocol implementation (device-independent)
+│   ├── hal/                  # HAL interface headers
+│   ├── include/              # Protocol headers
+│   └── ui/                   # User interface (device-independent)
+│
+├── devices/
+│   ├── t_deck_plus/          # LilyGo T-Deck Plus implementation
+│   ├── t_embed_cc1101/       # LilyGo T-Embed CC1101 implementation
+│   ├── simplego_diy/         # Custom SimpleGo hardware
+│   └── template/             # Template for new devices
+│
+├── components/               # External libraries
+├── docs/                     # Documentation
+│   └── hardware/             # Hardware design documentation
+└── tools/                    # Build and provisioning tools
+```
+
+For complete architecture documentation, see [Architecture](docs/ARCHITECTURE.md).
 
 ---
 
-## 🎯 What is SimpleGo?
+## Supported Platforms
 
-SimpleGo is a **groundbreaking open-source project** that implements a native [SimpleX Messaging Protocol (SMP)](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md) client for ESP32 microcontrollers. This is the **first known implementation** of the SimpleX protocol outside of the official Haskell codebase.
+### Current Development Targets
 
-**Why is this significant?**
+| Device | MCU | Display | Input | Status |
+|--------|-----|---------|-------|--------|
+| LilyGo T-Deck Plus | ESP32-S3 | 320x240 LCD | Physical keyboard, trackball, touch | Primary development platform |
+| LilyGo T-Embed CC1101 | ESP32-S3 | 170x320 LCD | Rotary encoder, buttons | Secondary target |
+| Raspberry Pi | ARM Linux | SDL2 window | USB keyboard/mouse | Desktop testing |
 
-All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core library via FFI. SimpleGo implements the protocol **from scratch in C**, enabling:
+### Planned Support
 
-- 📱 **Smartphone-free messaging** — No dependency on mobile devices
-- 🔒 **Hardware-level privacy** — Dedicated secure communication device
-- 🌐 **Offline-first design** — Store-and-forward with local encryption
-- 🔧 **Full protocol control** — No black-box dependencies
+| Device | Notes |
+|--------|-------|
+| SimpleGo DIY | Custom hardware with Secure Element |
+| SimpleGo Secure | Tier 2 reference design |
+| SimpleGo Vault | Tier 3 reference design |
 
----
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                       SimpleGo Client                           │
-├─────────────────────────────────────────────────────────────────┤
-│  UI Layer                                       📋 PLANNED      │
-│  └── OLED/LCD Display (LVGL planned)                            │
-├─────────────────────────────────────────────────────────────────┤
-│  Connection Handler                             🔧 IN PROGRESS  │
-│  ├── peer_queue_t Structure                     ✅ NEW!         │
-│  ├── Peer Server Extraction                     ✅ NEW!         │
-│  ├── Queue ID Extraction                        ✅ NEW!         │
-│  ├── DH Key Extraction                          🔧 In Progress  │
-│  └── CONF Response Builder                      ⏳ Next         │
-├─────────────────────────────────────────────────────────────────┤
-│  Agent Protocol Layer                           ✅ COMPLETE     │
-│  ├── Message Type Fix ('_' + 3)                 ✅ FIXED!       │
-│  ├── AgentInvitation Parser (Type 'I')          ✅ Working      │
-│  └── url_decode_inplace()                       ✅ NEW!         │
-├─────────────────────────────────────────────────────────────────┤
-│  Message Decryption Stack                       ✅ COMPLETE     │
-│  ├── Layer 3: SMP E2E (server DH)                               │
-│  ├── Layer 5: Client DH (contact DH)                            │
-│  └── Layer 6: Agent Protocol Parsing                            │
-├─────────────────────────────────────────────────────────────────┤
-│  Contact Management                             ✅ COMPLETE     │
-│  ├── Multi-Contact Database (10 slots)                          │
-│  ├── NVS Persistence                                            │
-│  └── Message Routing                                            │
-├─────────────────────────────────────────────────────────────────┤
-│  Crypto Engine                                  ✅ COMPLETE     │
-│  ├── Ed25519 + X25519 (libsodium)                               │
-│  └── crypto_box (XSalsa20-Poly1305)                             │
-├─────────────────────────────────────────────────────────────────┤
-│  SMP Protocol Layer                             ✅ COMPLETE     │
-│  ├── NEW, SUB, SEND, MSG, ACK, DEL                              │
-│  └── TLS 1.3 + 16KB Block Framing                               │
-└─────────────────────────────────────────────────────────────────┘
-```
+Adding support for new hardware requires implementing the HAL interfaces. See [Adding New Devices](docs/ADDING_NEW_DEVICE.md).
 
 ---
 
-## ✅ What's Working
+## Building
 
-### Message Type Parsing (FIXED in v0.1.13!)
+### Prerequisites
 
-```
-Message Format After DH Decryption:
+- ESP-IDF 5.5.2 or later
+- Python 3.8 or later
+- CMake 3.16 or later
 
-2a a5 5f 00 07 49 ...
-*  ?  _  ver   I
-0  1  2  3  4  5
-
-✅ Find '_' delimiter (position 2)
-✅ Read version at +1,+2 (Big Endian)
-✅ Read type at +3 ('C', 'I', 'M', 'R')
-```
-
-### Peer Queue Extraction
-
-| Data | Status | Example |
-|------|--------|---------|
-| Peer Server | ✅ Extracted | `smp15.simplex.im` |
-| Port | ✅ Extracted | `5223` |
-| Queue ID | ✅ Extracted | `ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK` |
-| Key Hash | ✅ Extracted | (32 bytes) |
-| DH Public Key | 🔧 In Progress | (multi-encoded URL) |
-
-### Agent Message Types
-
-| Type | Name | Status |
-|------|------|--------|
-| `'I'` | AgentInvitation | ✅ Parsed |
-| `'C'` | AgentConfirmation | ⏳ Next (to send) |
-| `'M'` | AgentMsgEnvelope | 📋 Planned |
-| `'R'` | AgentRatchetKey | 📋 Planned |
-
-### Features Summary
-
-| Feature | Status |
-|---------|--------|
-| **Message Type Fix** | ✅ **FIXED!** |
-| **Peer Server Extraction** | ✅ **NEW!** |
-| **Queue ID Extraction** | ✅ **NEW!** |
-| **url_decode_inplace()** | ✅ **NEW!** |
-| Agent Protocol (Layer 6) | ✅ Complete |
-| Client DH Decrypt (Layer 5) | ✅ Complete |
-| SMP E2E (Layer 3) | ✅ Complete |
-| Multi-Contact | ✅ Complete |
-| All SMP Commands | ✅ Complete |
-| DH Key Extraction | 🔧 In Progress |
-| CONF Response | ⏳ Next |
-
----
-
-## 🔧 Hardware
-
-### Target Hardware
-
-| Device | Status | Features |
-|--------|--------|----------|
-| **LilyGo T-Deck** | 🎯 Primary | ESP32-S3, 2.8" LCD, Keyboard |
-| **LilyGo T-Embed** | 🎯 Secondary | ESP32-S3, 1.9" LCD, Encoder |
-
----
-
-## 🚀 Quick Start
-
-### Build & Flash
+### Quick Start
 
 ```bash
-cd ~/SimpleGo
-idf.py build flash monitor -p /dev/ttyUSB0
+# Clone the repository
+git clone https://github.com/anthropics/simplego.git
+cd simplego/simplex_client
+
+# Set up ESP-IDF environment
+. $HOME/esp/esp-idf/export.sh
+
+# Configure for your device
+idf.py menuconfig
+# Navigate to: SimpleGo Configuration -> Target Device
+
+# Build
+idf.py build
+
+# Flash and monitor
+idf.py flash monitor -p /dev/ttyUSB0
 ```
 
-### Expected Output (v0.1.13)
+### Configuration
 
-```
-🔗 SIMPLEX CONTACT LINKS ════════════════════════════════
-📱 [0] Test ──────────────────────────────────────────────
-🌐 https://simplex.chat/contact#/?v=2-7&smp=...
+Device selection and build options are managed through Kconfig:
 
-[SimpleX App scans link and sends Invitation]
-
-💬 MESSAGE for [Test]!
-🔓 Layer 3 Decrypted: 16106 bytes
-🔓 Layer 5 Decrypted: 847 bytes
-📋 Agent: Version=7, Type='I' (Invitation)
-📡 Peer Server: smp15.simplex.im:5223
-📮 Queue ID: ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK
-✅ READY TO SEND CONFIRMATION
+```bash
+idf.py menuconfig
 ```
 
----
+Key configuration options:
 
-## 🗺️ Roadmap
+| Option | Description |
+|--------|-------------|
+| Target Device | Select hardware platform |
+| WiFi Credentials | Network configuration |
+| SMP Server | Default server address |
+| Security Options | PIN protection, auto-lock |
+| Debug Options | Logging verbosity |
 
-| Phase | Status |
-|-------|--------|
-| Phase 1-3.7: Foundation | ✅ Complete |
-| Phase 3.8: Agent Protocol | ✅ Complete |
-| Phase 3.9: Peer Queue Parsing | ✅ **Complete!** |
-| Phase 3.10: Connection Complete | 🔧 In Progress |
-| Phase 4: User Interface | 📋 Planned |
-| Phase 5: Double Ratchet | 📋 Future |
-
----
-
-## 📜 License
-
-**GNU Affero General Public License v3.0 (AGPL-3.0)**
+For detailed build instructions, see [Build System Documentation](docs/BUILD_SYSTEM.md).
 
 ---
 
-## Version History
+## Documentation
 
-| Version | Date | Milestone |
-|---------|------|-----------|
-| **v0.1.13-alpha** | **2026-01-21** | **🔧 Message Type Fix + Peer Queue!** |
-| v0.1.12-alpha | 2026-01-21 | 🔐 Agent Protocol |
-| v0.1.11-alpha | 2026-01-20 | 🔗 Invitation Links |
-| v0.1.10-alpha | 2026-01-20 | 🏆 Multi-Contact + E2E |
+### Core Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Architecture](docs/ARCHITECTURE.md) | System architecture and HAL design |
+| [Build System](docs/BUILD_SYSTEM.md) | Build configuration and device selection |
+| [Security Model](docs/SECURITY_MODEL.md) | Threat model and security architecture |
+| [Technical Reference](docs/TECHNICAL.md) | Low-level technical details |
+| [Protocol](docs/PROTOCOL.md) | SimpleX protocol implementation details |
+| [Cryptography](docs/CRYPTO.md) | Cryptographic implementation |
+| [Wire Format](docs/WIRE_FORMAT.md) | Protocol message encoding |
+| [Adding New Devices](docs/ADDING_NEW_DEVICE.md) | Guide for porting to new hardware |
+
+### Hardware Documentation
+
+| Document | Description |
+|----------|-------------|
+| [Hardware Overview](docs/hardware/HARDWARE_OVERVIEW.md) | Hardware design philosophy |
+| [Hardware Tiers](docs/hardware/HARDWARE_TIERS.md) | Tier specifications |
+| [Security Architecture](docs/hardware/SECURITY_ARCHITECTURE.md) | Hardware security model |
+| [HAL Architecture](docs/hardware/HAL_ARCHITECTURE.md) | Hardware abstraction design |
+| [Component Selection](docs/hardware/COMPONENT_SELECTION.md) | Component specifications |
+| [PCB Design](docs/hardware/PCB_DESIGN.md) | PCB layout guidelines |
+| [Enclosure Design](docs/hardware/ENCLOSURE_DESIGN.md) | Mechanical design |
+
+### Project Management
+
+| Document | Description |
+|----------|-------------|
+| [Roadmap](ROADMAP.md) | Development plan |
+| [Changelog](CHANGELOG.md) | Version history |
+| [Contributing](CONTRIBUTING.md) | Contribution guidelines |
+| [Security Policy](SECURITY.md) | Vulnerability reporting |
 
 ---
 
-<p align="center">
-  <strong>🔧 First Native ESP32 SimpleX Client — Ready to Send Confirmation! 🔧</strong><br>
-  <em>Privacy is not a privilege, it's a right.</em>
-</p>
+## Contributing
+
+SimpleGo is a community-driven project. Contributions are welcome in several areas:
+
+- Protocol implementation and bug fixes
+- HAL implementations for new hardware platforms
+- Documentation improvements
+- Security analysis and review
+- Hardware design contributions
+- Testing and verification
+
+Please read [CONTRIBUTING.md](CONTRIBUTING.md) before submitting pull requests.
+
+### Code of Conduct
+
+This project adheres to a code of conduct. By participating, you agree to uphold respectful and constructive communication. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md).
 
 ---
 
-*Copyright (c) 2026 cannatoshi — Part of the Sentinel Secure Messenger Suite*
+## Security
+
+### Reporting Vulnerabilities
+
+Security vulnerabilities should be reported privately. Do not open public issues for security concerns.
+
+See [SECURITY.md](SECURITY.md) for reporting procedures.
+
+### Security Audits
+
+The codebase has not yet undergone formal security audit. This is planned for post-v1.0 release. Users should consider this when evaluating the software for sensitive applications.
+
+---
+
+## License
+
+This project uses dual licensing:
+
+| Component | License |
+|-----------|---------|
+| Software | [AGPL-3.0](LICENSE) |
+| Hardware Designs | [CERN-OHL-S-2.0](docs/hardware/LICENSE) |
+
+The AGPL-3.0 license is required for compatibility with the SimpleX protocol libraries.
+
+---
+
+## Acknowledgments
+
+- [SimpleX Chat](https://simplex.chat/) for creating the SimpleX protocol
+- [Espressif](https://www.espressif.com/) for ESP-IDF and ESP32 platform
+- [wolfSSL](https://www.wolfssl.com/) for embedded cryptography libraries
+- [LVGL](https://lvgl.io/) for embedded graphics library
+
+---
+
+## Disclaimer
+
+SimpleGo is an independent project and is not affiliated with, endorsed by, or connected to SimpleX Chat Ltd. The SimpleX name and protocol are used for interoperability purposes only.
+
+This software is provided as-is, without warranty. Users are responsible for evaluating its suitability for their security requirements. See [docs/DISCLAIMER.md](docs/DISCLAIMER.md) for full legal notices.
+
+---
+
+## Contact
+
+- GitHub Issues: Bug reports and feature requests
+- GitHub Discussions: General questions and community discussion
+
+---
+
+*SimpleGo — Secure messaging without smartphones.*
