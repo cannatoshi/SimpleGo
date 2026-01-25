@@ -1,223 +1,207 @@
 # SimpleGo Architecture
 
-Technical documentation of the SimpleGo module structure and design.
-
----
-
 ## Overview
 
-SimpleGo is organized in a layered architecture with clear separation of concerns. The codebase consists of approximately 3,200 lines of C code distributed across 11 modules.
+SimpleGo is designed as a multi-device native SimpleX client using a Hardware Abstraction Layer (HAL) architecture. This enables support for different hardware platforms while maintaining a single, unified codebase for the protocol implementation and UI.
 
----
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        APPLICATION                               │
+│                  (SimpleX Protocol Logic)                        │
+│                    Device-Independent                            │
+├─────────────────────────────────────────────────────────────────┤
+│                         UI LAYER                                 │
+│              (Screens, Widgets, Themes)                          │
+│                    Device-Independent                            │
+├─────────────────────────────────────────────────────────────────┤
+│                   HAL (Interfaces)                               │
+│     hal_display | hal_input | hal_storage | hal_audio | ...     │
+├──────────┬──────────┬──────────┬──────────┬────────────────────┤
+│ T-Deck   │ T-Embed  │ RPi      │ Custom   │  Device-Specific   │
+│ Plus     │ CC1101   │          │          │  Implementations   │
+└──────────┴──────────┴──────────┴──────────┴────────────────────┘
+```
 
 ## Directory Structure
 
-| Path | Description |
-|------|-------------|
-| main/ | Application source code |
-| main/main.c | Application entry point |
-| main/smp_x448.c | X448 cryptographic operations |
-| main/smp_ratchet.c | Double Ratchet implementation |
-| main/smp_handshake.c | E2E handshake protocol |
-| main/smp_queue.c | SMPQueueInfo encoding |
-| main/smp_peer.c | Peer connection management |
-| main/smp_parser.c | Protocol message parsing |
-| main/smp_network.c | TLS/TCP networking |
-| main/smp_crypto.c | Ed25519, X25519 operations |
-| main/smp_contacts.c | Contact address handling |
-| main/smp_utils.c | Encoding utilities |
-| include/ | Header files |
-| components/wolfssl/ | X448/Curve448 library |
-| components/kyber/ | Post-quantum crypto (future) |
-| docs/ | Documentation |
-| CMakeLists.txt | Project build file |
-| partitions.csv | Flash partition table |
-| sdkconfig | ESP-IDF configuration |
+```
+simplex_client/
+├── main/                           # Main application code
+│   ├── main.c                      # Entry point
+│   ├── core/                       # Protocol layer (device-independent)
+│   │   ├── smp_network.c           # TLS/TCP connections
+│   │   ├── smp_handshake.c         # SMP handshake
+│   │   ├── smp_transport.c         # Transport encoding
+│   │   ├── smp_commands.c          # SMP commands
+│   │   ├── smp_ratchet.c           # Double Ratchet
+│   │   ├── smp_x448.c              # X448 curve operations
+│   │   ├── smp_x3dh.c              # X3DH key agreement
+│   │   ├── smp_crypto.c            # AES-GCM, HKDF
+│   │   ├── smp_agent.c             # Agent protocol
+│   │   ├── smp_queue.c             # Queue management
+│   │   └── smp_message.c           # Message parsing
+│   │
+│   ├── hal/                        # HAL interfaces (headers only)
+│   │   ├── hal_common.h            # Common types & errors
+│   │   ├── hal_display.h           # Display interface
+│   │   ├── hal_input.h             # Input interface
+│   │   ├── hal_storage.h           # Storage interface
+│   │   ├── hal_network.h           # Network interface
+│   │   ├── hal_audio.h             # Audio interface
+│   │   └── hal_system.h            # System interface
+│   │
+│   └── ui/                         # UI layer (device-independent)
+│       ├── ui_manager.c            # Screen management
+│       ├── ui_events.c             # Event handling
+│       ├── screens/                # Individual screens
+│       ├── widgets/                # Reusable widgets
+│       └── themes/                 # Visual themes
+│
+├── devices/                        # Device-specific implementations
+│   ├── t_deck_plus/
+│   │   ├── hal_impl/               # HAL implementations
+│   │   └── config/                 # Device configuration
+│   ├── t_embed_cc1101/
+│   │   ├── hal_impl/
+│   │   └── config/
+│   └── template/                   # Template for new devices
+│
+├── components/                     # External libraries
+├── tools/                          # Build scripts
+├── docs/                           # Documentation
+├── CMakeLists.txt                  # Build system
+└── Kconfig                         # Configuration menu
+```
 
----
+## Layer Descriptions
 
-## Layer Architecture
+### Core Layer (`main/core/`)
 
-### Layer 1: Crypto Layer
+The protocol layer implements the complete SimpleX Messaging Protocol (SMP):
 
-Low-level cryptographic operations.
+- **Network**: TLS connections to SMP servers
+- **Handshake**: Server authentication and session setup
+- **Commands**: SMP command encoding/decoding (NEW, KEY, SUB, SEND, etc.)
+- **Crypto**: All cryptographic operations (X448, AES-GCM, HKDF)
+- **Ratchet**: Double Ratchet protocol for forward secrecy
+- **X3DH**: Extended Triple Diffie-Hellman key agreement
+- **Agent**: SimpleX Agent protocol layer
 
-| Module | File | Lines | Description |
-|--------|------|-------|-------------|
-| X448 Operations | smp_x448.c | ~200 | Key generation, DH, byte-order |
-| Double Ratchet | smp_ratchet.c | ~500 | State, KDFs, AES-GCM |
-| E2E Handshake | smp_handshake.c | ~300 | X3DH, AgentConfirmation |
-| Queue Encoding | smp_queue.c | ~250 | SMPQueueInfo encoding |
+This layer is **100% device-independent**.
 
-### Layer 2: Protocol Layer
+### HAL Layer (`main/hal/`)
 
-SMP protocol implementation.
+Hardware Abstraction Layer defines interfaces for:
 
-| Module | File | Lines | Description |
-|--------|------|-------|-------------|
-| Peer Connection | smp_peer.c | ~400 | Connection lifecycle |
-| Message Parser | smp_parser.c | ~350 | Protocol parsing |
-| Network Layer | smp_network.c | ~300 | TLS/TCP |
+| Interface | Purpose |
+|-----------|---------|
+| `hal_display` | Display initialization, drawing, backlight |
+| `hal_input` | Keyboard, touch, encoder, buttons |
+| `hal_storage` | NVS key-value store, file system |
+| `hal_network` | WiFi, Ethernet configuration |
+| `hal_audio` | Speaker, buzzer, microphone |
+| `hal_system` | Power management, sleep, battery |
 
-### Layer 3: Application Layer
+### UI Layer (`main/ui/`)
 
-High-level application logic.
+The UI layer uses LVGL and the HAL interfaces:
 
-| Module | File | Lines | Description |
-|--------|------|-------|-------------|
-| Contact Management | smp_contacts.c | ~200 | Address handling |
-| Legacy Crypto | smp_crypto.c | ~250 | Ed25519, X25519 |
-| Utilities | smp_utils.c | ~150 | Encoding helpers |
+- **Screens**: Individual UI screens (chat, contacts, settings)
+- **Widgets**: Reusable components (message bubbles, status bar)
+- **Themes**: Visual styles (dark, light)
 
----
+The UI adapts automatically to device capabilities via HAL queries.
 
-## Module Details
+### Device Layer (`devices/*/`)
 
-### smp_x448.c - X448 Cryptographic Operations
+Each supported device has:
 
-Handles X448/Curve448 elliptic curve operations using wolfSSL.
+- `hal_impl/`: HAL interface implementations
+- `config/device_config.h`: Hardware-specific constants
 
-Key Functions:
-- smp_x448_generate_keypair(): Generate X448 key pair
-- smp_x448_dh(): Perform Diffie-Hellman key exchange
-- smp_x448_reverse_bytes(): Handle wolfSSL byte-order conversion
+## Adding a New Device
 
-Notes:
-- wolfSSL exports X448 keys in reversed byte order
-- All public keys must be reversed before use
+1. Copy `devices/template/` to `devices/your_device/`
+2. Fill in `config/device_config.h` with your hardware specs
+3. Implement required HAL functions in `hal_impl/`
+4. Add device to `Kconfig` and `CMakeLists.txt`
+5. Build with `SIMPLEGO_DEVICE=your_device`
 
----
+See `docs/ADDING_NEW_DEVICE.md` for detailed instructions.
 
-### smp_ratchet.c - Double Ratchet Implementation
+## Build System
 
-Implements the Double Ratchet algorithm.
+SimpleGo uses the standard ESP-IDF build system with Kconfig for device selection.
 
-Key Functions:
-- smp_ratchet_init(): Initialize ratchet state
-- smp_ratchet_root_kdf(): Derive new root key, chain key, header key
-- smp_ratchet_chain_kdf(): Derive message key, IVs
-- smp_ratchet_encrypt_header(): Encrypt MsgHeader
-- smp_ratchet_encrypt_body(): Encrypt message body
+**IMPORTANT:** ESP-IDF has strict rules about CMakeLists.txt files:
+- ROOT `CMakeLists.txt`: Only project setup (no `idf_component_register`!)
+- Component `CMakeLists.txt` (in `main/`): Source registration
 
-KDF Parameters:
+See `docs/BUILD_SYSTEM.md` for detailed explanation of why this matters.
 
-| KDF | Salt | IKM | Info | Output |
-|-----|------|-----|------|--------|
-| X3DH | 64 zero bytes | dh1+dh2+dh3 | SimpleXX3DH | 96 bytes |
-| Root | root_key | dh_output | SimpleXRootRatchet | 96 bytes |
-| Chain | empty | chain_key | SimpleXChainRatchet | 96 bytes |
+```bash
+# Configure device via menuconfig
+idf.py menuconfig
+# → SimpleGo Configuration → Target Device
 
----
+# Build
+idf.py build
 
-### smp_handshake.c - E2E Handshake Protocol
+# Flash
+idf.py flash monitor -p COM5
+```
 
-Handles end-to-end encryption handshake.
+## Device Comparison
 
-Key Functions:
-- smp_handshake_x3dh(): Perform X3DH key agreement
-- smp_handshake_build_agent_confirmation(): Build AgentConfirmation
-- smp_handshake_build_hello(): Build HELLO message
+| Feature | T-Deck Plus | T-Embed CC1101 |
+|---------|-------------|----------------|
+| Display | 320×240 | 170×320 |
+| Keyboard | QWERTY | On-screen |
+| Touch | Yes | No |
+| Trackball | Yes | No |
+| Encoder | No | Yes |
+| Audio | I2S Speaker | Buzzer |
+| Battery | AXP2101 PMU | ADC only |
+| Radio | Optional LoRa | CC1101 Sub-GHz |
 
----
+## Design Principles
 
-### smp_queue.c - SMPQueueInfo Encoding
+1. **Single Codebase**: Core protocol and UI code shared across devices
+2. **HAL Abstraction**: All hardware access through HAL interfaces
+3. **Capability Queries**: UI adapts based on available features
+4. **Minimal Dependencies**: Only essential libraries per device
+5. **Memory Efficiency**: Careful buffer management for ESP32
 
-Handles encoding of SMPQueueInfo structures.
+## Memory Layout (ESP32-S3)
 
-Key Functions:
-- smp_queue_encode_info(): Encode complete SMPQueueInfo
-- smp_queue_encode_version(): Encode smpClientVersion
-- smp_queue_encode_queue_mode(): Encode queueMode
+```
+┌─────────────────────────────────────┐
+│ Flash (16MB)                        │
+│ ├── Bootloader (64KB)               │
+│ ├── Partition Table                 │
+│ ├── NVS (16KB) - Keys & Settings    │
+│ ├── Application (~4MB)              │
+│ └── SPIFFS/LittleFS - Contacts/Msgs │
+├─────────────────────────────────────┤
+│ Internal SRAM (512KB)               │
+│ ├── Heap (~280KB)                   │
+│ └── Stack (16KB per task)           │
+├─────────────────────────────────────┤
+│ PSRAM (8MB)                         │
+│ ├── LVGL Buffers                    │
+│ ├── Message Cache                   │
+│ └── Crypto Buffers                  │
+└─────────────────────────────────────┘
+```
 
-queueMode Encoding:
-- Nothing = empty (0 bytes)
-- Just QMMessaging = M (1 byte)
+## Security Considerations
 
----
-
-### smp_peer.c - Peer Connection Management
-
-Manages peer connection lifecycle.
-
-Key Functions:
-- smp_peer_connect(): Establish connection
-- smp_peer_send_confirmation(): Send AgentConfirmation
-- smp_peer_send_hello(): Send HELLO message
-- smp_peer_send_message(): Send encrypted message
-
----
-
-### smp_parser.c - Protocol Message Parsing
-
-Parses incoming messages.
-
-Key Functions:
-- smp_parser_parse_response(): Parse SMP response
-- smp_parser_parse_agent_message(): Parse Agent message
-- smp_parser_parse_queue_info(): Parse SMPQueueInfo
-
----
-
-### smp_network.c - TLS/TCP Networking
-
-Handles network communication.
-
-Key Functions:
-- smp_network_init(): Initialize networking
-- smp_network_connect(): Establish TLS connection
-- smp_network_send(): Send data
-- smp_network_receive(): Receive data
-
-TLS Configuration:
-- Protocol: TLS 1.3
-- Library: mbedTLS
-- Certificate Verification: Enabled
-
----
-
-## Component Dependencies
-
-### wolfSSL
-
-Provides X448/Curve448 cryptography.
-
-Location: components/wolfssl/
-Usage: smp_x448.c
-
-### mbedTLS
-
-Provides TLS 1.3, HKDF, AES-GCM.
-
-Usage: smp_network.c, smp_ratchet.c
-
-### libsodium
-
-Provides Ed25519 and X25519.
-
-Usage: smp_crypto.c
-
----
-
-## Memory Layout
-
-### Static Allocations
-
-| Component | Size |
-|-----------|------|
-| Ratchet State | ~300 bytes |
-| TLS Context | ~40 KB |
-| Network Buffers | ~16 KB |
-
-### Recommended Hardware
-
-| Requirement | Minimum | Recommended |
-|-------------|---------|-------------|
-| Flash | 4 MB | 8 MB |
-| PSRAM | None | 2 MB |
-| RAM | 320 KB | 512 KB |
-
----
+- Private keys stored in NVS with encryption
+- Ratchet keys never leave device
+- Memory wiped after use (`explicit_bzero`)
+- Optional PIN/password protection
+- No telemetry or analytics
 
 ## License
 
-AGPL-3.0 - See [LICENSE](../LICENSE)
+AGPL-3.0 (to comply with SimpleX protocol requirements)
