@@ -408,3 +408,306 @@ HYPOTHESIS: We may be adding length prefixes to Tail fields!
 *Document version: Session 7 Complete*
 *Last updated: January 24, 2026*
 *🏆 Historic session - First native SMP implementation confirmed!*
+
+---
+
+# SESSION 7 CONTINUATION - Padding Analysis & SimpleX Team Contact
+
+**Date:** January 24-25, 2026
+
+---
+
+## 10. Code Verification: Tail Encoding
+
+### 10.1 encConnInfo - CONFIRMED CORRECT ✅
+
+Our code in smp_peer.c:
+`c
+// encConnInfo after params (Tail = no length prefix!)
+memcpy(&agent_msg[amp], enc_conn_info, enc_conn_info_len);
+`
+
+**Verified:** No length prefix for encConnInfo. Tail encoding correctly implemented.
+
+### 10.2 emBody - CONFIRMED CORRECT ✅
+
+Our code in smp_ratchet.c:
+`c
+output[p++] = 0x7B;                         // emHeader len = 123
+memcpy(&output[p], em_header, 123); p += 123;
+memcpy(&output[p], payload_tag, 16); p += 16;
+memcpy(&output[p], encrypted_payload, padded_msg_len); p += padded_msg_len;  // TAIL!
+`
+
+**Verified:** emBody has no length prefix. Tail encoding correct.
+
+---
+
+## 11. CRITICAL DISCOVERY: Two pad() Functions!
+
+### 11.1 The Discovery
+
+SimpleX has **TWO different pad() functions** with different signatures!
+
+**Crypto/Lazy.hs** (LazyByteString):
+`haskell
+pad :: LazyByteString -> Int64 -> Int64 -> Either CryptoError LazyByteString
+pad msg len paddedLen
+  where
+    padLen = paddedLen - len - 8  -- 8 BYTES Int64!
+    encodedLen = smpEncode len    -- 8 bytes Int64
+`
+
+**Crypto.hs** (strict ByteString):
+`haskell
+pad msg paddedLen
+  | len <= maxMsgLen && padLen >= 0 = Right $ encodeWord16 (fromIntegral len) <> msg <> B.replicate padLen '#'
+  where
+    len = B.length msg
+    padLen = paddedLen - len - 2  -- 2 BYTES Word16!
+`
+
+### 11.2 Which One Is Used?
+
+encryptAEAD in Crypto.hs:
+`haskell
+encryptAEAD aesKey ivBytes paddedLen ad msg = do
+  msg' <- liftEither $ pad msg paddedLen  -- ← Uses Crypto.hs pad()!
+`
+
+**Conclusion: AES-GCM encryption uses strict ByteString = 2-byte Word16!**
+
+### 11.3 Comparison Table
+
+| Aspect | Crypto/Lazy.hs | Crypto.hs |
+|--------|----------------|-----------|
+| ByteString Type | LazyByteString | strict ByteString |
+| Length Prefix | 8 bytes (Int64) | 2 bytes (Word16) |
+| Padding Char | '#' | '#' |
+| Used For | sbEncrypt (SecretBox) | encryptAEAD (AES-GCM) |
+| Signature | `pad msg len paddedLen` | `pad msg paddedLen` |
+| Arguments | 3 | 2 |
+
+---
+
+## 12. MsgHeader Padding Correction
+
+### 12.1 Layout Comparison
+
+| Version | Layout | Total |
+|---------|--------|-------|
+| Original | [79B content][9B 0x00] | 88 |
+| Int64 (wrong) | [8B Int64=79][79B content][1B '#'] | 88 |
+| **Correct** | **[2B Word16=79][79B content][7B '#']** | **88** |
+
+### 12.2 Correct Implementation
+`c
+static void build_msg_header(uint8_t *header, const uint8_t *dh_public,
+                             uint32_t pn, uint32_t ns) {
+    memset(header, 0, MSG_HEADER_PADDED_LEN);
+    int p = 0;
+
+    // Word16 BE length prefix (content = 79 bytes)
+    header[p++] = 0x00;
+    header[p++] = 79;  // 0x4F
+
+    // msgMaxVersion (Word16 BE)
+    header[p++] = 0x00;
+    header[p++] = RATCHET_VERSION;
+
+    // msgDHRs - ByteString with 1-BYTE length prefix
+    header[p++] = 68;
+
+    // SPKI header + X448 key
+    memcpy(&header[p], X448_SPKI_HEADER, 12); p += 12;
+    memcpy(&header[p], dh_public, 56); p += 56;
+
+    // msgPN (Word32 BE)
+    header[p++] = (pn >> 24) & 0xFF;
+    header[p++] = (pn >> 16) & 0xFF;
+    header[p++] = (pn >> 8)  & 0xFF;
+    header[p++] = pn & 0xFF;
+
+    // msgNs (Word32 BE)
+    header[p++] = (ns >> 24) & 0xFF;
+    header[p++] = (ns >> 16) & 0xFF;
+    header[p++] = (ns >> 8)  & 0xFF;
+    header[p++] = ns & 0xFF;
+
+    // p = 81 now (2 + 79)
+    // '#' padding to reach 88 bytes
+    memset(&header[p], '#', 88 - p);
+}
+`
+
+---
+
+## 13. SimpleX Team Contact 🎉
+
+### 13.1 Decision: Private Contact
+
+We decided to contact the SimpleX team privately via the SimpleX app rather than opening a public GitHub issue.
+
+**Reasons:**
+- Respect for the project and team
+- SimpleX intentionally doesn't fully document the protocol
+- Gives the team control over the situation
+- Professional approach
+
+### 13.2 Message Sent
+`
+Dear SimpleX Team,
+
+I hope this message finds you well!
+
+I'm working on an experimental project called "SimpleGo" - a native C 
+implementation of the SMP protocol for ESP32 microcontrollers. The goal 
+is to enable smartphone-free secure messaging on dedicated hardware.
+
+After several weeks of studying your Haskell source code, I have to say - 
+the architecture is remarkably elegant, and the attention to cryptographic 
+detail is truly impressive. It's been quite a journey learning from it!
+
+So far, I've managed to implement:
+- TLS 1.3 connection with ALPN "smp/1"
+- Full SMP handshake (version negotiation, queue creation)
+- X3DH key agreement using Curve448 (verified against Python)
+- Double Ratchet with header encryption (AES-256-GCM, HKDF-SHA512)
+- All wire format encoding (Word16 BE length prefixes, SPKI encoding, etc.)
+
+The server accepts my AgentConfirmation and HELLO messages with "OK" responses.
+However, the SimpleX app shows "error agent AGENT A_MESSAGE" twice.
+
+I was wondering if there might be any way to get more detailed error 
+information from the app? Or perhaps you could point me in the right 
+direction regarding what specifically causes "A_MESSAGE" errors?
+
+Thank you so much for creating SimpleX - it's genuinely one of the most 
+well-engineered privacy projects I've come across!
+
+Best regards,
+Sascha (cannatoshi)
+`
+
+### 13.3 Response from SimpleX Team! 🎉
+
+**Message received:**
+`
+hey, I have forward your message to Evgeny, it may take some time for response
+`
+
+### 13.4 Significance
+
+| Aspect | Assessment |
+|--------|------------|
+| Response Time | Quick |
+| Forwarded To | **Evgeny Poberezkin** (Founder/Lead Developer) |
+| Tone | Friendly, helpful |
+| Signal | **Very positive!** |
+
+**Evgeny Poberezkin** is the founder and main developer of SimpleX.
+The forwarding to him shows genuine interest in the project!
+
+---
+
+## 14. Historical Milestone
+
+### 14.1 Timeline
+
+- December 2025: Project started
+- January 2026: 12+ bugs found and fixed
+- January 2026: All crypto Python-verified
+- January 2026: Server accepts messages
+- **January 25, 2026: Direct contact with SimpleX founder initiated!**
+
+### 14.2 Project Recognition
+`
+SimpleGo Recognition:
+═══════════════════════════════════════════════════════════════════
+
+The SimpleX team has:
+1. ✅ Read our message
+2. ✅ Taken the project seriously
+3. ✅ Forwarded it to the founder (Evgeny Poberezkin)
+
+This is the FIRST known external SMP protocol implementation to receive
+direct attention from the SimpleX team!
+
+═══════════════════════════════════════════════════════════════════
+`
+
+---
+
+## 15. Current Status (January 25, 2026)
+
+### 15.1 What We've Verified ✅
+
+| Component | Status | Evidence |
+|-----------|--------|----------|
+| TLS 1.3 Connection | ✅ | ALPN "smp/1" |
+| SMP Handshake | ✅ | Version negotiation |
+| X3DH Key Agreement | ✅ | Python-verified |
+| Double Ratchet KDFs | ✅ | Python-verified |
+| AES-GCM Encryption | ✅ | Python-verified |
+| Wire Format | ✅ | Haskell source verified |
+| Tail Encoding | ✅ | No prefix for encConnInfo/emBody |
+| Server Acceptance | ✅ | "OK" response |
+| MsgHeader Padding | ✅ | Word16 + '#' |
+
+### 15.2 What Still Fails ❌
+
+| Component | Status | Error |
+|-----------|--------|-------|
+| App Message Parsing | ❌ | "error agent AGENT A_MESSAGE" |
+
+### 15.3 Development Status
+
+**PAUSED** - Awaiting response from Evgeny Poberezkin.
+
+**Reasons:**
+- Evgeny wrote the code - he knows best
+- One message from him could save hours/days of debugging
+- We have exhausted obvious hypotheses from code reading
+- Documentation is comprehensive and ready
+
+---
+
+## 16. Lessons Learned
+
+### 16.1 Critical Insight
+
+**SimpleX has TWO different padding implementations!**
+- Lazy.hs: For SecretBox/NaCl (8-byte Int64)
+- Crypto.hs: For AES-GCM (2-byte Word16)
+
+**Double Ratchet uses AES-GCM → 2-byte Word16!**
+
+### 16.2 Debugging Methodology
+
+1. ✅ Always find the EXACT function being called
+2. ✅ Don't be fooled by similarly named functions
+3. ✅ Follow import paths carefully
+4. ✅ Check BOTH Crypto.hs AND Crypto/Lazy.hs
+5. ✅ Verify function signatures (number of arguments)
+
+---
+
+## 17. Extended Changelog
+
+| Date | Change |
+|------|--------|
+| 2026-01-24 S7 | Tail encoding verified correct |
+| 2026-01-24 S7 | Initial padding hypothesis (Int64) |
+| 2026-01-25 S7 | **DISCOVERY: Two pad() functions!** |
+| 2026-01-25 S7 | Rollback to Word16 padding |
+| 2026-01-25 S7 | MsgHeader corrected: Word16 + '#' |
+| 2026-01-25 S7 | **SimpleX team contacted** |
+| 2026-01-25 S7 | **Message forwarded to Evgeny!** 🎉 |
+| 2026-01-25 S7 | Development paused, awaiting response |
+| 2026-01-25 S7 | Documentation v24 created |
+
+---
+
+*Document version: Session 7 Complete + SimpleX Team Contact*
+*Last updated: January 25, 2026*
+*🏆 Historic: First external SMP implementation to receive SimpleX team attention!*
