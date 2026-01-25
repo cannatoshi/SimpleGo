@@ -255,40 +255,55 @@ Adding support for new hardware requires implementing the HAL interfaces. See [A
 
 ```bash
 # Clone the repository
-git clone https://github.com/anthropics/simplego.git
-cd simplego/simplex_client
+git clone https://github.com/nicokuehn-dci/simplego.git
+cd simplego
 
 # Set up ESP-IDF environment
-. $HOME/esp/esp-idf/export.sh
+. $HOME/esp/esp-idf/export.sh    # Linux/macOS
+# or
+%IDF_PATH%\export.bat             # Windows
 
-# Configure for your device
+# Configure (required for WiFi credentials)
 idf.py menuconfig
-# Navigate to: SimpleGo Configuration -> Target Device
 
 # Build
 idf.py build
 
 # Flash and monitor
-idf.py flash monitor -p /dev/ttyUSB0
+idf.py flash monitor -p /dev/ttyUSB0    # Linux
+idf.py flash monitor -p COM6            # Windows
 ```
 
 ### Configuration
 
-Device selection and build options are managed through Kconfig:
+All settings are managed through the ESP-IDF menuconfig system:
 
 ```bash
 idf.py menuconfig
 ```
 
-Key configuration options:
+Navigate to **SimpleGo Configuration** to access all project-specific settings.
 
-| Option | Description |
-|--------|-------------|
-| Target Device | Select hardware platform |
-| WiFi Credentials | Network configuration |
-| SMP Server | Default server address |
-| Security Options | PIN protection, auto-lock |
-| Debug Options | Logging verbosity |
+#### Required Settings
+
+| Menu | Setting | Description |
+|------|---------|-------------|
+| Network Configuration | WiFi SSID | Your WiFi network name |
+| Network Configuration | WiFi Password | Your WiFi password |
+
+#### Available Configuration Menus
+
+| Menu | Settings |
+|------|----------|
+| **Device Selection** | T-Deck Plus, T-Deck Pro, T-Lora Pager, Raspberry Pi, Custom |
+| **SimpleGo Core** | Max contacts (50), max messages (100), message length, auto-reconnect |
+| **Network Configuration** | WiFi SSID, WiFi password, SMP server, SMP port, TLS verification |
+| **UI Configuration** | Theme (dark/light/auto), animations, typing indicator, read receipts |
+| **Security Configuration** | PIN required, PIN length, auto-lock timeout, wipe on failed attempts |
+| **Power Management** | Sleep enable, light/deep sleep timeout, battery saver level |
+| **Debug Options** | Debug logging, log crypto operations, log network traffic |
+
+Note: The `sdkconfig` file contains your personal settings (including WiFi credentials) and is excluded from version control via `.gitignore`.
 
 For detailed build instructions, see [Build System Documentation](docs/BUILD_SYSTEM.md).
 
