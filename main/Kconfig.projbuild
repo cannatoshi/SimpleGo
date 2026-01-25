@@ -24,11 +24,17 @@ menu "Device Selection"
                 T-Deck Plus with 320x240 display, QWERTY keyboard,
                 trackball, touch screen, and optional LoRa/GPS.
 
-        config SIMPLEGO_DEVICE_T_EMBED_CC1101
-            bool "LILYGO T-Embed CC1101"
+        config SIMPLEGO_DEVICE_T_DECK_PRO
+            bool "LILYGO T-Deck Pro"
             help
-                T-Embed CC1101 with 170x320 display, rotary encoder,
-                and CC1101 Sub-GHz radio.
+                T-Deck Pro with 320x240 display, QWERTY keyboard,
+                trackball, touch screen, and enhanced features.
+
+        config SIMPLEGO_DEVICE_T_LORA_PAGER
+            bool "LILYGO T-Lora Pager"
+            help
+                T-Lora Pager with 128x64 OLED display, encoder,
+                buttons, and LoRa radio.
 
         config SIMPLEGO_DEVICE_RASPBERRY_PI
             bool "Raspberry Pi"
@@ -47,7 +53,8 @@ menu "Device Selection"
     config SIMPLEGO_DEVICE_NAME
         string
         default "t_deck_plus" if SIMPLEGO_DEVICE_T_DECK_PLUS
-        default "t_embed_cc1101" if SIMPLEGO_DEVICE_T_EMBED_CC1101
+        default "t_deck_pro" if SIMPLEGO_DEVICE_T_DECK_PRO
+        default "t_lora_pager" if SIMPLEGO_DEVICE_T_LORA_PAGER
         default "raspberry_pi" if SIMPLEGO_DEVICE_RASPBERRY_PI
         default "custom" if SIMPLEGO_DEVICE_CUSTOM
 
