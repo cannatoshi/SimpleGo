@@ -236,39 +236,45 @@ bool ratchet_init_sender(const uint8_t *peer_dh_public, const x448_keypair_t *ou
     return true;
 }
 
-// ============== Build MsgHeader (plaintext) ==============
 static void build_msg_header(uint8_t *header, const uint8_t *dh_public,
                              uint32_t pn, uint32_t ns) {
     memset(header, 0, MSG_HEADER_PADDED_LEN);
     int p = 0;
-    
+
+    // Word16 BE length prefix (content = 79 bytes)
+    // SimpleX Crypto.hs pad(): [2B Word16 len][content][# padding]
+    header[p++] = 0x00;
+    header[p++] = 79;  // 0x4F
+
     // msgMaxVersion (Word16 BE)
     header[p++] = 0x00;
     header[p++] = RATCHET_VERSION;
-    
+
     // msgDHRs - ByteString with 1-BYTE length prefix!
     header[p++] = 68;    // SPKI length = 68 (1 BYTE only!)
-    
+
     // SPKI header + X448 key
     static const uint8_t X448_SPKI_HEADER[12] = {0x30,0x42,0x30,0x05,0x06,0x03,0x2b,0x65,0x6f,0x03,0x39,0x00};
     memcpy(&header[p], X448_SPKI_HEADER, 12); p += 12;
     memcpy(&header[p], dh_public, 56); p += 56;
-    
+
     // msgPN (Word32 BE)
     header[p++] = (pn >> 24) & 0xFF;
     header[p++] = (pn >> 16) & 0xFF;
     header[p++] = (pn >> 8)  & 0xFF;
     header[p++] = pn & 0xFF;
-    
+
     // msgNs (Word32 BE)
     header[p++] = (ns >> 24) & 0xFF;
     header[p++] = (ns >> 16) & 0xFF;
     header[p++] = (ns >> 8)  & 0xFF;
     header[p++] = ns & 0xFF;
-    
-    // Rest bleibt 0-Padding
-    // Layout: [2B version][1B SPKI len][68B SPKI][4B msgPN][4B msgNs][9B padding]
-    //              2     +     1      +   68   +    4    +    4    +    9      = 88 ✓
+
+    // p = 81 now (2 + 79)
+    // '#' padding to reach 88 bytes
+    memset(&header[p], '#', 88 - p);
+    // Layout: [2B Word16=79][2B version][1B len][68B SPKI][4B msgPN][4B msgNs][7B '#']
+    //              2       +     2     +   1   +   68   +    4    +    4    +   7   = 88 ✓
 }
 
 // ============== Encrypt Message ==============
@@ -388,18 +394,12 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     uint8_t *padded_payload = malloc(padded_msg_len);
     if (!padded_payload) return -1;
     
-    // Padding format: [8-byte Int64 BE length][plaintext][###...###]
-    // SimpleX uses Int64 (8 bytes) for padded message length prefix!
-    padded_payload[0] = 0x00;
-    padded_payload[1] = 0x00;
-    padded_payload[2] = 0x00;
-    padded_payload[3] = 0x00;
-    padded_payload[4] = 0x00;
-    padded_payload[5] = 0x00;
-    padded_payload[6] = (pt_len >> 8) & 0xFF;
-    padded_payload[7] = pt_len & 0xFF;
-    memcpy(&padded_payload[8], plaintext, pt_len);
-    memset(&padded_payload[8 + pt_len], '#', padded_msg_len - 8 - pt_len);
+    // Padding format: [2-byte Word16 BE length][plaintext][###...###]
+    // SimpleX Crypto.hs pad() uses Word16 (2 bytes) for AES-GCM!
+    padded_payload[0] = (pt_len >> 8) & 0xFF;
+    padded_payload[1] = pt_len & 0xFF;
+    memcpy(&padded_payload[2], plaintext, pt_len);
+    memset(&padded_payload[2 + pt_len], '#', padded_msg_len - 2 - pt_len);
     
     // 7. Encrypt PADDED Payload
     uint8_t *encrypted_payload = malloc(padded_msg_len);
