@@ -2,13 +2,13 @@
 
 ## The Final Encoding Bugs
 
-**Date:** January 24, 2026
-**Version:** v0.1.26 to v0.1.28-alpha
+**Date:** January 24, 2026  
+**Version:** v0.1.26 to v0.1.28-alpha  
 **Bugs Fixed:** #10, #11, #12
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
 1. [Session Overview](#1-session-overview)
 2. [Contact Address Handshake Flow](#2-contact-address-handshake-flow)
@@ -26,20 +26,15 @@
 ### 1.1 Starting Point
 
 After Session 5's breakthrough with X448 byte order, all cryptographic values were verified. Yet A_MESSAGE persisted. This session focused on the SMPQueueInfo structure within the AgentConnInfoReply.
-
-### 1.2 The Hunt Continues
 `
 Session 6 Start:
-═══════════════════════════════════════════════════════════════════
 
-✅ 9 bugs fixed (Sessions 4-5)
-✅ All crypto verified (100% Python match)
-✅ Server accepts messages
-❌ App: A_MESSAGE persists
+  [OK] 9 bugs fixed (Sessions 4-5)
+  [OK] All crypto verified (100% Python match)
+  [OK] Server accepts messages
+  [FAIL] App: A_MESSAGE persists
 
-Focus: SMPQueueInfo encoding in AgentConnInfoReply
-
-═══════════════════════════════════════════════════════════════════
+  Focus: SMPQueueInfo encoding in AgentConnInfoReply
 `
 
 ---
@@ -49,27 +44,24 @@ Focus: SMPQueueInfo encoding in AgentConnInfoReply
 ### 2.1 The Complete Flow
 `
 Contact Address Handshake (q=c):
-═══════════════════════════════════════════════════════════════════
 
-ESP32                    SMP Server              SimpleX App
-  │                          │                        │
-  │  QR/Link created         │                        │
-  │◄─────────────────────────│                        │
-  │                          │   App scans QR         │
-  │                          │◄───────────────────────│
-  │  agentInvitation         │                        │
-  │◄─────────────────────────│  (E2E keys + KEM)     │
-  │                          │                        │
-  │  agentConfirmation (E2E) │                        │
-  ├─────────────────────────►│  Server: OK ✅        │
-  │                          │                        │
-  │  HELLO (E2E)             │                        │
-  ├─────────────────────────►│  Server: OK ✅        │
-  │                          │                        │
-  │                          │  App receives...       │
-  │                          │  → error agent ❌      │
-
-═══════════════════════════════════════════════════════════════════
+  ESP32                    SMP Server              SimpleX App
+    |                          |                        |
+    |  QR/Link created         |                        |
+    |<-------------------------|                        |
+    |                          |   App scans QR         |
+    |                          |<-----------------------|
+    |  agentInvitation         |                        |
+    |<-------------------------|  (E2E keys + KEM)      |
+    |                          |                        |
+    |  agentConfirmation (E2E) |                        |
+    |------------------------->|  Server: OK            |
+    |                          |                        |
+    |  HELLO (E2E)             |                        |
+    |------------------------->|  Server: OK            |
+    |                          |                        |
+    |                          |  App receives...       |
+    |                          |  -> error agent ??     |
 `
 
 ### 2.2 What We Send
@@ -77,11 +69,11 @@ ESP32                    SMP Server              SimpleX App
 In AgentConnInfoReply, we include our SMPQueueInfo so the app knows how to reach us:
 `
 AgentConnInfoReply Structure:
-├── 'D' tag (1 byte)
-├── smpQueues (NonEmpty list of SMPQueueInfo)
-│   ├── count (Word16 BE!)
-│   └── SMPQueueInfo[]
-└── connInfo (JSON)
+  +-- 'D' tag (1 byte)
+  +-- smpQueues (NonEmpty list of SMPQueueInfo)
+  |     +-- count (Word16 BE!)
+  |     +-- SMPQueueInfo[]
+  +-- connInfo (JSON)
 `
 
 ---
@@ -139,10 +131,10 @@ p += strlen(port_str);
 
 | Item | Status |
 |------|--------|
-| Bug identified | ✅ |
+| Bug identified | Done |
 | Root cause | Length prefix instead of space |
-| Fix implemented | ✅ |
-| Status | ✅ **FIXED** |
+| Fix implemented | Done |
+| Status | **FIXED** |
 
 ---
 
@@ -196,10 +188,10 @@ buf[p++] = 0x01;  // Low byte
 
 | Item | Status |
 |------|--------|
-| Bug identified | ✅ |
+| Bug identified | Done |
 | Root cause | 1-byte instead of Word16 |
-| Fix implemented | ✅ |
-| Status | ✅ **FIXED** |
+| Fix implemented | Done |
+| Status | **FIXED** |
 
 ---
 
@@ -254,31 +246,28 @@ buf[p++] = '0';  // WRONG: '0' is for Maybe encoding, but we shouldn't send anyt
 ### 5.5 Important Distinction
 `
 Maybe Encoding vs queueMode:
-═══════════════════════════════════════════════════════════════════
 
-Standard Maybe encoding (for e2eEncryption_, etc.):
-  Nothing → '0' (ASCII 0x30)
-  Just x  → '1' (ASCII 0x31) + encoded x
+  Standard Maybe encoding (for e2eEncryption_, etc.):
+    Nothing -> '0' (ASCII 0x30)
+    Just x  -> '1' (ASCII 0x31) + encoded x
 
-queueMode encoding (special case):
-  Nothing → "" (empty, zero bytes!)
-  Just QMMessaging → "M"
-  Just QMSubscription → "S"
+  queueMode encoding (special case):
+    Nothing -> "" (empty, zero bytes!)
+    Just QMMessaging -> "M"
+    Just QMSubscription -> "S"
 
-The "maybe" in the Haskell code means: encode if present, skip if absent.
-It's NOT the standard Maybe '0'/'1' encoding!
-
-═══════════════════════════════════════════════════════════════════
+  The "maybe" in the Haskell code means: encode if present, skip if absent.
+  It's NOT the standard Maybe '0'/'1' encoding!
 `
 
 ### 5.6 Status
 
 | Item | Status |
 |------|--------|
-| Bug identified | ✅ |
+| Bug identified | Done |
 | Root cause | Sent '0' instead of nothing |
-| Fix implemented | ✅ |
-| Status | ✅ **FIXED** |
+| Fix implemented | Done |
+| Status | **FIXED** |
 
 ---
 
@@ -287,24 +276,21 @@ It's NOT the standard Maybe '0'/'1' encoding!
 ### 6.1 Full Structure
 `
 SMPQueueInfo (for clientVersion = 8):
-═══════════════════════════════════════════════════════════════════
 
-Offset  Size    Field               Encoding
-──────────────────────────────────────────────────────────────────
-0       2       smpClientVersion    Word16 BE (0x00 0x08 = 8)
-2       1       hostCount           1 byte (0x01 = 1 host)
-3       var     host                Length-prefixed string
-var     1       space               0x20 (space separator!)
-var     var     port                String (NO length prefix!)
-var     1       keyHashLen          1 byte (0x20 = 32)
-var     32      keyHash             Raw bytes
-var     1       senderIdLen         1 byte
-var     var     senderId            Raw bytes
-var     1       dhPublicKeyLen      1 byte (0x2C = 44)
-var     44      dhPublicKey         X25519 SPKI
-var     0-1     queueMode           Nothing=empty, Just="M"/"S"
-
-═══════════════════════════════════════════════════════════════════
+  Offset  Size    Field               Encoding
+  --------------------------------------------------------------
+  0       2       smpClientVersion    Word16 BE (0x00 0x08 = 8)
+  2       1       hostCount           1 byte (0x01 = 1 host)
+  3       var     host                Length-prefixed string
+  var     1       space               0x20 (space separator!)
+  var     var     port                String (NO length prefix!)
+  var     1       keyHashLen          1 byte (0x20 = 32)
+  var     32      keyHash             Raw bytes
+  var     1       senderIdLen         1 byte
+  var     var     senderId            Raw bytes
+  var     1       dhPublicKeyLen      1 byte (0x2C = 44)
+  var     44      dhPublicKey         X25519 SPKI
+  var     0-1     queueMode           Nothing=empty, Just="M"/"S"
 `
 
 ### 6.2 Code Implementation
@@ -368,31 +354,25 @@ int encode_smp_queue_info(uint8_t *buf, smp_queue_info_t *info) {
 ### 7.2 Total Bug Count
 `
 Complete Bug List (12 bugs):
-═══════════════════════════════════════════════════════════════════
 
-Session 4: Bugs #1-8 (Wire format)
-Session 5: Bug #9 (X448 byte order)
-Session 6: Bugs #10-12 (SMPQueueInfo)
+  Session 4: Bugs #1-8 (Wire format)
+  Session 5: Bug #9 (X448 byte order)
+  Session 6: Bugs #10-12 (SMPQueueInfo)
 
-Total: 12 bugs found and fixed!
-
-═══════════════════════════════════════════════════════════════════
+  Total: 12 bugs found and fixed!
 `
 
 ### 7.3 Status After Session 6
 `
 After Session 6:
-═══════════════════════════════════════════════════════════════════
 
-✅ 12 bugs fixed
-✅ All crypto verified (100% Python match)
-✅ All wire format verified against Haskell source
-✅ Server accepts messages
-❌ App STILL shows A_MESSAGE
+  [OK] 12 bugs fixed
+  [OK] All crypto verified (100% Python match)
+  [OK] All wire format verified against Haskell source
+  [OK] Server accepts messages
+  [FAIL] App STILL shows A_MESSAGE
 
-What remains? AES-GCM verification needed...
-
-═══════════════════════════════════════════════════════════════════
+  What remains? AES-GCM verification needed...
 `
 
 ---
@@ -411,6 +391,6 @@ What remains? AES-GCM verification needed...
 
 ---
 
-*Document version: Session 6 Complete*
-*Last updated: January 24, 2026*
+*Document version: Session 6 Complete*  
+*Last updated: January 24, 2026*  
 *Total bugs fixed: 12*

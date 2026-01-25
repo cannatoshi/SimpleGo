@@ -1,14 +1,14 @@
-# Session 4: Wire Format Analysis
+﻿# Session 4: Wire Format Analysis
 
 ## The Great Bug Hunt - Finding 8 Critical Encoding Bugs
 
-**Date:** January 23-24, 2026
-**Version:** v0.1.14 to v0.1.24-alpha
+**Date:** January 23-24, 2026  
+**Version:** v0.1.14 to v0.1.24-alpha  
 **Bugs Fixed:** #1 through #8
 
 ---
 
-## 🎯 Session Overview
+## Session Overview
 
 This session marked the transition from "it compiles" to "it almost works". Through meticulous byte-level analysis of the Haskell source code, we discovered and fixed 8 critical encoding bugs that were preventing the SimpleX app from parsing our messages.
 
@@ -16,7 +16,7 @@ This session marked the transition from "it compiles" to "it almost works". Thro
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
 1. [The A_MESSAGE Error](#1-the-a_message-error)
 2. [Protocol Stack Deep Dive](#2-protocol-stack-deep-dive)
@@ -41,17 +41,14 @@ This session marked the transition from "it compiles" to "it almost works". Thro
 ### 1.1 The Paradox
 `
 The Mysterious Situation:
-═══════════════════════════════════════════════════════════════════
 
-✅ TLS 1.3 connection: Working
-✅ SMP handshake: Working
-✅ Queue creation: Working
-✅ Message sending: Server returns "OK"
-❌ SimpleX App: "error agent AGENT A_MESSAGE"
+  [OK] TLS 1.3 connection: Working
+  [OK] SMP handshake: Working
+  [OK] Queue creation: Working
+  [OK] Message sending: Server returns "OK"
+  [FAIL] SimpleX App: "error agent AGENT A_MESSAGE"
 
-The server accepts our message, but the app can't parse it!
-
-═══════════════════════════════════════════════════════════════════
+  The server accepts our message, but the app can't parse it!
 `
 
 ### 1.2 Error Location in Haskell Source
@@ -86,58 +83,55 @@ data AgentErrorType
 ### 2.1 Complete Message Structure
 `
 SimpleX Protocol Stack (Detailed):
-═══════════════════════════════════════════════════════════════════
 
-📡 Transport Layer (TLS 1.3)
-│   └── ALPN: "smp/1"
-│
-📦 SMP Protocol Layer
-│   ├── Commands: NEW, KEY, SUB, SEND, ACK, OFF, DEL
-│   ├── Server Responses: IDS, MSG, OK, ERR, END
-│   └── ClientMsgEnvelope (for SEND command)
-│       ├── PubHeader
-│       │   ├── phVersion (Word16 BE) ← SMP Client Version 1-4
-│       │   └── phE2ePubDhKey (Maybe X25519)
-│       ├── cmNonce (24 bytes)
-│       └── cmEncBody (encrypted)
-│
-🔐 Encryption Layer (crypto_box)
-│   └── ClientMessage (after decryption)
-│       ├── PrivHeader
-│       │   ├── PHConfirmation = 'K' + Ed25519 SPKI (NO length prefix!)
-│       │   └── PHEmpty = '_'
-│       └── Body (AgentMsgEnvelope)
-│
-🤝 Agent Protocol Layer
-│   ├── AgentMsgEnvelope Types:
-│   │   ├── AgentConfirmation (Tag 'C') ← WE ARE HERE!
-│   │   ├── AgentInvitation
-│   │   ├── AgentMsgEnvelope (Tag 'M')
-│   │   └── AgentRatchetKey
-│   │
-│   └── AgentConfirmation Structure:
-│       ├── agentVersion (Word16 BE) ← Agent Version 2-7
-│       ├── 'C' Tag
-│       ├── e2eEncryption_ (Maybe E2ERatchetParams)
-│       │   └── E2ERatchetParams
-│       │       ├── e2eVersion (Word16 BE) ← E2E Version 2-3
-│       │       ├── e2ePubKey1 (X448 SPKI)
-│       │       ├── e2ePubKey2 (X448 SPKI)
-│       │       └── e2eKEM (optional, v3+)
-│       └── encConnInfo (Ratchet-encrypted)
-│           └── After decryption: AgentMessage
-│               ├── 'I' = AgentConnInfo (initiating party)
-│               └── 'D' = AgentConnInfoReply (joining party) ← US!
-│
-🔄 Double Ratchet Layer
-│   ├── X3DH Key Agreement
-│   ├── Header Encryption
-│   └── Message Encryption (AES-256-GCM)
-│
-💬 Chat Protocol Layer (JSON)
-    └── {"event":"x.info","params":{...}}
+  Transport Layer (TLS 1.3)
+    ALPN: "smp/1"
 
-═══════════════════════════════════════════════════════════════════
+  SMP Protocol Layer
+    Commands: NEW, KEY, SUB, SEND, ACK, OFF, DEL
+    Server Responses: IDS, MSG, OK, ERR, END
+    ClientMsgEnvelope (for SEND command)
+      +-- PubHeader
+      |     +-- phVersion (Word16 BE) <-- SMP Client Version 1-4
+      |     +-- phE2ePubDhKey (Maybe X25519)
+      +-- cmNonce (24 bytes)
+      +-- cmEncBody (encrypted)
+
+  Encryption Layer (crypto_box)
+    ClientMessage (after decryption)
+      +-- PrivHeader
+      |     +-- PHConfirmation = 'K' + Ed25519 SPKI (NO length prefix!)
+      |     +-- PHEmpty = '_'
+      +-- Body (AgentMsgEnvelope)
+
+  Agent Protocol Layer
+    AgentMsgEnvelope Types:
+      +-- AgentConfirmation (Tag 'C') <-- WE ARE HERE!
+      +-- AgentInvitation
+      +-- AgentMsgEnvelope (Tag 'M')
+      +-- AgentRatchetKey
+
+    AgentConfirmation Structure:
+      +-- agentVersion (Word16 BE) <-- Agent Version 2-7
+      +-- 'C' Tag
+      +-- e2eEncryption_ (Maybe E2ERatchetParams)
+      |     +-- E2ERatchetParams
+      |           +-- e2eVersion (Word16 BE) <-- E2E Version 2-3
+      |           +-- e2ePubKey1 (X448 SPKI)
+      |           +-- e2ePubKey2 (X448 SPKI)
+      |           +-- e2eKEM (optional, v3+)
+      +-- encConnInfo (Ratchet-encrypted)
+            +-- After decryption: AgentMessage
+                  +-- 'I' = AgentConnInfo (initiating party)
+                  +-- 'D' = AgentConnInfoReply (joining party) <-- US!
+
+  Double Ratchet Layer
+    X3DH Key Agreement
+    Header Encryption
+    Message Encryption (AES-256-GCM)
+
+  Chat Protocol Layer (JSON)
+    {"event":"x.info","params":{...}}
 `
 
 ### 2.2 Our Position in the Stack
@@ -173,7 +167,7 @@ processClientMsg srvTs msgFlags msgBody = do
   unless (phVer isCompatible clientVRange) . throwE $ AGENT A_VERSION
 `
 
-**Our value:** 4 (0x00 0x04) ✅
+**Our value:** 4 (0x00 0x04) - OK
 
 ### 3.3 Check 2: Agent Version (Line 2908)
 `haskell
@@ -183,7 +177,7 @@ smpConfirmation ... agentVersion = do
   unless compatible $ throwE $ AGENT A_VERSION
 `
 
-**Our value:** 7 (0x00 0x07) ✅
+**Our value:** 7 (0x00 0x07) - OK
 
 ### 3.4 Check 3: E2E Version (Line 2913)
 `haskell
@@ -192,7 +186,7 @@ case e2eEncryption of
     unless (e2eVersion isCompatible e2eEncryptVRange) (throwE $ AGENT A_VERSION)
 `
 
-**Our value:** 2 (0x00 0x02) ✅
+**Our value:** 2 (0x00 0x02) - OK
 
 **All version checks pass!** The problem must be in the message format.
 
@@ -209,8 +203,8 @@ instance Encoding a => Encoding (Maybe a) where
 `
 
 **CRITICAL:** Uses ASCII characters, NOT binary!
-- `Nothing` = ASCII '0' (0x30)
-- `Just x` = ASCII '1' (0x31) + encoded value
+- Nothing = ASCII '0' (0x30)
+- Just x = ASCII '1' (0x31) + encoded value
 
 ### 4.2 ByteString Length Encoding
 
@@ -282,10 +276,10 @@ memcpy(&buf[p], spki_key1, 68);
 
 | Item | Status |
 |------|--------|
-| Bug identified | ✅ |
+| Bug identified | Done |
 | Root cause | Word16 instead of 1-byte |
-| Fix implemented | ✅ |
-| Status | ✅ **FIXED** |
+| Fix implemented | Done |
+| Status | **FIXED** |
 
 ---
 
@@ -307,7 +301,7 @@ data AgentMessage = AgentMessage
 smpEncode AgentMessage {..} = smpEncode (agentMsgId, Large agentMsgPrev, agentMsgBody)
 `
 
-The `Large` wrapper means Word16 length prefix!
+The Large wrapper means Word16 length prefix!
 
 ### 6.3 The Fix
 
@@ -328,10 +322,10 @@ buf[p++] = 0x00;  // Empty hash length (Word16 BE)
 
 | Item | Status |
 |------|--------|
-| Bug identified | ✅ |
+| Bug identified | Done |
 | Root cause | 1-byte instead of Word16 |
-| Fix implemented | ✅ |
-| Status | ✅ **FIXED** |
+| Fix implemented | Done |
+| Status | **FIXED** |
 
 ---
 
@@ -377,10 +371,10 @@ memcpy(&buf[p], dh_key_spki, 68);
 
 | Item | Status |
 |------|--------|
-| Bug identified | ✅ |
+| Bug identified | Done |
 | Root cause | Word16 instead of 1-byte |
-| Fix implemented | ✅ |
-| Status | ✅ **FIXED** |
+| Fix implemented | Done |
+| Status | **FIXED** |
 
 ---
 
@@ -426,10 +420,10 @@ This bug caused a cascade effect:
 
 | Item | Status |
 |------|--------|
-| Bug identified | ✅ |
+| Bug identified | Done |
 | Root cause | Word16 instead of 1-byte |
-| Fix implemented | ✅ |
-| Status | ✅ **FIXED** |
+| Fix implemented | Done |
+| Status | **FIXED** |
 
 ---
 
@@ -442,13 +436,13 @@ The emHeader (EncMessageHeader) size calculation was wrong due to Bug #4.
 ### 9.2 Size Calculation
 `
 EncMessageHeader Structure:
-┌───────────┬──────────┬────────────┬─────────────┬────────────────────┐
-│ ehVersion │ ehIV     │ ehAuthTag  │ ehBody-len  │ ehBody             │
-│ (2 bytes) │ (16 B)   │ (16 bytes) │ (1 byte!)   │ (88 bytes)         │
-└───────────┴──────────┴────────────┴─────────────┴────────────────────┘
+  +------------+----------+------------+-------------+--------------------+
+  | ehVersion  | ehIV     | ehAuthTag  | ehBody-len  | ehBody             |
+  | (2 bytes)  | (16 B)   | (16 bytes) | (1 byte!)   | (88 bytes)         |
+  +------------+----------+------------+-------------+--------------------+
 
-Total: 2 + 16 + 16 + 1 + 88 = 123 bytes ✅
-NOT: 2 + 16 + 16 + 2 + 88 = 124 bytes ❌
+  Total: 2 + 16 + 16 + 1 + 88 = 123 bytes (CORRECT)
+  NOT:   2 + 16 + 16 + 2 + 88 = 124 bytes (WRONG)
 `
 
 ### 9.3 The Fix
@@ -469,10 +463,10 @@ uint8_t em_header[123];
 
 | Item | Status |
 |------|--------|
-| Bug identified | ✅ |
+| Bug identified | Done |
 | Root cause | Cascaded from Bug #4 |
-| Fix implemented | ✅ |
-| Status | ✅ **FIXED** |
+| Fix implemented | Done |
+| Status | **FIXED** |
 
 ---
 
@@ -486,14 +480,14 @@ The payload AAD (Additional Authenticated Data) size was wrong due to Bug #5.
 `
 Payload AAD = rcAD (112 bytes) + emHeader (123 bytes)
 
-┌─────────────────────────────────┬──────────────────────────────────┐
-│ rcAD (112 bytes)                │ emHeader (123 bytes)             │
-├─────────────────────────────────┼──────────────────────────────────┤
-│ our_key1 (56) | peer_key1 (56)  │ [complete EncMessageHeader]      │
-└─────────────────────────────────┴──────────────────────────────────┘
+  +--------------------------------------+--------------------------------------+
+  | rcAD (112 bytes)                     | emHeader (123 bytes)                 |
+  +--------------------------------------+--------------------------------------+
+  | our_key1 (56) | peer_key1 (56)       | [complete EncMessageHeader]          |
+  +--------------------------------------+--------------------------------------+
 
-Total: 112 + 123 = 235 bytes ✅
-NOT: 112 + 124 = 236 bytes ❌
+  Total: 112 + 123 = 235 bytes (CORRECT)
+  NOT:   112 + 124 = 236 bytes (WRONG)
 `
 
 ### 10.3 The Fix
@@ -516,10 +510,10 @@ aes_gcm_encrypt(..., payload_aad, 235, ...);
 
 | Item | Status |
 |------|--------|
-| Bug identified | ✅ |
+| Bug identified | Done |
 | Root cause | Cascaded from Bug #5 |
-| Fix implemented | ✅ |
-| Status | ✅ **FIXED** |
+| Fix implemented | Done |
+| Status | **FIXED** |
 
 ---
 
@@ -561,29 +555,26 @@ memcpy(next_header_key, kdf_output + 64, 32); // bytes 64-95: next header key
 ### 11.4 Visualization
 `
 Root KDF Output (96 bytes):
-═══════════════════════════════════════════════════════════════════
 
-Position:    0-31           32-63          64-95
-             ─────────────────────────────────────
-HKDF Output: [new_root_key] [chain_key]    [next_header_key]
+  Position:    0-31           32-63          64-95
+               |--------------|--------------|--------------|
+  HKDF Output: [new_root_key] [chain_key]    [next_header_key]
 
-OLD CODE (WRONG):
-             [chain_key❌]  [root_key❌]   [ignored❌]
+  OLD CODE (WRONG):
+               [chain_key!!]  [root_key!!]   [ignored!!]
 
-NEW CODE (CORRECT):
-             [root_key✅]   [chain_key✅]  [next_header✅]
-
-═══════════════════════════════════════════════════════════════════
+  NEW CODE (CORRECT):
+               [root_key]     [chain_key]    [next_header]
 `
 
 ### 11.5 Status
 
 | Item | Status |
 |------|--------|
-| Bug identified | ✅ |
+| Bug identified | Done |
 | Root cause | Output order reversed |
-| Fix implemented | ✅ |
-| Status | ✅ **FIXED** |
+| Fix implemented | Done |
+| Status | **FIXED** |
 
 ---
 
@@ -611,37 +602,37 @@ chainKdf ck = (ck', mk, iv1, iv2)
 **Before (WRONG - swapped!):**
 `c
 // IVs from ChainKDF - WRONG!
-memcpy(msg_iv, kdf_output + 64, 16);     // ❌ This is iv1 = header_iv!
-memcpy(header_iv, kdf_output + 80, 16);  // ❌ This is iv2 = msg_iv!
+memcpy(msg_iv, kdf_output + 64, 16);     // This is iv1 = header_iv!
+memcpy(header_iv, kdf_output + 80, 16);  // This is iv2 = msg_iv!
 `
 
 **After (CORRECT):**
 `c
 // IVs from ChainKDF - CORRECT ORDER
-memcpy(header_iv, kdf_output + 64, 16);  // ✅ iv1 = Header IV (bytes 64-79)
-memcpy(msg_iv, kdf_output + 80, 16);     // ✅ iv2 = Message IV (bytes 80-95)
+memcpy(header_iv, kdf_output + 64, 16);  // iv1 = Header IV (bytes 64-79)
+memcpy(msg_iv, kdf_output + 80, 16);     // iv2 = Message IV (bytes 80-95)
 `
 
 ### 12.4 Why This Was Critical
 `
 Encryption Flow:
-1. Header Encryption: AES-GCM(header_key, header_iv, rcAD, MsgHeader)
-2. Payload Encryption: AES-GCM(msg_key, msg_iv, rcAD+emHeader, payload)
+  1. Header Encryption: AES-GCM(header_key, header_iv, rcAD, MsgHeader)
+  2. Payload Encryption: AES-GCM(msg_key, msg_iv, rcAD+emHeader, payload)
 
 With swapped IVs:
-- Header encrypted with msg_iv → wrong auth tag
-- Payload encrypted with header_iv → wrong auth tag
-- Recipient can decrypt NOTHING → A_MESSAGE!
+  - Header encrypted with msg_iv -> wrong auth tag
+  - Payload encrypted with header_iv -> wrong auth tag
+  - Recipient can decrypt NOTHING -> A_MESSAGE!
 `
 
 ### 12.5 Status
 
 | Item | Status |
 |------|--------|
-| Bug identified | ✅ |
+| Bug identified | Done |
 | Root cause | IVs swapped |
-| Fix implemented | ✅ |
-| Status | ✅ **FIXED** |
+| Fix implemented | Done |
+| Status | **FIXED** |
 
 ---
 
@@ -649,51 +640,51 @@ With swapped IVs:
 
 ### 13.1 EncRatchetMessage
 `
-┌─────────────────┬──────────────────┬────────────────┬─────────────────────┐
-│ emHeader-len    │ emHeader         │ Payload AuthTag│ Encrypted Payload   │
-│ (1 byte)        │ (123 bytes)      │ (16 bytes)     │ (Tail - no prefix)  │
-│ 0x7B            │ [EncMsgHeader]   │ [tag]          │ [encrypted]         │
-└─────────────────┴──────────────────┴────────────────┴─────────────────────┘
+  +-----------------+------------------+----------------+---------------------+
+  | emHeader-len    | emHeader         | Payload AuthTag| Encrypted Payload   |
+  | (1 byte)        | (123 bytes)      | (16 bytes)     | (Tail - no prefix)  |
+  | 0x7B            | [EncMsgHeader]   | [tag]          | [encrypted]         |
+  +-----------------+------------------+----------------+---------------------+
 `
 
 ### 13.2 EncMessageHeader (123 bytes)
 `
-┌───────────┬──────────┬────────────┬─────────────┬────────────────────┐
-│ ehVersion │ ehIV     │ ehAuthTag  │ ehBody-len  │ ehBody             │
-│ (2 bytes) │ (16 B)   │ (16 bytes) │ (1 byte)    │ (88 bytes)         │
-│ 00 02     │ [iv]     │ [tag]      │ 58          │ [encrypted header] │
-└───────────┴──────────┴────────────┴─────────────┴────────────────────┘
-Total: 2 + 16 + 16 + 1 + 88 = 123 bytes ✅
+  +-----------+----------+------------+-------------+--------------------+
+  | ehVersion | ehIV     | ehAuthTag  | ehBody-len  | ehBody             |
+  | (2 bytes) | (16 B)   | (16 bytes) | (1 byte)    | (88 bytes)         |
+  | 00 02     | [iv]     | [tag]      | 58          | [encrypted header] |
+  +-----------+----------+------------+-------------+--------------------+
+  Total: 2 + 16 + 16 + 1 + 88 = 123 bytes
 `
 
 ### 13.3 MsgHeader (88 bytes, plaintext)
 `
-┌───────────┬─────────────┬────────────────────┬──────────┬──────────┬─────────┐
-│ msgMaxVer │ msgDHRs-len │ msgDHRs (SPKI)     │ msgPN    │ msgNs    │ Padding │
-│ (2 bytes) │ (1 byte)    │ (68 bytes)         │ (4 bytes)│ (4 bytes)│ (9 B)   │
-│ 00 02     │ 44          │ [12B hdr + 56B key]│ [PN BE]  │ [Ns BE]  │ [zeros] │
-└───────────┴─────────────┴────────────────────┴──────────┴──────────┴─────────┘
-Total: 2 + 1 + 68 + 4 + 4 + 9 = 88 bytes ✅
+  +-----------+-------------+--------------------+----------+----------+---------+
+  | msgMaxVer | msgDHRs-len | msgDHRs (SPKI)     | msgPN    | msgNs    | Padding |
+  | (2 bytes) | (1 byte)    | (68 bytes)         | (4 bytes)| (4 bytes)| (9 B)   |
+  | 00 02     | 44          | [12B hdr + 56B key]| [PN BE]  | [Ns BE]  | [zeros] |
+  +-----------+-------------+--------------------+----------+----------+---------+
+  Total: 2 + 1 + 68 + 4 + 4 + 9 = 88 bytes
 `
 
 ### 13.4 HELLO Plaintext (12 bytes)
 `
-┌─────┬─────────────────────────┬───────────┬─────┐
-│ 'M' │ sndMsgId (8 bytes BE)   │ prevHash  │ 'H' │
-│ 4D  │ 00 00 00 00 00 00 00 01 │ len (2B)  │ 48  │
-│     │                         │ 00 00     │     │
-└─────┴─────────────────────────┴───────────┴─────┘
-Total: 1 + 8 + 2 + 1 = 12 bytes ✅
+  +-----+---------------------------+-----------+-----+
+  | 'M' | sndMsgId (8 bytes BE)     | prevHash  | 'H' |
+  | 4D  | 00 00 00 00 00 00 00 01   | len (2B)  | 48  |
+  |     |                           | 00 00     |     |
+  +-----+---------------------------+-----------+-----+
+  Total: 1 + 8 + 2 + 1 = 12 bytes
 `
 
 ### 13.5 E2E Params / SndE2ERatchetParams (140 bytes)
 `
-┌───────────┬─────────────┬────────────────┬─────────────┬────────────────┐
-│ e2eVer    │ key1-len    │ key1 (SPKI)    │ key2-len    │ key2 (SPKI)    │
-│ (2 bytes) │ (1 byte)    │ (68 bytes)     │ (1 byte)    │ (68 bytes)     │
-│ 00 02     │ 44          │ [SPKI key1]    │ 44          │ [SPKI key2]    │
-└───────────┴─────────────┴────────────────┴─────────────┴────────────────┘
-Total: 2 + 1 + 68 + 1 + 68 = 140 bytes ✅
+  +-----------+-------------+----------------+-------------+----------------+
+  | e2eVer    | key1-len    | key1 (SPKI)    | key2-len    | key2 (SPKI)    |
+  | (2 bytes) | (1 byte)    | (68 bytes)     | (1 byte)    | (68 bytes)     |
+  | 00 02     | 44          | [SPKI key1]    | 44          | [SPKI key2]    |
+  +-----------+-------------+----------------+-------------+----------------+
+  Total: 2 + 1 + 68 + 1 + 68 = 140 bytes
 `
 
 ---
@@ -704,12 +695,12 @@ Total: 2 + 1 + 68 + 1 + 68 = 140 bytes ✅
 
 | Bug # | Component | Issue | Fix |
 |-------|-----------|-------|-----|
-| 1 | E2E key length | Word16 → 1-byte | Use single byte |
-| 2 | prevMsgHash | 1-byte → Word16 | Use Word16 BE |
-| 3 | MsgHeader DH | Word16 → 1-byte | Use single byte |
-| 4 | ehBody length | Word16 → 1-byte | Use single byte |
-| 5 | emHeader size | 124 → 123 | Cascade from #4 |
-| 6 | Payload AAD | 236 → 235 | Cascade from #5 |
+| 1 | E2E key length | Word16 to 1-byte | Use single byte |
+| 2 | prevMsgHash | 1-byte to Word16 | Use Word16 BE |
+| 3 | MsgHeader DH | Word16 to 1-byte | Use single byte |
+| 4 | ehBody length | Word16 to 1-byte | Use single byte |
+| 5 | emHeader size | 124 to 123 | Cascade from #4 |
+| 6 | Payload AAD | 236 to 235 | Cascade from #5 |
 | 7 | Root KDF order | Swapped | Correct order |
 | 8 | Chain KDF IVs | Swapped | header=64-79, msg=80-95 |
 
@@ -723,16 +714,13 @@ Total: 2 + 1 + 68 + 1 + 68 = 140 bytes ✅
 ### 14.3 Status After Session 4
 `
 After Session 4:
-═══════════════════════════════════════════════════════════════════
 
-✅ 8 bugs fixed
-✅ Wire format verified against Haskell source
-✅ Server accepts messages
-❌ App still shows A_MESSAGE
+  [OK] 8 bugs fixed
+  [OK] Wire format verified against Haskell source
+  [OK] Server accepts messages
+  [FAIL] App still shows A_MESSAGE
 
-Next hypothesis: X448 cryptographic values might be wrong
-
-═══════════════════════════════════════════════════════════════════
+  Next hypothesis: X448 cryptographic values might be wrong
 `
 
 ---
@@ -755,6 +743,6 @@ Next hypothesis: X448 cryptographic values might be wrong
 
 ---
 
-*Document version: Session 4 Complete*
-*Last updated: January 24, 2026*
+*Document version: Session 4 Complete*  
+*Last updated: January 24, 2026*  
 *Total bugs fixed this session: 8*

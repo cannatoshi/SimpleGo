@@ -2,20 +2,20 @@
 
 ## Project Initialization and Basic Protocol Implementation
 
-**Date Range:** December 24, 2025 - January 22, 2026
+**Date Range:** December 2025 - January 22, 2026  
 **Version:** v0.1.0 to v0.1.13-alpha
 
 ---
 
-## 🚀 Project Vision
+## Project Vision
 
-**SimpleGo: The First Native ESP32 Implementation of the SimpleX Messaging Protocol**
+SimpleGo: The First Native ESP32 Implementation of the SimpleX Messaging Protocol
 
 This project aims to bring truly private, decentralized messaging to dedicated hardware devices - no smartphone required. By implementing the SMP protocol natively on ESP32 microcontrollers, we enable a new class of secure communication devices.
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
 1. [Project Goals](#1-project-goals)
 2. [Development Environment](#2-development-environment)
@@ -39,25 +39,25 @@ This project aims to bring truly private, decentralized messaging to dedicated h
 
 | Objective | Description | Status |
 |-----------|-------------|--------|
-| Native SMP | Implement SMP protocol in C, not a wrapper | ✅ |
-| ESP32 Target | Run on LilyGo T-Deck and similar devices | ✅ |
+| Native SMP | Implement SMP protocol in C, not a wrapper | Done |
+| ESP32 Target | Run on LilyGo T-Deck and similar devices | Done |
 | No Smartphone | Operate independently without a phone | In Progress |
-| Full Encryption | X3DH + Double Ratchet encryption | ✅ |
+| Full Encryption | X3DH + Double Ratchet encryption | Done |
 | App Compatible | Communicate with official SimpleX apps | In Progress |
 
 ### 1.2 Why Native Implementation?
 `
 Existing "SimpleX Clients":
-├── simplex-python     → WebSocket wrapper around CLI
-├── SimplOxide (Rust)  → WebSocket wrapper
-├── TypeScript SDK     → WebSocket wrapper
-└── All others         → WebSocket wrappers
+  simplex-python     -> WebSocket wrapper around CLI
+  SimplOxide (Rust)  -> WebSocket wrapper
+  TypeScript SDK     -> WebSocket wrapper
+  All others         -> WebSocket wrappers
 
 SimpleGo:
-└── NATIVE binary SMP protocol implementation!
-    └── Direct TCP/TLS to SMP servers
-    └── Full protocol stack in C
-    └── True embedded system client
+  NATIVE binary SMP protocol implementation!
+    - Direct TCP/TLS to SMP servers
+    - Full protocol stack in C
+    - True embedded system client
 `
 
 ---
@@ -125,10 +125,10 @@ idf.py menuconfig
 
 | Command | Description |
 |---------|-------------|
-| idf.py build | Compile the project |
-| idf.py flash -p COM5 | Flash to device |
-| idf.py monitor -p COM5 | Open serial monitor |
-| idf.py build flash monitor -p COM5 | All in one |
+| `idf.py build` | Compile the project |
+| `idf.py flash -p COM5` | Flash to device |
+| `idf.py monitor -p COM5` | Open serial monitor |
+| `idf.py build flash monitor -p COM5` | All in one |
 
 ---
 
@@ -198,15 +198,11 @@ void wifi_init_sta(void) {
 ### 4.2 Connection Status
 `
 WiFi Connection Flow:
-┌─────────────┐    ┌─────────────┐    ┌─────────────┐
-│ WIFI_EVENT  │───►│ STA_START   │───►│ Connecting  │
-│ STA_START   │    │ Connect()   │    │ ...         │
-└─────────────┘    └─────────────┘    └──────┬──────┘
-                                             │
-                   ┌─────────────┐    ┌──────▼──────┐
-                   │ Got IP!     │◄───│ IP_EVENT    │
-                   │ Ready!      │    │ STA_GOT_IP  │
-                   └─────────────┘    └─────────────┘
+
+  [WIFI_EVENT_STA_START] --> [Connect()] --> [Connecting...]
+                                                   |
+                                                   v
+  [Ready!] <-- [Got IP!] <-- [IP_EVENT_STA_GOT_IP]
 `
 
 ---
@@ -301,40 +297,37 @@ ret = esp_tls_set_global_ca_store(server_root_cert_pem_start,
 ### 7.1 Protocol Stack
 `
 SimpleX Messaging Protocol Stack:
-═══════════════════════════════════════════════════════════════════
 
-┌─────────────────────────────────────────────────────────────────┐
-│                    Chat Protocol (JSON)                         │
-│                 {"event":"x.msg","params":{...}}                │
-├─────────────────────────────────────────────────────────────────┤
-│                    Agent Protocol                               │
-│           AgentConfirmation, AgentInvitation, etc.              │
-├─────────────────────────────────────────────────────────────────┤
-│                    Double Ratchet                               │
-│              X3DH, Header Encryption, Body Encryption           │
-├─────────────────────────────────────────────────────────────────┤
-│                    SMP Protocol                                 │
-│          Commands: NEW, KEY, SUB, SEND, ACK, OFF, DEL           │
-├─────────────────────────────────────────────────────────────────┤
-│                    TLS 1.3 (ALPN: smp/1)                        │
-├─────────────────────────────────────────────────────────────────┤
-│                    TCP/IP                                       │
-└─────────────────────────────────────────────────────────────────┘
-
-═══════════════════════════════════════════════════════════════════
+  +---------------------------------------------------------------+
+  |                    Chat Protocol (JSON)                       |
+  |                 {"event":"x.msg","params":{...}}              |
+  +---------------------------------------------------------------+
+  |                    Agent Protocol                             |
+  |           AgentConfirmation, AgentInvitation, etc.            |
+  +---------------------------------------------------------------+
+  |                    Double Ratchet                             |
+  |              X3DH, Header Encryption, Body Encryption         |
+  +---------------------------------------------------------------+
+  |                    SMP Protocol                               |
+  |          Commands: NEW, KEY, SUB, SEND, ACK, OFF, DEL         |
+  +---------------------------------------------------------------+
+  |                    TLS 1.3 (ALPN: smp/1)                      |
+  +---------------------------------------------------------------+
+  |                    TCP/IP                                     |
+  +---------------------------------------------------------------+
 `
 
 ### 7.2 SMP Commands
 
 | Command | Direction | Description |
 |---------|-----------|-------------|
-| NEW | Client → Server | Create new queue |
-| KEY | Client → Server | Secure queue with key |
-| SUB | Client → Server | Subscribe to queue |
-| SEND | Client → Server | Send message to queue |
-| ACK | Client → Server | Acknowledge message |
-| OFF | Client → Server | Suspend queue |
-| DEL | Client → Server | Delete queue |
+| NEW | Client to Server | Create new queue |
+| KEY | Client to Server | Secure queue with key |
+| SUB | Client to Server | Subscribe to queue |
+| SEND | Client to Server | Send message to queue |
+| ACK | Client to Server | Acknowledge message |
+| OFF | Client to Server | Suspend queue |
+| DEL | Client to Server | Delete queue |
 
 ### 7.3 SMP Responses
 
@@ -354,21 +347,18 @@ SimpleX Messaging Protocol Stack:
 ### 8.1 Initial Connection
 `
 SMP Handshake Flow:
-═══════════════════════════════════════════════════════════════════
 
-Client                              Server
-   │                                   │
-   │ ──── TLS 1.3 Handshake ─────────► │
-   │ ◄─── TLS Established ──────────── │
-   │                                   │
-   │ ──── SMP Version Info ──────────► │
-   │ ◄─── Server Version ───────────── │
-   │                                   │
-   │ ──── NEW (create queue) ────────► │
-   │ ◄─── IDS (queue IDs) ───────────  │
-   │                                   │
-
-═══════════════════════════════════════════════════════════════════
+  Client                              Server
+     |                                   |
+     | ---- TLS 1.3 Handshake ---------> |
+     | <--- TLS Established ------------ |
+     |                                   |
+     | ---- SMP Version Info ----------> |
+     | <--- Server Version ------------- |
+     |                                   |
+     | ---- NEW (create queue) --------> |
+     | <--- IDS (queue IDs) ------------ |
+     |                                   |
 `
 
 ### 8.2 SMP Transmission Block
@@ -376,11 +366,11 @@ Client                              Server
 Every SMP message is wrapped in a transmission block:
 `
 SMP Transmission Block:
-┌─────────────┬────────────────────────────────────────┐
-│ Length      │ Payload                                │
-│ (2 bytes)   │ (variable)                             │
-│ Big Endian  │                                        │
-└─────────────┴────────────────────────────────────────┘
+  +-------------+----------------------------------------+
+  | Length      | Payload                                |
+  | (2 bytes)   | (variable)                             |
+  | Big Endian  |                                        |
+  +-------------+----------------------------------------+
 `
 
 ### 8.3 Session ID and Commands
@@ -405,21 +395,18 @@ In SimpleX, communication happens through **queues**:
 - Sender and Recipient have different keys
 - Queues are identified by random IDs
 `
-Simplex Queue Model:
-═══════════════════════════════════════════════════════════════════
+SimpleX Queue Model:
 
-              ┌──────────────────────────────┐
-              │        SMP Server            │
-              │                              │
-   Sender ───►│  Queue (senderId, rcvId)  ───│───► Recipient
-              │                              │
-              └──────────────────────────────┘
+                +------------------------------+
+                |        SMP Server            |
+                |                              |
+  Sender -----> |  Queue (senderId, rcvId)  ---|----- > Recipient
+                |                              |
+                +------------------------------+
 
-- Sender knows: senderId, sender private key
-- Recipient knows: rcvId, recipient private key
-- Server stores: encrypted messages
-
-═══════════════════════════════════════════════════════════════════
+  - Sender knows: senderId, sender private key
+  - Recipient knows: rcvId, recipient private key
+  - Server stores: encrypted messages
 `
 
 ### 9.2 NEW Command
@@ -491,11 +478,11 @@ int verify_signature(const uint8_t *message, size_t msg_len,
 SimpleX transmits Ed25519 keys in SPKI (Subject Public Key Info) format:
 `
 Ed25519 SPKI (44 bytes):
-┌──────────────────────────────────┬────────────────────────────────┐
-│ Header (12 bytes)                │ Raw Key (32 bytes)             │
-│ 30 2a 30 05 06 03 2b 65 70      │ [public key bytes]             │
-│ 03 21 00                         │                                │
-└──────────────────────────────────┴────────────────────────────────┘
+  +----------------------------------+--------------------------------+
+  | Header (12 bytes)                | Raw Key (32 bytes)             |
+  | 30 2a 30 05 06 03 2b 65 70       | [public key bytes]             |
+  | 03 21 00                         |                                |
+  +----------------------------------+--------------------------------+
 `
 
 ---
@@ -523,11 +510,11 @@ int x25519_shared_secret(uint8_t *shared_secret,
 ### 11.2 X25519 SPKI Format
 `
 X25519 SPKI (44 bytes):
-┌──────────────────────────────────┬────────────────────────────────┐
-│ Header (12 bytes)                │ Raw Key (32 bytes)             │
-│ 30 2a 30 05 06 03 2b 65 6e      │ [public key bytes]             │
-│ 03 21 00                         │                                │
-└──────────────────────────────────┴────────────────────────────────┘
+  +----------------------------------+--------------------------------+
+  | Header (12 bytes)                | Raw Key (32 bytes)             |
+  | 30 2a 30 05 06 03 2b 65 6e       | [public key bytes]             |
+  | 03 21 00                         |                                |
+  +----------------------------------+--------------------------------+
 `
 
 ---
@@ -538,14 +525,14 @@ X25519 SPKI (44 bytes):
 
 | Milestone | Status | Notes |
 |-----------|--------|-------|
-| ESP-IDF project setup | ✅ | v5.5.2 |
-| WiFi connectivity | ✅ | Station mode |
-| TCP socket layer | ✅ | lwIP sockets |
-| TLS 1.3 connection | ✅ | mbedTLS, ALPN smp/1 |
-| SMP version negotiation | ✅ | Version 1-4 |
-| Queue creation (NEW) | ✅ | IDS response |
-| Ed25519 signatures | ✅ | libsodium |
-| X25519 key exchange | ✅ | libsodium |
+| ESP-IDF project setup | Done | v5.5.2 |
+| WiFi connectivity | Done | Station mode |
+| TCP socket layer | Done | lwIP sockets |
+| TLS 1.3 connection | Done | mbedTLS, ALPN smp/1 |
+| SMP version negotiation | Done | Version 1-4 |
+| Queue creation (NEW) | Done | IDS response |
+| Ed25519 signatures | Done | libsodium |
+| X25519 key exchange | Done | libsodium |
 
 ### 12.2 Code Statistics
 
@@ -580,5 +567,5 @@ X25519 SPKI (44 bytes):
 
 ---
 
-*Document version: Session 1-3 Complete*
+*Document version: Session 1-3 Complete*  
 *Last updated: January 22, 2026*

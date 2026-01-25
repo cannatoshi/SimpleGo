@@ -2,13 +2,13 @@
 
 ## The wolfSSL Byte-Order Discovery
 
-**Date:** January 24, 2026
-**Version:** v0.1.25-alpha
+**Date:** January 24, 2026  
+**Version:** v0.1.25-alpha  
 **Bug Fixed:** #9 - The Critical X448 Bug
 
 ---
 
-## 🎉 THE BREAKTHROUGH
+## THE BREAKTHROUGH
 
 After fixing 8 encoding bugs in Session 4, the A_MESSAGE error persisted. Session 5 brought the breakthrough: **wolfSSL's X448 implementation outputs keys in reversed byte order compared to what SimpleX expects!**
 
@@ -16,7 +16,7 @@ This was the moment everything started making sense.
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
 1. [Session Overview](#1-session-overview)
 2. [The Investigation](#2-the-investigation)
@@ -35,16 +35,13 @@ This was the moment everything started making sense.
 ### 1.1 Starting Point
 `
 Session 5 Start:
-═══════════════════════════════════════════════════════════════════
 
-✅ 8 encoding bugs fixed (Session 4)
-✅ Wire format verified
-✅ Server accepts messages
-❌ App: "error agent A_MESSAGE"
+  [OK] 8 encoding bugs fixed (Session 4)
+  [OK] Wire format verified
+  [OK] Server accepts messages
+  [FAIL] App: "error agent A_MESSAGE"
 
-Hypothesis: Crypto values might be wrong
-
-═══════════════════════════════════════════════════════════════════
+  Hypothesis: Crypto values might be wrong
 `
 
 ### 1.2 The Key Question
@@ -87,17 +84,14 @@ print(f"Python shared secret: {shared_secret.hex()}")
 ### 2.3 The Discovery
 `
 Comparison Results:
-═══════════════════════════════════════════════════════════════════
 
-ESP32 (wolfSSL) shared secret:
-  a1 b2 c3 d4 e5 f6 ... (56 bytes)
+  ESP32 (wolfSSL) shared secret:
+    a1 b2 c3 d4 e5 f6 ... (56 bytes)
 
-Python (cryptography) shared secret:
-  ... f6 e5 d4 c3 b2 a1  (56 bytes) ← REVERSED!
+  Python (cryptography) shared secret:
+    ... f6 e5 d4 c3 b2 a1  (56 bytes) <-- REVERSED!
 
-THE BYTES ARE IN OPPOSITE ORDER!
-
-═══════════════════════════════════════════════════════════════════
+  THE BYTES ARE IN OPPOSITE ORDER!
 `
 
 ---
@@ -109,22 +103,19 @@ THE BYTES ARE IN OPPOSITE ORDER!
 wolfSSL's Curve448 implementation uses **little-endian** byte order internally, while SimpleX (using Haskell's cryptonite library) expects **big-endian** byte order.
 `
 Byte Order Difference:
-═══════════════════════════════════════════════════════════════════
 
-wolfSSL output (little-endian):
-  [byte_55][byte_54][byte_53]...[byte_2][byte_1][byte_0]
+  wolfSSL output (little-endian):
+    [byte_55][byte_54][byte_53]...[byte_2][byte_1][byte_0]
 
-SimpleX expects (big-endian):
-  [byte_0][byte_1][byte_2]...[byte_53][byte_54][byte_55]
+  SimpleX expects (big-endian):
+    [byte_0][byte_1][byte_2]...[byte_53][byte_54][byte_55]
 
-They are EXACTLY REVERSED!
-
-═══════════════════════════════════════════════════════════════════
+  They are EXACTLY REVERSED!
 `
 
 ### 3.2 Root Cause Analysis
 
-wolfSSL defines `EC448_LITTLE_ENDIAN` for its Curve448 implementation. This affects:
+wolfSSL defines EC448_LITTLE_ENDIAN for its Curve448 implementation. This affects:
 - Public key export
 - Private key export
 - Shared secret output
@@ -172,9 +163,9 @@ print(f"ESP32 reversed:  {reverse_bytes(esp32_public).hex()}")
 print(f"Python computed: {computed_public.hex()}")
 
 if reverse_bytes(esp32_public) == computed_public:
-    print("✅ Public key matches when reversed!")
+    print("[OK] Public key matches when reversed!")
 else:
-    print("❌ Public key mismatch")
+    print("[FAIL] Public key mismatch")
 
 # Test 2: Verify DH shared secret
 peer_public = bytes.fromhex("PEER_PUBLIC_KEY_HEX_HERE")
@@ -186,29 +177,26 @@ print(f"ESP32 reversed:  {reverse_bytes(esp32_shared).hex()}")
 print(f"Python shared:   {python_shared.hex()}")
 
 if reverse_bytes(esp32_shared) == python_shared:
-    print("✅ Shared secret matches when reversed!")
+    print("[OK] Shared secret matches when reversed!")
 else:
-    print("❌ Shared secret mismatch")
+    print("[FAIL] Shared secret mismatch")
 `
 
 ### 4.2 Verification Results
 `
 Verification Output:
-═══════════════════════════════════════════════════════════════════
 
-ESP32 public:    a1b2c3...
-ESP32 reversed:  ...c3b2a1
-Python computed: ...c3b2a1
-✅ Public key matches when reversed!
+  ESP32 public:    a1b2c3...
+  ESP32 reversed:  ...c3b2a1
+  Python computed: ...c3b2a1
+  [OK] Public key matches when reversed!
 
-ESP32 shared:    d4e5f6...
-ESP32 reversed:  ...f6e5d4
-Python shared:   ...f6e5d4
-✅ Shared secret matches when reversed!
+  ESP32 shared:    d4e5f6...
+  ESP32 reversed:  ...f6e5d4
+  Python shared:   ...f6e5d4
+  [OK] Shared secret matches when reversed!
 
-CONFIRMED: wolfSSL outputs are byte-reversed!
-
-═══════════════════════════════════════════════════════════════════
+  CONFIRMED: wolfSSL outputs are byte-reversed!
 `
 
 ---
@@ -383,51 +371,41 @@ def verify_chain_kdf(chain_key):
         'header_iv': output[64:80],   # bytes 64-79
         'message_iv': output[80:96]   # bytes 80-95
     }
-
-# Usage example with ESP32 values
-if __name__ == "__main__":
-    # Insert ESP32 key values here (after byte-reversal fix)
-    # our_sk1_priv = bytes.fromhex("...")
-    # ...
-    pass
 `
 
 ### 6.2 After the Fix - 100% Match!
 `
 Verification Results (After Fix):
-═══════════════════════════════════════════════════════════════════
 
-X448 Diffie-Hellman:
-  ESP32:  a1b2c3d4e5f6... (56 bytes)
-  Python: a1b2c3d4e5f6... (56 bytes)
-  ✅ 100% MATCH!
+  X448 Diffie-Hellman:
+    ESP32:  a1b2c3d4e5f6... (56 bytes)
+    Python: a1b2c3d4e5f6... (56 bytes)
+    [OK] 100% MATCH!
 
-X3DH Key Agreement:
-  ESP32 header_key:  1234567890...
-  Python header_key: 1234567890...
-  ✅ 100% MATCH!
+  X3DH Key Agreement:
+    ESP32 header_key:  1234567890...
+    Python header_key: 1234567890...
+    [OK] 100% MATCH!
 
-Root KDF:
-  ESP32 chain_key:  abcdef...
-  Python chain_key: abcdef...
-  ✅ 100% MATCH!
+  Root KDF:
+    ESP32 chain_key:  abcdef...
+    Python chain_key: abcdef...
+    [OK] 100% MATCH!
 
-Chain KDF:
-  ESP32 message_key: 112233...
-  Python message_key: 112233...
-  ✅ 100% MATCH!
+  Chain KDF:
+    ESP32 message_key: 112233...
+    Python message_key: 112233...
+    [OK] 100% MATCH!
 
-  ESP32 header_iv: aabbcc...
-  Python header_iv: aabbcc...
-  ✅ 100% MATCH!
+    ESP32 header_iv: aabbcc...
+    Python header_iv: aabbcc...
+    [OK] 100% MATCH!
 
-  ESP32 msg_iv: ddeeff...
-  Python msg_iv: ddeeff...
-  ✅ 100% MATCH!
+    ESP32 msg_iv: ddeeff...
+    Python msg_iv: ddeeff...
+    [OK] 100% MATCH!
 
-ALL CRYPTOGRAPHIC VALUES VERIFIED!
-
-═══════════════════════════════════════════════════════════════════
+  ALL CRYPTOGRAPHIC VALUES VERIFIED!
 `
 
 ---
@@ -449,26 +427,23 @@ ALL CRYPTOGRAPHIC VALUES VERIFIED!
 ### 7.2 Lessons Learned
 `
 Key Takeaways:
-═══════════════════════════════════════════════════════════════════
 
-1. CRYPTO LIBRARIES ARE NOT INTERCHANGEABLE
-   └── Byte order can vary between implementations
-   └── Always verify against test vectors or reference implementations
+  1. CRYPTO LIBRARIES ARE NOT INTERCHANGEABLE
+     - Byte order can vary between implementations
+     - Always verify against test vectors or reference implementations
 
-2. PYTHON COMPARISON TESTS ARE INVALUABLE
-   └── Python's cryptography library matches SimpleX's cryptonite
-   └── Use Python to verify ESP32 crypto outputs
+  2. PYTHON COMPARISON TESTS ARE INVALUABLE
+     - Python's cryptography library matches SimpleX's cryptonite
+     - Use Python to verify ESP32 crypto outputs
 
-3. THE ERROR WAS INVISIBLE AT THE ENCODING LEVEL
-   └── Wire format was correct
-   └── Server accepted messages
-   └── But crypto values were all wrong!
+  3. THE ERROR WAS INVISIBLE AT THE ENCODING LEVEL
+     - Wire format was correct
+     - Server accepted messages
+     - But crypto values were all wrong!
 
-4. SYSTEMATIC DEBUGGING WORKS
-   └── Compare each layer independently
-   └── Verify inputs and outputs at each step
-
-═══════════════════════════════════════════════════════════════════
+  4. SYSTEMATIC DEBUGGING WORKS
+     - Compare each layer independently
+     - Verify inputs and outputs at each step
 `
 
 ---
@@ -494,21 +469,18 @@ Key Takeaways:
 | Library | wolfSSL |
 | Issue | Little-endian output |
 | Solution | Reverse all X448 bytes |
-| Status | ✅ **FIXED** |
+| Status | **FIXED** |
 
 ### 8.3 Status After Session 5
 `
 After Session 5:
-═══════════════════════════════════════════════════════════════════
 
-✅ 9 bugs fixed (8 encoding + 1 crypto)
-✅ All cryptographic values verified against Python
-✅ Server accepts messages
-❌ App STILL shows A_MESSAGE (but we're close!)
+  [OK] 9 bugs fixed (8 encoding + 1 crypto)
+  [OK] All cryptographic values verified against Python
+  [OK] Server accepts messages
+  [FAIL] App STILL shows A_MESSAGE (but we're close!)
 
-Remaining investigation: SMPQueueInfo encoding
-
-═══════════════════════════════════════════════════════════════════
+  Remaining investigation: SMPQueueInfo encoding
 `
 
 ---
@@ -529,6 +501,6 @@ Remaining investigation: SMPQueueInfo encoding
 
 ---
 
-*Document version: Session 5 Complete*
-*Last updated: January 24, 2026*
+*Document version: Session 5 Complete*  
+*Last updated: January 24, 2026*  
 *The Breakthrough Session - wolfSSL byte order discovered!*
