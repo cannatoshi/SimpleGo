@@ -1,180 +1,225 @@
-# SimpleGo 🔐
+# SimpleGo
 
-**Native implementation of the SimpleX Messaging Protocol (SMP) for embedded systems.**
+> **The First Native SimpleX SMP Client for ESP32 — Ready to Send Confirmation!** — Part of the Sentinel Secure Messenger Suite
 
-Secure messaging without smartphones.
-
-[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-0.1.15--alpha-green.svg)](CHANGELOG.md)
-[![Platform](https://img.shields.io/badge/platform-ESP32--S3-orange.svg)](https://www.espressif.com/)
-
----
-
-## Vision
-
-What if secure messaging didn't require a smartphone?
-
-SimpleGo brings the SimpleX protocol to ESP32 microcontrollers, enabling truly private communication on minimal, auditable hardware. No app stores. No telemetry. No bloat. Just cryptography.
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
+[![Platform: ESP32-S3](https://img.shields.io/badge/Platform-ESP32--S3-green.svg)](https://www.espressif.com/en/products/socs/esp32-s3)
+[![Framework: ESP-IDF 5.5](https://img.shields.io/badge/Framework-ESP--IDF%205.5-red.svg)](https://docs.espressif.com/projects/esp-idf/)
+[![Version: v0.1.13-alpha](https://img.shields.io/badge/Version-v0.1.13--alpha-orange.svg)]()
+[![Status: Peer Queue Parsed](https://img.shields.io/badge/Status-Peer%20Queue%20Parsed-brightgreen.svg)]()
 
 ---
 
-## Why Dedicated Hardware?
+## 🎯 Vision
 
-Modern smartphones contain ~50 million lines of code, hundreds of background processes, and a closed-source baseband processor that can never be fully audited or disabled.
-
-SimpleGo takes a different approach: **minimal trusted computing base**.
-
-| Aspect | Smartphone | SimpleGo |
-|--------|------------|----------|
-| Lines of Code | ~50 million | ~50,000 |
-| Baseband Processor | ✅ Closed-source black box | ❌ WiFi +4G only, open source |
-| Background Processes | Hundreds | One |
-| Telemetry | Google/Apple services | None |
-| Attack Surface | Massive | Minimal |
-| Cost | $500+ | ~$15-50 |
-| Disposable | No | Yes |
-
-**The most secure system is often the simplest one.**
-
-For a detailed analysis, see [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md).
+SimpleGo brings [SimpleX Chat](https://simplex.chat/) — the first messaging platform without user identifiers — to standalone hardware devices. No smartphone required, no cloud dependency, complete privacy in your pocket.
 
 ---
 
-## Current Status: v0.1.15-alpha
+## 🔧 MILESTONE: Peer Queue Parsing!
 
-🏆 **First native SMP protocol implementation outside the official Haskell codebase.**
+**As of v0.1.13-alpha (January 21, 2026)**, SimpleGo correctly parses AgentInvitation and extracts peer server info!
 
-### What Works
+```
+💬 MESSAGE for [Test]!
+🔓 Layer 3 Decrypted: 16106 bytes
+🔓 Layer 5 Decrypted: 847 bytes
+📋 Agent: Version=7, Type='I' (Invitation)
+📡 Peer Server: smp15.simplex.im:5223
+📮 Queue ID: ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK
+✅ READY TO SEND CONFIRMATION
+```
 
-| Component | Status | Verification |
-|-----------|--------|--------------|
-| TLS 1.3 Connection | ✅ | ALPN "smp/1" |
-| SMP Handshake | ✅ | Version negotiation |
-| Queue Creation | ✅ | Server accepts |
-| X3DH Key Agreement | ✅ | Python-verified |
-| Double Ratchet | ✅ | Python-verified |
-| AES-256-GCM | ✅ | Python-verified |
-| HKDF-SHA512 | ✅ | Python-verified |
-| Wire Format | ✅ | Haskell source verified |
-| Server Response | ✅ | "OK" |
-
-### In Progress
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| App Compatibility | 90% | Final message parsing |
-
-### Cryptographic Verification
-
-All cryptographic operations have been verified byte-for-byte against Python reference implementations:
-
-- X448 Diffie-Hellman (with wolfSSL byte-order handling)
-- HKDF-SHA512 for X3DH, Root KDF, and Chain KDF
-- AES-256-GCM with 16-byte IV (GHASH transformation verified)
-- Complete wire format encoding
+**ESP32 knows where to send the confirmation response!** 🎉
 
 ---
 
-## Hardware Security
+## 🎯 What is SimpleGo?
 
-The ESP32-S3 provides hardware-level security features:
+SimpleGo is a **groundbreaking open-source project** that implements a native [SimpleX Messaging Protocol (SMP)](https://github.com/simplex-chat/simplexmq/blob/stable/protocol/simplex-messaging.md) client for ESP32 microcontrollers. This is the **first known implementation** of the SimpleX protocol outside of the official Haskell codebase.
 
-| Feature | Description |
-|---------|-------------|
-| **Secure Boot** | RSA-3072/ECDSA firmware signature verification |
-| **Flash Encryption** | AES-256-XTS encrypted storage |
-| **eFuse Protection** | One-time programmable security bits |
-| **JTAG Disable** | Permanently disable debug access |
-| **Hardware Crypto** | Accelerated AES, SHA, RSA, TRNG |
+**Why is this significant?**
 
-Combined with a minimal codebase and no baseband processor, this creates a security model that eliminates entire categories of attacks that smartphone users must accept.
+All existing SimpleX clients (mobile apps, desktop, CLI) use the Haskell core library via FFI. SimpleGo implements the protocol **from scratch in C**, enabling:
 
----
-
-## Architecture
-
-### Module Structure
-
-| Module | Purpose |
-|--------|---------|
-| `smp_network.c` | TLS 1.3 transport |
-| `smp_handshake.c` | SMP protocol handshake |
-| `smp_x448.c` | X448 key exchange |
-| `smp_ratchet.c` | Double Ratchet state machine |
-| `smp_crypto.c` | Ed25519, X25519, AES-GCM |
-| `smp_peer.c` | Peer connection management |
-| `smp_parser.c` | Protocol message parsing |
-| `smp_queue.c` | Queue information encoding |
-| `smp_contacts.c` | Contact address handling |
-
-### Dependencies
-
-| Library | Purpose |
-|---------|---------|
-| mbedTLS | TLS 1.3, AES-GCM |
-| wolfSSL | X448/Curve448 |
-| libsodium | Ed25519, X25519 |
+- 📱 **Smartphone-free messaging** — No dependency on mobile devices
+- 🔒 **Hardware-level privacy** — Dedicated secure communication device
+- 🌐 **Offline-first design** — Store-and-forward with local encryption
+- 🔧 **Full protocol control** — No black-box dependencies
 
 ---
 
-## Hardware Targets
+## 🏗️ Architecture
 
-| Device | Status | Description |
-|--------|--------|-------------|
-| LilyGo T-Deck | Primary | ESP32-S3 with keyboard and display |
-| LilyGo T-Embed | Planned | Compact form factor |
-| Generic ESP32-S3 | Supported | PSRAM recommended |
-
----
-
-## Building
-
-### Prerequisites
-
-- ESP-IDF 5.5.2 or newer
-- Python 3.8+
-
-### Build Commands
-
-```bash
-cd simplex_client
-idf.py build flash monitor -p COM5
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       SimpleGo Client                           │
+├─────────────────────────────────────────────────────────────────┤
+│  UI Layer                                       📋 PLANNED      │
+│  └── OLED/LCD Display (LVGL planned)                            │
+├─────────────────────────────────────────────────────────────────┤
+│  Connection Handler                             🔧 IN PROGRESS  │
+│  ├── peer_queue_t Structure                     ✅ NEW!         │
+│  ├── Peer Server Extraction                     ✅ NEW!         │
+│  ├── Queue ID Extraction                        ✅ NEW!         │
+│  ├── DH Key Extraction                          🔧 In Progress  │
+│  └── CONF Response Builder                      ⏳ Next         │
+├─────────────────────────────────────────────────────────────────┤
+│  Agent Protocol Layer                           ✅ COMPLETE     │
+│  ├── Message Type Fix ('_' + 3)                 ✅ FIXED!       │
+│  ├── AgentInvitation Parser (Type 'I')          ✅ Working      │
+│  └── url_decode_inplace()                       ✅ NEW!         │
+├─────────────────────────────────────────────────────────────────┤
+│  Message Decryption Stack                       ✅ COMPLETE     │
+│  ├── Layer 3: SMP E2E (server DH)                               │
+│  ├── Layer 5: Client DH (contact DH)                            │
+│  └── Layer 6: Agent Protocol Parsing                            │
+├─────────────────────────────────────────────────────────────────┤
+│  Contact Management                             ✅ COMPLETE     │
+│  ├── Multi-Contact Database (10 slots)                          │
+│  ├── NVS Persistence                                            │
+│  └── Message Routing                                            │
+├─────────────────────────────────────────────────────────────────┤
+│  Crypto Engine                                  ✅ COMPLETE     │
+│  ├── Ed25519 + X25519 (libsodium)                               │
+│  └── crypto_box (XSalsa20-Poly1305)                             │
+├─────────────────────────────────────────────────────────────────┤
+│  SMP Protocol Layer                             ✅ COMPLETE     │
+│  ├── NEW, SUB, SEND, MSG, ACK, DEL                              │
+│  └── TLS 1.3 + 16KB Block Framing                               │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Documentation
+## ✅ What's Working
 
-| Document | Description |
-|----------|-------------|
-| [CHANGELOG.md](CHANGELOG.md) | Version history |
-| [ROADMAP.md](ROADMAP.md) | Development plan |
-| [docs/SECURITY_MODEL.md](docs/SECURITY_MODEL.md) | Security architecture |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Module structure |
-| [docs/CRYPTO.md](docs/CRYPTO.md) | Cryptographic details |
-| [docs/WIRE_FORMAT.md](docs/WIRE_FORMAT.md) | Protocol encoding |
-| [docs/BUGS.md](docs/BUGS.md) | Known issues |
+### Message Type Parsing (FIXED in v0.1.13!)
+
+```
+Message Format After DH Decryption:
+
+2a a5 5f 00 07 49 ...
+*  ?  _  ver   I
+0  1  2  3  4  5
+
+✅ Find '_' delimiter (position 2)
+✅ Read version at +1,+2 (Big Endian)
+✅ Read type at +3 ('C', 'I', 'M', 'R')
+```
+
+### Peer Queue Extraction
+
+| Data | Status | Example |
+|------|--------|---------|
+| Peer Server | ✅ Extracted | `smp15.simplex.im` |
+| Port | ✅ Extracted | `5223` |
+| Queue ID | ✅ Extracted | `ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK` |
+| Key Hash | ✅ Extracted | (32 bytes) |
+| DH Public Key | 🔧 In Progress | (multi-encoded URL) |
+
+### Agent Message Types
+
+| Type | Name | Status |
+|------|------|--------|
+| `'I'` | AgentInvitation | ✅ Parsed |
+| `'C'` | AgentConfirmation | ⏳ Next (to send) |
+| `'M'` | AgentMsgEnvelope | 📋 Planned |
+| `'R'` | AgentRatchetKey | 📋 Planned |
+
+### Features Summary
+
+| Feature | Status |
+|---------|--------|
+| **Message Type Fix** | ✅ **FIXED!** |
+| **Peer Server Extraction** | ✅ **NEW!** |
+| **Queue ID Extraction** | ✅ **NEW!** |
+| **url_decode_inplace()** | ✅ **NEW!** |
+| Agent Protocol (Layer 6) | ✅ Complete |
+| Client DH Decrypt (Layer 5) | ✅ Complete |
+| SMP E2E (Layer 3) | ✅ Complete |
+| Multi-Contact | ✅ Complete |
+| All SMP Commands | ✅ Complete |
+| DH Key Extraction | 🔧 In Progress |
+| CONF Response | ⏳ Next |
 
 ---
 
-## Contributing
+## 🔧 Hardware
 
-Contributions are welcome. Please see [CONTRIBUTING.md](CONTRIBUTING.md).
+### Target Hardware
 
----
-
-## Security
-
-For security vulnerabilities, please see [SECURITY.md](SECURITY.md).
-
----
-
-## License
-
-AGPL-3.0 - See [LICENSE](LICENSE).
+| Device | Status | Features |
+|--------|--------|----------|
+| **LilyGo T-Deck** | 🎯 Primary | ESP32-S3, 2.8" LCD, Keyboard |
+| **LilyGo T-Embed** | 🎯 Secondary | ESP32-S3, 1.9" LCD, Encoder |
 
 ---
 
-## Disclaimer
+## 🚀 Quick Start
 
-SimpleGo is an independent project not affiliated with SimpleX Chat Ltd. See [docs/TRADEMARK.md](docs/TRADEMARK.md).
+### Build & Flash
+
+```bash
+cd ~/SimpleGo
+idf.py build flash monitor -p /dev/ttyUSB0
+```
+
+### Expected Output (v0.1.13)
+
+```
+🔗 SIMPLEX CONTACT LINKS ════════════════════════════════
+📱 [0] Test ──────────────────────────────────────────────
+🌐 https://simplex.chat/contact#/?v=2-7&smp=...
+
+[SimpleX App scans link and sends Invitation]
+
+💬 MESSAGE for [Test]!
+🔓 Layer 3 Decrypted: 16106 bytes
+🔓 Layer 5 Decrypted: 847 bytes
+📋 Agent: Version=7, Type='I' (Invitation)
+📡 Peer Server: smp15.simplex.im:5223
+📮 Queue ID: ahjPk2jlNZz53yh5RJ-sBCIu_vZQeWdK
+✅ READY TO SEND CONFIRMATION
+```
+
+---
+
+## 🗺️ Roadmap
+
+| Phase | Status |
+|-------|--------|
+| Phase 1-3.7: Foundation | ✅ Complete |
+| Phase 3.8: Agent Protocol | ✅ Complete |
+| Phase 3.9: Peer Queue Parsing | ✅ **Complete!** |
+| Phase 3.10: Connection Complete | 🔧 In Progress |
+| Phase 4: User Interface | 📋 Planned |
+| Phase 5: Double Ratchet | 📋 Future |
+
+---
+
+## 📜 License
+
+**GNU Affero General Public License v3.0 (AGPL-3.0)**
+
+---
+
+## Version History
+
+| Version | Date | Milestone |
+|---------|------|-----------|
+| **v0.1.13-alpha** | **2026-01-21** | **🔧 Message Type Fix + Peer Queue!** |
+| v0.1.12-alpha | 2026-01-21 | 🔐 Agent Protocol |
+| v0.1.11-alpha | 2026-01-20 | 🔗 Invitation Links |
+| v0.1.10-alpha | 2026-01-20 | 🏆 Multi-Contact + E2E |
+
+---
+
+<p align="center">
+  <strong>🔧 First Native ESP32 SimpleX Client — Ready to Send Confirmation! 🔧</strong><br>
+  <em>Privacy is not a privilege, it's a right.</em>
+</p>
+
+---
+
+*Copyright (c) 2026 cannatoshi — Part of the Sentinel Secure Messenger Suite*
