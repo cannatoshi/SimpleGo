@@ -43,7 +43,7 @@ This document outlines the development plan for SimpleGo, covering software impl
 
 ## Current Release
 
-### Version 0.2.0-alpha (January 2026)
+### Version 0.1.16-alpha (January 2026)
 
 **Focus:** Hardware Abstraction Layer and Multi-Device Architecture
 
@@ -51,12 +51,15 @@ This document outlines the development plan for SimpleGo, covering software impl
 
 | Component | Status | Description |
 |-----------|--------|-------------|
+| Protocol Stack | Complete | Full SMP implementation with Double Ratchet |
+| X3DH Key Agreement | Complete | Cryptographically verified |
+| AES-256-GCM Encryption | Complete | 16-byte IV, verified against reference |
+| Wire Format | Complete | Matches Haskell implementation |
+| Server Acceptance | Complete | Servers respond with OK |
 | HAL Interface Definitions | Complete | Seven interfaces covering all hardware aspects |
 | T-Deck Plus Configuration | Complete | Pin mappings, display driver, device config |
 | Build System Updates | Complete | Kconfig integration, device selection |
-| Architecture Documentation | Complete | Comprehensive technical documentation |
-| Protocol Stack | Complete | Full SMP implementation with Double Ratchet |
-| Cryptographic Verification | Complete | All algorithms verified against reference |
+| Documentation Overhaul | Complete | README, ARCHITECTURE, ROADMAP rewritten |
 
 #### In Progress
 
@@ -413,5 +416,5 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to participate.
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 0.2.0 | January 2026 | Complete rewrite for multi-platform ecosystem |
+| 0.1.16 | January 2026 | Complete rewrite for multi-platform ecosystem |
 | 0.1.0 | December 2025 | Initial roadmap |

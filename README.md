@@ -4,7 +4,7 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENSE)
 [![Hardware: CERN-OHL-S-2.0](https://img.shields.io/badge/Hardware-CERN--OHL--S--2.0-green.svg)](docs/hardware/LICENSE)
-[![Version](https://img.shields.io/badge/version-0.2.0--alpha-orange.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.1.16--alpha-orange.svg)](CHANGELOG.md)
 [![Platform](https://img.shields.io/badge/platform-Multi--MCU-lightgrey.svg)](#supported-platforms)
 
 ---

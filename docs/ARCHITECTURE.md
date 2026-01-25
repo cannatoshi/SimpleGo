@@ -851,5 +851,5 @@ Tamper Event Detected
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 0.2.0 | January 2026 | Complete rewrite for HAL architecture |
+| 0.1.16 | January 2026 | Complete rewrite for HAL architecture |
 | 0.1.0 | December 2025 | Initial protocol-focused documentation |

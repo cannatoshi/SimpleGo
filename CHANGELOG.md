@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [0.2.0-alpha] - 2026-01-25
+## [0.1.16-alpha] - 2026-01-25
 
 ### Added
 
@@ -251,7 +251,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 | Version | Date | Highlights |
 |---------|------|------------|
-| 0.2.0-alpha | 2026-01-25 | HAL architecture, multi-device support, documentation |
+| 0.1.16-alpha | 2026-01-25 | HAL architecture, multi-device support, documentation |
 | 0.1.15-alpha | 2026-01-24 | Double Ratchet, X3DH, 12 bugs fixed |
 | 0.1.14-alpha | 2026-01-21 | Modular architecture |
 | 0.1.13-alpha | 2026-01-19 | Command handling |
