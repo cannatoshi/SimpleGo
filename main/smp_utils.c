@@ -10,7 +10,7 @@
 #include "sodium.h"
 #include "esp_log.h"
 
-static const char *TAG = "SMP_UTIL";
+__attribute__((unused)) static const char *TAG = "SMP_UTIL";
 
 // ============== Base64URL Encoding ==============
 
