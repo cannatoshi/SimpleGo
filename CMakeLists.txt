@@ -2,7 +2,6 @@
 # Part of the Sentinel Secure Messenger Suite
 #
 # SPDX-License-Identifier: AGPL-3.0-or-later
-
 cmake_minimum_required(VERSION 3.16)
 
 # Include ESP-IDF CMake functions

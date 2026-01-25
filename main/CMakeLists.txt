@@ -14,6 +14,7 @@ idf_component_register(
         "smp_handshake.c"
     INCLUDE_DIRS
         "include"
+        "hal"
         "../components/kem"
         "../components/common"
     REQUIRES
@@ -24,4 +25,7 @@ idf_component_register(
         libsodium
         wolfssl_config
         wolfssl__wolfssl
+        driver
+        esp_lcd
+        esp_timer
 )
