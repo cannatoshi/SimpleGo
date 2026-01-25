@@ -299,14 +299,15 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
                      ratchet_state.prev_chain_len, ratchet_state.msg_num_send);
     
     // DEBUG: Show MsgHeader structure
-    // Layout: [2B version][1B SPKI len][68B SPKI][4B msgPN][4B msgNs][9B padding] = 88
+    // Layout: [8B Int64=79][2B version][1B len][68B SPKI][4B msgPN][4B msgNs][1B '#'] = 88
     ESP_LOGI(TAG, "📋 MsgHeader debug:");
-    ESP_LOGI(TAG, "   msgMaxVersion: %02x %02x", msg_header[0], msg_header[1]);
-    ESP_LOGI(TAG, "   msgDHRs len: %02x (=%d)", msg_header[2], msg_header[2]);
-    ESP_LOGI(TAG, "   SPKI header: %02x %02x %02x %02x...", msg_header[3], msg_header[4], msg_header[5], msg_header[6]);
-    ESP_LOGI(TAG, "   X448 key: %02x %02x %02x %02x...", msg_header[15], msg_header[16], msg_header[17], msg_header[18]);
-    ESP_LOGI(TAG, "   msgPN: %02x%02x%02x%02x (offset 71)", msg_header[71], msg_header[72], msg_header[73], msg_header[74]);
-    ESP_LOGI(TAG, "   msgNs: %02x%02x%02x%02x (offset 75)", msg_header[75], msg_header[76], msg_header[77], msg_header[78]);
+    ESP_LOGI(TAG, "   Int64 len: %02x %02x %02x %02x %02x %02x %02x %02x", msg_header[0], msg_header[1], msg_header[2], msg_header[3], msg_header[4], msg_header[5], msg_header[6], msg_header[7]);
+    ESP_LOGI(TAG, "   msgMaxVersion: %02x %02x", msg_header[8], msg_header[9]);
+    ESP_LOGI(TAG, "   msgDHRs len: %02x (=%d)", msg_header[10], msg_header[10]);
+    ESP_LOGI(TAG, "   SPKI header: %02x %02x %02x %02x...", msg_header[11], msg_header[12], msg_header[13], msg_header[14]);
+    ESP_LOGI(TAG, "   X448 key: %02x %02x %02x %02x...", msg_header[23], msg_header[24], msg_header[25], msg_header[26]);
+    ESP_LOGI(TAG, "   msgPN: %02x%02x%02x%02x (offset 79)", msg_header[79], msg_header[80], msg_header[81], msg_header[82]);
+    ESP_LOGI(TAG, "   msgNs: %02x%02x%02x%02x (offset 83)", msg_header[83], msg_header[84], msg_header[85], msg_header[86]);
     ESP_LOGI(TAG, "   padding: %02x%02x%02x%02x%02x%02x%02x%02x%02x",
             msg_header[79], msg_header[80], msg_header[81], msg_header[82],
             msg_header[83], msg_header[84], msg_header[85], msg_header[86], msg_header[87]);
@@ -387,11 +388,18 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     uint8_t *padded_payload = malloc(padded_msg_len);
     if (!padded_payload) return -1;
     
-    // Padding format: [len_high][len_low][plaintext][###...###]
-    padded_payload[0] = (pt_len >> 8) & 0xFF;
-    padded_payload[1] = pt_len & 0xFF;
-    memcpy(&padded_payload[2], plaintext, pt_len);
-    memset(&padded_payload[2 + pt_len], '#', padded_msg_len - 2 - pt_len);
+    // Padding format: [8-byte Int64 BE length][plaintext][###...###]
+    // SimpleX uses Int64 (8 bytes) for padded message length prefix!
+    padded_payload[0] = 0x00;
+    padded_payload[1] = 0x00;
+    padded_payload[2] = 0x00;
+    padded_payload[3] = 0x00;
+    padded_payload[4] = 0x00;
+    padded_payload[5] = 0x00;
+    padded_payload[6] = (pt_len >> 8) & 0xFF;
+    padded_payload[7] = pt_len & 0xFF;
+    memcpy(&padded_payload[8], plaintext, pt_len);
+    memset(&padded_payload[8 + pt_len], '#', padded_msg_len - 8 - pt_len);
     
     // 7. Encrypt PADDED Payload
     uint8_t *encrypted_payload = malloc(padded_msg_len);

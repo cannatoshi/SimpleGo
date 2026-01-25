@@ -41,9 +41,9 @@
 static const char *TAG = "SMP";
 
 // ============== CONFIG ==============
-#define WIFI_SSID     "YOUR WLAND SID"
-#define WIFI_PASS     "YOUR WLAN PASSWORD"
-#define SMP_HOST      "smp3.simplexonflux.com"
+#define WIFI_SSID     "SONCLOUD"
+#define WIFI_PASS     "MKwlan1d250e-mured5"
+#define SMP_HOST      "smp1.simplexonflux.com"
 #define SMP_PORT      5223
 
 // ============== WiFi ==============
