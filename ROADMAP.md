@@ -1,231 +1,417 @@
 # SimpleGo Roadmap
 
-Development plan and progress tracking for SimpleGo.
+This document outlines the development plan for SimpleGo, covering software implementation, hardware development, and community milestones.
+
+---
+
+## Table of Contents
+
+1. [Project Timeline](#project-timeline)
+2. [Current Release](#current-release)
+3. [Development Phases](#development-phases)
+4. [Software Roadmap](#software-roadmap)
+5. [Hardware Roadmap](#hardware-roadmap)
+6. [Platform Support](#platform-support)
+7. [Community Roadmap](#community-roadmap)
+8. [Release Schedule](#release-schedule)
 
 ---
 
 ## Project Timeline
 
-| Version | Date | Milestone |
-|---------|------|-----------|
-| v0.1.0 | Dec 2025 | Project initialization |
-| v0.1.1-v0.1.13 | Dec 2025 | Initial protocol implementation |
-| v0.1.14-alpha | Jan 21, 2026 | Modular architecture refactoring |
-| v0.1.15-alpha | Jan 24, 2026 | Double Ratchet and X3DH implementation |
+```
+2025                                    2026                                    2027
+  |                                       |                                       |
+  Q4          Q1          Q2          Q3          Q4          Q1          Q2
+  |           |           |           |           |           |           |
+  +--[v0.1]---+--[v0.2]---+--[v0.3]---+--[v0.4]---+--[v1.0]---+--[v1.1]---+-->
+  |           |           |           |           |           |           |
+  Protocol    HAL         UI          Hardware    Stable      Enterprise
+  Foundation  Architecture Complete   Integration Release     Features
+```
+
+| Version | Target | Milestone |
+|---------|--------|-----------|
+| v0.1.x | Q4 2025 | Protocol implementation, cryptographic verification |
+| v0.2.x | Q1 2026 | HAL architecture, multi-device support |
+| v0.3.x | Q2 2026 | User interface, contact management |
+| v0.4.x | Q3 2026 | Hardware integration, Secure Element support |
+| v1.0.0 | Q4 2026 | Stable release, security audit complete |
+| v1.1.x | Q1 2027 | Enterprise features, Tier 3 hardware |
+
+---
+
+## Current Release
+
+### Version 0.2.0-alpha (January 2026)
+
+**Focus:** Hardware Abstraction Layer and Multi-Device Architecture
+
+#### Completed
+
+| Component | Status | Description |
+|-----------|--------|-------------|
+| HAL Interface Definitions | Complete | Seven interfaces covering all hardware aspects |
+| T-Deck Plus Configuration | Complete | Pin mappings, display driver, device config |
+| Build System Updates | Complete | Kconfig integration, device selection |
+| Architecture Documentation | Complete | Comprehensive technical documentation |
+| Protocol Stack | Complete | Full SMP implementation with Double Ratchet |
+| Cryptographic Verification | Complete | All algorithms verified against reference |
+
+#### In Progress
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Application Compatibility | 90% | Message parsing investigation ongoing |
+| T-Deck Plus HAL Implementation | 30% | Display driver complete, input pending |
+| User Interface | 0% | LVGL integration planned |
+
+#### Verified Functionality
+
+| Test | Result | Date |
+|------|--------|------|
+| TLS 1.3 Connection | Pass | January 2026 |
+| SMP Handshake | Pass | January 2026 |
+| X3DH Key Agreement | Pass | January 2026 |
+| Double Ratchet Encryption | Pass | January 2026 |
+| Server Message Acceptance | Pass | January 2026 |
 
 ---
 
 ## Development Phases
 
-### Phase 1: Foundation (Complete)
+### Phase 1: Protocol Foundation (Complete)
 
-| Task | Status |
-|------|--------|
-| ESP-IDF project setup | Complete |
-| WiFi connectivity | Complete |
-| Basic TCP sockets | Complete |
-| Project structure | Complete |
+Establish core SimpleX protocol functionality.
 
-### Phase 2: TLS and Basic SMP (Complete)
+| Task | Status | Version |
+|------|--------|---------|
+| ESP-IDF project setup | Complete | v0.1.0 |
+| WiFi connectivity | Complete | v0.1.1 |
+| TCP socket implementation | Complete | v0.1.2 |
+| TLS 1.3 with mbedTLS | Complete | v0.1.3 |
+| SMP handshake protocol | Complete | v0.1.4 |
+| SMP command encoding | Complete | v0.1.5 |
+| SMP response parsing | Complete | v0.1.6 |
+| Ed25519 signatures | Complete | v0.1.7-8 |
+| X25519 key exchange | Complete | v0.1.9 |
+| Queue operations (NEW, SUB, SEND, ACK) | Complete | v0.1.10-12 |
+| Connection management | Complete | v0.1.13 |
+| Modular architecture refactoring | Complete | v0.1.14 |
+| X448 Diffie-Hellman | Complete | v0.1.15 |
+| X3DH key agreement | Complete | v0.1.15 |
+| Double Ratchet implementation | Complete | v0.1.15 |
+| HKDF-SHA512 key derivation | Complete | v0.1.15 |
+| AES-256-GCM encryption | Complete | v0.1.15 |
+| Wire format verification | Complete | v0.1.15 |
 
-| Task | Status |
-|------|--------|
-| TLS 1.3 with mbedTLS | Complete |
-| SMP server connection | Complete |
-| Basic protocol handshake | Complete |
-| Server response parsing | Complete |
+### Phase 2: Hardware Abstraction (Current)
 
-### Phase 3: Protocol Implementation
+Enable multi-device support through HAL architecture.
 
-#### Phase 3.1-3.10: Core Protocol (Complete)
+| Task | Status | Version |
+|------|--------|---------|
+| HAL interface design | Complete | v0.2.0 |
+| hal_common.h | Complete | v0.2.0 |
+| hal_display.h | Complete | v0.2.0 |
+| hal_input.h | Complete | v0.2.0 |
+| hal_storage.h | Complete | v0.2.0 |
+| hal_network.h | Complete | v0.2.0 |
+| hal_audio.h | Complete | v0.2.0 |
+| hal_system.h | Complete | v0.2.0 |
+| T-Deck Plus device configuration | Complete | v0.2.0 |
+| Build system with Kconfig | Complete | v0.2.0 |
+| T-Deck Plus display HAL | Complete | v0.2.0 |
+| T-Deck Plus input HAL | Planned | v0.2.1 |
+| T-Deck Plus audio HAL | Planned | v0.2.1 |
+| T-Deck Pro configuration | Planned | v0.2.2 |
+| T-Lora Pager configuration | Planned | v0.2.3 |
+| Desktop (SDL2) HAL for testing | Planned | v0.2.4 |
 
-| Task | Status |
-|------|--------|
-| Ed25519 signature generation | Complete |
-| Ed25519 signature verification | Complete |
-| X25519 key exchange | Complete |
-| SMP command encoding | Complete |
-| SMP response parsing | Complete |
-| Queue creation (NEW command) | Complete |
-| Queue subscription (SUB command) | Complete |
-| Message sending (SEND command) | Complete |
-| Message receiving | Complete |
-| Connection management | Complete |
+### Phase 3: User Interface (Planned)
 
-#### Phase 3.11: Double Ratchet (Complete)
+Create complete user interface with LVGL.
 
-| Task | Status |
-|------|--------|
-| wolfSSL integration | Complete |
-| X448 key generation | Complete |
-| X448 Diffie-Hellman | Complete |
-| wolfSSL byte-order fix | Complete |
-| X3DH key agreement | Complete |
-| X3DH HKDF derivation | Complete |
-| HKDF-SHA512 implementation | Complete |
-| Root KDF function | Complete |
-| Chain KDF function | Complete |
-| IV order correction | Complete |
-| AES-256-GCM encryption | Complete |
-| AES-256-GCM decryption | Complete |
-| 16-byte IV implementation | Complete |
-| Message header encryption | Complete |
-| Message body encryption | Complete |
-| EncMessageHeader encoding | Complete |
-| EncRatchetMessage encoding | Complete |
-| AgentConfirmation building | Complete |
-| HELLO message building | Complete |
-| Padding implementation | Complete |
-| SMPQueueInfo encoding | Complete |
-| queueMode encoding fix | Complete |
-| Cryptographic verification | Complete |
-| Wire format verification | Complete |
+| Task | Status | Target |
+|------|--------|--------|
+| LVGL integration | Planned | v0.3.0 |
+| Display driver integration | Planned | v0.3.0 |
+| Splash screen | Planned | v0.3.0 |
+| Main menu screen | Planned | v0.3.0 |
+| Contact list screen | Planned | v0.3.1 |
+| Chat conversation screen | Planned | v0.3.1 |
+| Message composition | Planned | v0.3.1 |
+| Settings screen | Planned | v0.3.2 |
+| QR code display and scanning | Planned | v0.3.2 |
+| Connection status indicators | Planned | v0.3.2 |
+| Keyboard input handling | Planned | v0.3.3 |
+| Touch input handling | Planned | v0.3.3 |
+| Theme system (dark/light) | Planned | v0.3.4 |
+| Notification system | Planned | v0.3.4 |
 
-#### Phase 3.12: App Compatibility (In Progress)
+### Phase 4: Hardware Integration (Planned)
 
-| Task | Status | Notes |
-|------|--------|-------|
-| Server acceptance | Complete | Server responds with OK |
-| App message parsing | In Progress | A_MESSAGE error |
-| Tail encoding investigation | In Progress | Hypothesis: length prefix on final fields |
-| encConnInfo encoding | Investigating | May need to remove length prefix |
-| emBody encoding | Investigating | May need to remove length prefix |
-| Bidirectional messaging | Pending | Blocked by parsing issue |
-| Full message flow | Pending | Blocked by parsing issue |
+Integrate hardware security features and custom hardware.
 
-### Phase 4: User Interface (Planned)
+| Task | Status | Target |
+|------|--------|--------|
+| Secure Element HAL interface | Planned | v0.4.0 |
+| ATECC608B driver | Planned | v0.4.0 |
+| Hardware key storage | Planned | v0.4.1 |
+| Secure boot configuration | Planned | v0.4.1 |
+| Flash encryption setup | Planned | v0.4.2 |
+| SimpleGo DIY board design | Planned | v0.4.2 |
+| SimpleGo DIY prototype | Planned | v0.4.3 |
+| OPTIGA Trust M driver (Tier 2) | Planned | v0.4.4 |
+| Tamper detection system | Planned | v0.4.4 |
 
-| Task | Status |
-|------|--------|
-| T-Deck display driver integration | Planned |
-| ST7789 display initialization | Planned |
-| Text rendering engine | Planned |
-| Font support | Planned |
-| Keyboard input handling | Planned |
-| Key mapping configuration | Planned |
-| Menu system implementation | Planned |
-| Contact list UI | Planned |
-| Conversation view | Planned |
-| Message composition | Planned |
-| Status indicators | Planned |
-| Settings screen | Planned |
+### Phase 5: Production Readiness (Planned)
 
-### Phase 5: Advanced Features (Planned)
+Prepare for stable release.
 
-| Task | Status |
-|------|--------|
-| Group messaging support | Planned |
-| File transfer (XFTP) | Planned |
-| Message history storage | Planned |
-| NVS persistent storage | Planned |
-| Contact backup/restore | Planned |
-| QR code scanning | Planned |
-| Multiple server support | Planned |
-
-### Phase 6: Production Readiness (Future)
-
-| Task | Status |
-|------|--------|
-| Security review | Future |
-| External code audit | Future |
-| Memory optimization | Future |
-| Power management | Future |
-| OTA update support | Future |
-| Beta testing program | Future |
-| v1.0.0 stable release | Future |
+| Task | Status | Target |
+|------|--------|--------|
+| Security audit preparation | Planned | v0.5.0 |
+| External security audit | Planned | v0.5.1 |
+| Audit remediation | Planned | v0.5.2 |
+| Performance optimization | Planned | v0.5.3 |
+| Memory optimization | Planned | v0.5.3 |
+| Power management | Planned | v0.5.4 |
+| OTA update support | Planned | v0.5.4 |
+| Documentation completion | Planned | v0.5.5 |
+| Beta testing program | Planned | v0.5.5 |
+| Release candidate | Planned | v0.9.0 |
+| Stable release | Planned | v1.0.0 |
 
 ---
 
-## Module Development Status
-
-### Crypto Layer
-
-| Module | File | Lines | Status |
-|--------|------|-------|--------|
-| X448 Operations | smp_x448.c | ~200 | Complete |
-| Double Ratchet | smp_ratchet.c | ~500 | Complete |
-| E2E Handshake | smp_handshake.c | ~300 | Complete |
-| Queue Encoding | smp_queue.c | ~250 | Complete |
+## Software Roadmap
 
 ### Protocol Layer
 
-| Module | File | Lines | Status |
-|--------|------|-------|--------|
-| Peer Connection | smp_peer.c | ~400 | Complete |
-| Message Parser | smp_parser.c | ~350 | Complete |
-| Network Layer | smp_network.c | ~300 | Complete |
+| Feature | Priority | Status | Target |
+|---------|----------|--------|--------|
+| SMP client | Critical | Complete | v0.1.x |
+| Double Ratchet | Critical | Complete | v0.1.15 |
+| X3DH key agreement | Critical | Complete | v0.1.15 |
+| Agent Protocol | Critical | 90% | v0.2.x |
+| Group messaging | High | Planned | v0.4.x |
+| File transfer (XFTP) | Medium | Planned | v0.5.x |
+| Message delivery receipts | Medium | Planned | v0.3.x |
+| Message history sync | Low | Planned | v1.1.x |
 
-### Application Layer
+### Storage Layer
 
-| Module | File | Lines | Status |
-|--------|------|-------|--------|
-| Contact Management | smp_contacts.c | ~200 | Complete |
-| Legacy Crypto | smp_crypto.c | ~250 | Complete |
-| Utilities | smp_utils.c | ~150 | Complete |
+| Feature | Priority | Status | Target |
+|---------|----------|--------|--------|
+| NVS settings storage | High | Planned | v0.3.x |
+| Contact persistence | High | Planned | v0.3.x |
+| Message history | High | Planned | v0.3.x |
+| Encrypted storage | Critical | Planned | v0.4.x |
+| SD card support | Medium | Planned | v0.4.x |
+| Backup and restore | Medium | Planned | v0.5.x |
 
----
+### Connectivity
 
-## Bug Fixes by Version
-
-### v0.1.15-alpha (12 bugs fixed)
-
-| Bug | Description | Fix |
-|-----|-------------|-----|
-| #1 | E2E key used Word16 | Changed to 1-byte prefix |
-| #2 | prevMsgHash used 1-byte | Changed to Word16 BE |
-| #3 | MsgHeader DH key used Word16 | Changed to 1-byte prefix |
-| #4 | ehBody used Word16 prefix | Changed to 1-byte prefix |
-| #5 | emHeader was 124 bytes | Corrected to 123 bytes |
-| #6 | Payload AAD was 236 bytes | Corrected to 235 bytes |
-| #7 | Root KDF output order wrong | Fixed split order |
-| #8 | Chain KDF IV order swapped | Fixed: header_iv first |
-| #9 | wolfSSL X448 keys reversed | Added byte reversal |
-| #10 | SMPQueueInfo port used space | Changed to length prefix |
-| #11 | smpQueues count was 1-byte | Changed to Word16 BE |
-| #12 | queueMode Nothing sent 0 | Changed to send nothing |
-
----
-
-## Verification Milestones
-
-| Milestone | Date | Result |
-|-----------|------|--------|
-| X448 DH verification | Jan 2026 | 100% match |
-| X3DH HKDF verification | Jan 2026 | 100% match |
-| Root KDF verification | Jan 2026 | 100% match |
-| Chain KDF verification | Jan 2026 | 100% match |
-| AES-GCM verification | Jan 2026 | 100% match |
-| Wire format verification | Jan 2026 | Verified |
-| Server acceptance test | Jan 2026 | OK response |
+| Feature | Priority | Status | Target |
+|---------|----------|--------|--------|
+| WiFi connectivity | Critical | Complete | v0.1.x |
+| Multiple server support | High | Planned | v0.3.x |
+| Connection resilience | High | Planned | v0.3.x |
+| Tor integration | Medium | Research | v0.5.x |
+| LoRa mesh networking | Medium | Research | v1.1.x |
+| 4G/5G module support | Medium | Planned | v0.4.x |
+| Satellite connectivity | Low | Research | v1.2.x |
 
 ---
 
 ## Hardware Roadmap
 
-### Supported (Current)
+### Tier 1: Development Platforms
 
-| Device | Chip | Status |
-|--------|------|--------|
-| LilyGo T-Deck | ESP32-S3 | Primary target |
-| LilyGo T-Embed | ESP32-S3 | Secondary target |
-| Generic ESP32-S3 | ESP32-S3 | Supported |
+Off-the-shelf devices for development and DIY users.
 
-### Planned Support (Future)
+| Device | MCU | Status | Target |
+|--------|-----|--------|--------|
+| LilyGo T-Deck Plus | ESP32-S3 | In Development | v0.2.x |
+| LilyGo T-Deck Pro | ESP32-S3 | Planned | v0.3.x |
+| LilyGo T-Lora Pager | ESP32-S3 | Planned | v0.3.x |
+| Raspberry Pi (Desktop Testing) | ARM Linux | Planned | v0.2.x |
 
-| Device | Status |
-|--------|--------|
-| LilyGo T-Watch | Under consideration |
-| M5Stack devices | Under consideration |
-| Custom hardware | Community contributions |
+### Tier 2: SimpleGo Secure
+
+Custom hardware with enhanced security features.
+
+| Milestone | Description | Target |
+|-----------|-------------|--------|
+| Component selection | Finalize MCU, SE, and peripheral selection | Q2 2026 |
+| Schematic design | Complete circuit design | Q2 2026 |
+| PCB layout | Security-focused 6-layer PCB | Q3 2026 |
+| Prototype fabrication | First prototype boards | Q3 2026 |
+| Firmware adaptation | HAL implementation for custom board | Q3 2026 |
+| Enclosure design | CNC aluminum enclosure | Q4 2026 |
+| Security testing | Penetration testing and review | Q4 2026 |
+| Limited production | Small batch manufacturing | Q1 2027 |
+
+**Tier 2 Specifications:**
+
+| Component | Selection |
+|-----------|-----------|
+| MCU | STM32U585 (Cortex-M33, TrustZone) |
+| Secure Element Primary | ATECC608B |
+| Secure Element Secondary | OPTIGA Trust M |
+| Connectivity | WiFi 6, LTE Cat-M (isolated), LoRa |
+| Display | 3.2" IPS LCD with touch |
+| Input | Physical keyboard |
+| Tamper Detection | Light sensor, PCB mesh |
+| Enclosure | CNC aluminum, IP54 |
+
+### Tier 3: SimpleGo Vault
+
+Maximum security hardware for high-risk users.
+
+| Milestone | Description | Target |
+|-----------|-------------|--------|
+| Architecture design | Triple-SE security model | Q1 2027 |
+| Component sourcing | Authorized distributors only | Q1 2027 |
+| Schematic design | 8-layer security PCB | Q2 2027 |
+| Tamper system design | Full environmental monitoring | Q2 2027 |
+| Prototype fabrication | First prototype | Q3 2027 |
+| Security audit | External professional audit | Q4 2027 |
+| Enclosure design | Potted CNC aluminum | Q4 2027 |
+| Certification | Relevant security certifications | 2028 |
+
+**Tier 3 Specifications:**
+
+| Component | Selection |
+|-----------|-----------|
+| MCU | STM32U5A9 (Cortex-M33, 4MB Flash) |
+| Secure Element 1 | ATECC608B (Microchip) |
+| Secure Element 2 | OPTIGA Trust M (Infineon) |
+| Secure Element 3 | SE050 (NXP) |
+| Tamper Supervisor | Maxim DS3645 |
+| Connectivity | WiFi 6, 4G/5G (isolated), LoRa, Satellite |
+| Enclosure | Potted aluminum, active mesh wrap |
+
+---
+
+## Platform Support
+
+### Supported Devices
+
+| Device | Form Factor | Display | Input | Status |
+|--------|-------------|---------|-------|--------|
+| LilyGo T-Deck Plus | Handheld | 320x240 LCD | Keyboard, Trackball, Touch | Active Development |
+| LilyGo T-Deck Pro | Handheld | 320x240 LCD | Keyboard, Trackball, Touch | Planned |
+| LilyGo T-Lora Pager | Pager | 128x64 OLED | Buttons, Encoder | Planned |
+| SimpleGo Secure | Handheld | 320x240 LCD | Keyboard, Touch | Design Phase |
+| SimpleGo Vault | Handheld | 320x240 LCD | Keyboard, Touch | Planning |
+| Desktop (SDL2) | Desktop | Configurable | Keyboard, Mouse | Development Tool |
+
+### Platform Comparison
+
+| Feature | T-Deck Plus | T-Deck Pro | T-Lora Pager | SimpleGo Secure | SimpleGo Vault |
+|---------|-------------|------------|--------------|-----------------|----------------|
+| MCU | ESP32-S3 | ESP32-S3 | ESP32-S3 | STM32U585 | STM32U5A9 |
+| Secure Element | None | None | None | Dual | Triple |
+| TrustZone | No | No | No | Yes | Yes |
+| Tamper Detection | No | No | No | Basic | Full |
+| Cellular | No | No | No | LTE Cat-M | 4G/5G |
+| LoRa | Optional | Optional | Yes | Yes | Yes |
+| Target Tier | Tier 1 | Tier 1 | Tier 1 | Tier 2 | Tier 3 |
+| Target Price | ~$60 | ~$80 | ~$50 | ~$500 | ~$1200 |
+
+---
+
+## Community Roadmap
+
+### Documentation
+
+| Milestone | Status | Target |
+|-----------|--------|--------|
+| README overhaul | Complete | v0.2.0 |
+| Architecture documentation | Complete | v0.2.0 |
+| Build system documentation | Complete | v0.2.0 |
+| API documentation | Planned | v0.3.x |
+| Hardware documentation | Complete | v0.2.0 |
+| Contribution guidelines | Partial | v0.2.x |
+| Security documentation | Partial | v0.2.x |
+| User manual | Planned | v1.0.0 |
+
+### Community Infrastructure
+
+| Milestone | Status | Target |
+|-----------|--------|--------|
+| GitHub repository | Complete | v0.1.0 |
+| Issue templates | Planned | v0.2.x |
+| Pull request templates | Planned | v0.2.x |
+| Discussion forums | Planned | v0.3.x |
+| Discord/Matrix server | Planned | v0.3.x |
+| Project website | Planned | v0.5.x |
+| Documentation site | Planned | v0.5.x |
+
+### Collaboration
+
+| Milestone | Description | Target |
+|-----------|-------------|--------|
+| SimpleX team coordination | Protocol clarification and compatibility | Ongoing |
+| Security researcher outreach | Invite review and feedback | v0.4.x |
+| Hardware partner identification | Manufacturing partners | v0.4.x |
+| Beta tester program | Recruit early adopters | v0.5.x |
+| Security audit firm selection | Professional audit | v0.5.x |
+
+---
+
+## Release Schedule
+
+### Near-term Releases
+
+| Version | Target Date | Focus |
+|---------|-------------|-------|
+| v0.2.0-alpha | January 2026 | HAL architecture, documentation |
+| v0.2.1-alpha | February 2026 | T-Deck Plus HAL completion |
+| v0.2.2-alpha | February 2026 | Protocol compatibility fix |
+| v0.3.0-alpha | March 2026 | LVGL UI integration |
+| v0.3.1-alpha | April 2026 | Chat and contacts UI |
+| v0.3.2-alpha | May 2026 | Settings and QR codes |
+
+### Long-term Releases
+
+| Version | Target Date | Focus |
+|---------|-------------|-------|
+| v0.4.0-alpha | Q3 2026 | Secure Element integration |
+| v0.5.0-beta | Q4 2026 | Security audit preparation |
+| v1.0.0 | Q4 2026 | Stable release |
+| v1.1.0 | Q1 2027 | Enterprise features |
+| v2.0.0 | 2027 | Tier 3 hardware support |
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+Development priorities are determined by:
+
+1. Security impact
+2. Core functionality requirements
+3. Community feedback
+4. Resource availability
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on how to participate.
 
 ---
 
-## License
+## References
 
-AGPL-3.0 - See [LICENSE](LICENSE)
+- [SimpleX Protocol Specification](https://github.com/simplex-chat/simplexmq)
+- [Hardware Documentation](docs/hardware/HARDWARE_OVERVIEW.md)
+- [Architecture Documentation](docs/ARCHITECTURE.md)
+- [Changelog](CHANGELOG.md)
+
+---
+
+## Document History
+
+| Version | Date | Changes |
+|---------|------|---------|
+| 0.2.0 | January 2026 | Complete rewrite for multi-platform ecosystem |
+| 0.1.0 | December 2025 | Initial roadmap |

@@ -2,7 +2,52 @@
 
 All notable changes to SimpleGo are documented in this file.
 
-The format is based on Keep a Changelog (https://keepachangelog.com/en/1.0.0/).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+
+---
+
+## [0.2.0-alpha] - 2026-01-25
+
+### Added
+
+- Hardware Abstraction Layer (HAL) architecture for multi-device support
+- Seven HAL interface definitions:
+  - hal_common.h: Base types, error codes, logging macros
+  - hal_display.h: Display initialization, flush, backlight, LVGL integration
+  - hal_input.h: Keyboard, touch, trackball, encoder abstraction
+  - hal_storage.h: NVS key-value store and filesystem operations
+  - hal_network.h: WiFi, Ethernet, network events
+  - hal_audio.h: Speaker, buzzer, microphone, tone generation
+  - hal_system.h: Power management, battery, watchdog, system info
+- T-Deck Plus device configuration with complete pin mappings
+- T-Deck Plus display HAL implementation (ST7789V driver with DMA)
+- Kconfig-based device selection and build configuration
+- Comprehensive documentation overhaul:
+  - README.md: Complete rewrite for multi-platform ecosystem
+  - ARCHITECTURE.md: Detailed HAL and system architecture
+  - BUILD_SYSTEM.md: ESP-IDF build system explanation
+  - ADDING_NEW_DEVICE.md: Guide for porting to new hardware
+  - ROADMAP.md: Complete development roadmap
+
+### Changed
+
+- Project positioning from ESP32-only to multi-platform ecosystem
+- Build system updated for HAL integration
+- main/CMakeLists.txt: Added HAL include paths and dependencies
+
+### Removed
+
+- T-Embed CC1101 support (was temporary development device)
+
+### Supported Devices
+
+| Device | Status |
+|--------|--------|
+| LilyGo T-Deck Plus | Active Development |
+| LilyGo T-Deck Pro | Planned |
+| LilyGo T-Lora Pager | Planned |
+| SimpleGo Secure (Tier 2) | Design Phase |
+| SimpleGo Vault (Tier 3) | Planning |
 
 ---
 
@@ -29,18 +74,20 @@ The format is based on Keep a Changelog (https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
-- Bug #1: E2E key length encoding (Word16 to 1-byte)
-- Bug #2: prevMsgHash length encoding (1-byte to Word16)
-- Bug #3: MsgHeader DH key length encoding (Word16 to 1-byte)
-- Bug #4: ehBody length encoding (Word16 to 1-byte)
-- Bug #5: emHeader size (124 to 123 bytes)
-- Bug #6: Payload AAD size (236 to 235 bytes)
-- Bug #7: Root KDF output order (root, chain, next_header)
-- Bug #8: Chain KDF IV order (header_iv before msg_iv)
-- Bug #9: wolfSSL X448 byte-order reversal
-- Bug #10: SMPQueueInfo port encoding (space to length prefix)
-- Bug #11: smpQueues list count encoding (1-byte to Word16 BE)
-- Bug #12: queueMode Nothing encoding (removed 0 byte)
+| Bug | Description | Fix |
+|-----|-------------|-----|
+| #1 | E2E key used Word16 | Changed to 1-byte prefix |
+| #2 | prevMsgHash used 1-byte | Changed to Word16 BE |
+| #3 | MsgHeader DH key used Word16 | Changed to 1-byte prefix |
+| #4 | ehBody used Word16 prefix | Changed to 1-byte prefix |
+| #5 | emHeader was 124 bytes | Corrected to 123 bytes |
+| #6 | Payload AAD was 236 bytes | Corrected to 235 bytes |
+| #7 | Root KDF output order wrong | Fixed split order |
+| #8 | Chain KDF IV order swapped | Fixed: header_iv first |
+| #9 | wolfSSL X448 keys reversed | Added byte reversal |
+| #10 | SMPQueueInfo port used space | Changed to length prefix |
+| #11 | smpQueues count was 1-byte | Changed to Word16 BE |
+| #12 | queueMode Nothing sent 0 | Changed to send nothing |
 
 ### Verified
 
@@ -64,7 +111,6 @@ The format is based on Keep a Changelog (https://keepachangelog.com/en/1.0.0/).
 
 - Modular architecture refactoring
 - Separated protocol logic into distinct modules
-- New module structure with clear responsibilities
 
 ### Modules Created
 
@@ -205,6 +251,7 @@ The format is based on Keep a Changelog (https://keepachangelog.com/en/1.0.0/).
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 0.2.0-alpha | 2026-01-25 | HAL architecture, multi-device support, documentation |
 | 0.1.15-alpha | 2026-01-24 | Double Ratchet, X3DH, 12 bugs fixed |
 | 0.1.14-alpha | 2026-01-21 | Modular architecture |
 | 0.1.13-alpha | 2026-01-19 | Command handling |
@@ -227,4 +274,4 @@ The format is based on Keep a Changelog (https://keepachangelog.com/en/1.0.0/).
 ## Links
 
 - [ROADMAP.md](ROADMAP.md) - Development plan
-- [docs/BUGS.md](docs/BUGS.md) - Detailed bug documentation
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - System architecture

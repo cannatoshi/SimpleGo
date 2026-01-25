@@ -115,10 +115,10 @@ Software security alone is insufficient against physical attacks. SimpleGo lever
 |  +=====================================================================+  |
 |  |              |                |                |                    |  |
 |  |  +-----------+--+  +----------+---+  +---------+----+  +----------+ |  |
-|  |  | T-Deck Plus  |  | T-Embed      |  | SimpleGo DIY |  | Desktop  | |  |
-|  |  | ESP32-S3     |  | CC1101       |  | STM32 + SE   |  | Linux    | |  |
-|  |  | 320x240 LCD  |  | 170x320 LCD  |  | Custom HW    |  | SDL2     | |  |
-|  |  | Keyboard     |  | Encoder      |  | Secure Elem  |  | Testing  | |  |
+|  |  | T-Deck Plus  |  | T-Deck Pro   |  | SimpleGo     |  | Desktop  | |  |
+|  |  | ESP32-S3     |  | ESP32-S3     |  | Secure       |  | Linux    | |  |
+|  |  | 320x240 LCD  |  | 320x240 LCD  |  | STM32 + SE   |  | SDL2     | |  |
+|  |  | Keyboard     |  | Keyboard     |  | Dual SE      |  | Testing  | |  |
 |  |  +--------------+  +--------------+  +--------------+  +----------+ |  |
 |  |                                                                     |  |
 |  +---------------------------------------------------------------------+  |
@@ -226,8 +226,9 @@ Input capabilities by device:
 | Device | Keyboard | Touch | Trackball | Encoder | Buttons |
 |--------|----------|-------|-----------|---------|---------|
 | T-Deck Plus | Physical QWERTY | Capacitive | Yes | No | No |
-| T-Embed CC1101 | On-screen | No | No | Yes | 2 side |
-| SimpleGo DIY | External | Optional | Optional | Optional | Yes |
+| T-Deck Pro | Physical QWERTY | Capacitive | Yes | No | No |
+| T-Lora Pager | None | No | No | Yes | Yes |
+| SimpleGo Secure | Physical | Capacitive | Optional | No | No |
 | Desktop | USB | No | No | No | No |
 
 ### hal_storage.h
@@ -561,22 +562,36 @@ devices/
 |       +-- hal_network.c         # ESP32 WiFi
 |       +-- hal_system.c          # AXP2101 power management
 |
-+-- t_embed_cc1101/
++-- t_deck_pro/
 |   +-- config/
 |   |   +-- device_config.h
 |   +-- hal_impl/
-|       +-- hal_display.c         # ST7789V (portrait orientation)
+|       +-- hal_display.c         # ST7789V display driver
+|       +-- hal_input.c           # Keyboard, trackball, touch
+|       +-- hal_audio.c           # I2S audio
+|       +-- hal_storage.c         # NVS and SD card
+|       +-- hal_network.c         # ESP32 WiFi
+|       +-- hal_system.c          # Power management
+|
++-- t_lora_pager/
+|   +-- config/
+|   |   +-- device_config.h
+|   +-- hal_impl/
+|       +-- hal_display.c         # OLED display driver
 |       +-- hal_input.c           # Encoder and buttons
 |       +-- hal_audio.c           # Buzzer
-|       +-- hal_storage.c         # NVS only (no SD)
-|       +-- hal_network.c         # ESP32 WiFi + CC1101 Sub-GHz
-|       +-- hal_system.c          # Battery ADC
+|       +-- hal_storage.c         # NVS
+|       +-- hal_network.c         # ESP32 WiFi + LoRa
+|       +-- hal_system.c          # Battery management
 |
-+-- simplego_diy/
++-- simplego_secure/
 |   +-- config/
 |   |   +-- device_config.h
 |   +-- hal_impl/
-|       +-- hal_secure_element.c  # ATECC608B integration
+|       +-- hal_secure_element.c  # ATECC608B + OPTIGA integration
+|       +-- hal_display.c         # Display driver
+|       +-- hal_input.c           # Input handling
+|       +-- hal_network.c         # WiFi + LTE
 |       +-- ...
 |
 +-- template/
@@ -588,16 +603,16 @@ devices/
 
 ### Device Comparison
 
-| Feature | T-Deck Plus | T-Embed CC1101 | SimpleGo DIY |
-|---------|-------------|----------------|--------------|
-| MCU | ESP32-S3 | ESP32-S3 | STM32U585 |
-| Display | 320x240 IPS | 170x320 IPS | Configurable |
-| Input | Keyboard + Trackball + Touch | Encoder + 2 Buttons | Configurable |
-| Audio | I2S Speaker | Buzzer | Configurable |
-| Secure Element | None (software) | None (software) | ATECC608B |
-| Radio | WiFi + Optional LoRa | WiFi + CC1101 Sub-GHz | WiFi + Optional |
-| Power | AXP2101 PMU | Battery ADC | Configurable |
-| Target Use | Development, Tier 1 | Development, Compact | Tier 2 Production |
+| Feature | T-Deck Plus | T-Deck Pro | T-Lora Pager | SimpleGo Secure |
+|---------|-------------|------------|--------------|-----------------|
+| MCU | ESP32-S3 | ESP32-S3 | ESP32-S3 | STM32U585 |
+| Display | 320x240 IPS | 320x240 IPS | 128x64 OLED | 320x240 IPS |
+| Input | KB + Trackball + Touch | KB + Trackball + Touch | Encoder + Buttons | KB + Touch |
+| Audio | I2S Speaker | I2S Speaker | Buzzer | I2S Speaker |
+| Secure Element | None | None | None | Dual (ATECC + OPTIGA) |
+| Radio | WiFi + LoRa (opt) | WiFi + LoRa (opt) | WiFi + LoRa | WiFi + LTE + LoRa |
+| Power | AXP2101 PMU | AXP2101 PMU | Battery ADC | Full PMU |
+| Target | Tier 1 Dev | Tier 1 Dev | Tier 1 Compact | Tier 2 Production |
 
 ---
 

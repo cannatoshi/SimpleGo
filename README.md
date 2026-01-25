@@ -177,10 +177,10 @@ SimpleGo employs a layered architecture with strict separation between platform-
 |      hal_display | hal_input | hal_network | hal_storage | hal_audio  |
 +-----------------------------------------------------------------------+
 |                      DEVICE IMPLEMENTATIONS                           |
-+---------------+----------------+----------------+----------------------+
-|  T-Deck Plus  |  T-Embed CC1101|  SimpleGo DIY  |   Raspberry Pi      |
-|  ESP32-S3     |  ESP32-S3      |  STM32 + SE    |   Linux (Testing)   |
-+---------------+----------------+----------------+----------------------+
++---------------+----------------+-------------------+-------------------+
+|  T-Deck Plus  |  T-Deck Pro    |  SimpleGo Secure  |  Desktop (SDL2)  |
+|  ESP32-S3     |  ESP32-S3      |  STM32 + Dual SE  |  Linux Testing   |
++---------------+----------------+-------------------+-------------------+
 ```
 
 The Protocol Layer and Application Layer are identical across all devices. Only the HAL implementations differ, enabling a single codebase to support diverse hardware platforms.
@@ -197,8 +197,9 @@ simplex_client/
 │
 ├── devices/
 │   ├── t_deck_plus/          # LilyGo T-Deck Plus implementation
-│   ├── t_embed_cc1101/       # LilyGo T-Embed CC1101 implementation
-│   ├── simplego_diy/         # Custom SimpleGo hardware
+│   ├── t_deck_pro/           # LilyGo T-Deck Pro implementation
+│   ├── t_lora_pager/         # LilyGo T-Lora Pager implementation
+│   ├── simplego_secure/      # SimpleGo Tier 2 hardware
 │   └── template/             # Template for new devices
 │
 ├── components/               # External libraries
@@ -213,21 +214,30 @@ For complete architecture documentation, see [Architecture](docs/ARCHITECTURE.md
 
 ## Supported Platforms
 
-### Current Development Targets
+### LilyGo Development Devices (Tier 1)
+
+Off-the-shelf devices for development and DIY users.
 
 | Device | MCU | Display | Input | Status |
 |--------|-----|---------|-------|--------|
-| LilyGo T-Deck Plus | ESP32-S3 | 320x240 LCD | Physical keyboard, trackball, touch | Primary development platform |
-| LilyGo T-Embed CC1101 | ESP32-S3 | 170x320 LCD | Rotary encoder, buttons | Secondary target |
-| Raspberry Pi | ARM Linux | SDL2 window | USB keyboard/mouse | Desktop testing |
+| LilyGo T-Deck Plus | ESP32-S3 | 320x240 LCD | Keyboard, trackball, touch | Active Development |
+| LilyGo T-Deck Pro | ESP32-S3 | 320x240 LCD | Keyboard, trackball, touch | Planned |
+| LilyGo T-Lora Pager | ESP32-S3 | 128x64 OLED | Buttons, encoder | Planned |
 
-### Planned Support
+### SimpleGo Custom Hardware (Tier 2 and 3)
 
-| Device | Notes |
-|--------|-------|
-| SimpleGo DIY | Custom hardware with Secure Element |
-| SimpleGo Secure | Tier 2 reference design |
-| SimpleGo Vault | Tier 3 reference design |
+Purpose-built secure communication devices.
+
+| Device | MCU | Security | Status |
+|--------|-----|----------|--------|
+| SimpleGo Secure | STM32U585 | Dual Secure Element, TrustZone | Design Phase |
+| SimpleGo Vault | STM32U5A9 | Triple Secure Element, Tamper Detection | Planning |
+
+### Development Tools
+
+| Platform | Purpose |
+|----------|---------|
+| Raspberry Pi / Desktop Linux | SDL2-based testing without hardware |
 
 Adding support for new hardware requires implementing the HAL interfaces. See [Adding New Devices](docs/ADDING_NEW_DEVICE.md).
 
