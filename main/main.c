@@ -41,8 +41,8 @@
 static const char *TAG = "SMP";
 
 // ============== CONFIG ==============
-#define WIFI_SSID     "SONCLOUD"
-#define WIFI_PASS     "MKwlan1d250e-mured5"
+// WiFi credentials from Kconfig (idf.py menuconfig)
+// See: Network Configuration -> WiFi SSID/Password
 #define SMP_HOST      "smp1.simplexonflux.com"
 #define SMP_PORT      5223
 
@@ -74,7 +74,7 @@ static void wifi_init(void) {
                     &wifi_event_handler, NULL, &instance_got_ip));
 
     wifi_config_t wifi_config = {
-        .sta = { .ssid = WIFI_SSID, .password = WIFI_PASS },
+        .sta = { .ssid = CONFIG_SIMPLEGO_WIFI_SSID, .password = CONFIG_SIMPLEGO_WIFI_PASSWORD },
     };
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
