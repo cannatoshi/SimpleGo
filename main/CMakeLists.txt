@@ -1,4 +1,7 @@
-﻿# SimpleGo - Main Component
+# Use our own lv_conf.h
+set(LV_CONF_PATH ${CMAKE_CURRENT_SOURCE_DIR}/lv_conf.h)
+
+# SimpleGo - Main Component
 # Professional HAL Architecture
 # SPDX-License-Identifier: AGPL-3.0
 
