@@ -6,6 +6,7 @@
 #include "ui_manager.h"
 
 static lv_obj_t *screen = NULL;
+
 static void on_back(lv_event_t *e) { ui_manager_go_back(); }
 
 lv_obj_t *ui_contacts_create(void)
@@ -19,11 +20,12 @@ lv_obj_t *ui_contacts_create(void)
     lv_obj_set_style_text_color(msg, UI_COLOR_TEXT_DIM, 0);
     lv_obj_align(msg, LV_ALIGN_CENTER, 0, 0);
     
+    // Nav Bar - wie Main Screen
     ui_create_nav_bar(screen);
-    
-    lv_obj_t *back = ui_create_back_btn(screen);
+    lv_obj_t *back = ui_create_nav_btn(screen, "BACK", 0);
     lv_obj_add_event_cb(back, on_back, LV_EVENT_CLICKED, NULL);
     
     return screen;
 }
+
 void ui_contacts_refresh(void) {}
