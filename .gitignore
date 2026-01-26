@@ -21,3 +21,5 @@ Thumbs.db
 *.elf
 *.bin
 *.map
+
+components/lvgl/lv_conf.h
