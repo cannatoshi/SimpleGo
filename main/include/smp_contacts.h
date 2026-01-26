@@ -1,4 +1,4 @@
-/**
+﻿/**
  * SimpleGo - smp_contacts.h
  * Contact management and NVS persistence
  */
@@ -27,6 +27,9 @@ int add_contact(mbedtls_ssl_context *ssl, uint8_t *block,
                 const uint8_t *session_id, const char *name);
 bool remove_contact(mbedtls_ssl_context *ssl, uint8_t *block,
                     const uint8_t *session_id, int index);
+
+// Get invite link for UI
+bool get_invite_link(const uint8_t *ca_hash, const char *host, int port, char *out_link, size_t out_len);
 
 // Subscribe to all contacts
 void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
