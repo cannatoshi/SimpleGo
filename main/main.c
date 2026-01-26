@@ -45,6 +45,7 @@
 
 // UI System
 #include "ui_manager.h"
+#include "ui/screens/ui_connect.h"
 #include "ui_theme.h"
 
 static const char *TAG = "SMP";
@@ -232,6 +233,14 @@ static void smp_connect(void) {
     
     // Print connection info
     print_invitation_links(ca_hash, SMP_HOST, SMP_PORT);
+        
+        // Send invite link to UI
+        {
+            static char invite_link[1500];
+            if (get_invite_link(ca_hash, SMP_HOST, SMP_PORT, invite_link, sizeof(invite_link))) {
+                ui_connect_set_invite_link(invite_link);
+            }
+        }
     
     // ========== Message Receive Loop ==========
     ESP_LOGI(TAG, "â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
