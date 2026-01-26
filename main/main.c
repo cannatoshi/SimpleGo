@@ -1,4 +1,4 @@
-/**
+﻿/**
  * SimpleGo - Native SimpleX SMP Client for ESP32
  * v0.1.17-alpha - AgentConfirmation with Reply Queue
  * github.com/cannatoshi/SimpleGo
@@ -37,6 +37,15 @@
 #include "smp_peer.h"
 #include "smp_x448.h"
 #include "smp_queue.h"
+
+// T-Deck Display Driver
+#include "tdeck_display.h"
+#include "tdeck_lvgl.h"
+#include "tdeck_touch.h"
+
+// UI System
+#include "ui_manager.h"
+#include "ui_theme.h"
 
 static const char *TAG = "SMP";
 
@@ -102,9 +111,9 @@ static void smp_connect(void) {
     }
 
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "╔════════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║  SimpleGo v0.1.17-alpha Connection!    ║");
-    ESP_LOGI(TAG, "╚════════════════════════════════════════╝");
+    ESP_LOGI(TAG, "â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
+    ESP_LOGI(TAG, "â•‘  SimpleGo v0.1.17-alpha Connection!    â•‘");
+    ESP_LOGI(TAG, "â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
     ESP_LOGI(TAG, "");
 
     mbedtls_ssl_init(&ssl);
@@ -146,13 +155,13 @@ static void smp_connect(void) {
             goto cleanup;
         }
     }
-    ESP_LOGI(TAG, "      ✅ TLS OK! ALPN: %s", mbedtls_ssl_get_alpn_protocol(&ssl));
+    ESP_LOGI(TAG, "      âœ… TLS OK! ALPN: %s", mbedtls_ssl_get_alpn_protocol(&ssl));
 
     // ========== Step 2: ServerHello ==========
     ESP_LOGI(TAG, "[2/5] Waiting for ServerHello...");
     int content_len = smp_read_block(&ssl, block, 30000);
     if (content_len < 0) {
-        ESP_LOGE(TAG, "      ❌ No ServerHello");
+        ESP_LOGE(TAG, "      âŒ No ServerHello");
         goto cleanup;
     }
 
@@ -162,12 +171,12 @@ static void smp_connect(void) {
     uint8_t sessIdLen = hello[4];
     
     if (sessIdLen != 32) {
-        ESP_LOGE(TAG, "      ❌ Unexpected sessionId length: %d", sessIdLen);
+        ESP_LOGE(TAG, "      âŒ Unexpected sessionId length: %d", sessIdLen);
         goto cleanup;
     }
     memcpy(session_id, &hello[5], 32);
     
-    ESP_LOGI(TAG, "      ✅ Versions: %d-%d", minVer, maxVer);
+    ESP_LOGI(TAG, "      âœ… Versions: %d-%d", minVer, maxVer);
     ESP_LOGI(TAG, "      SessionId: %02x%02x%02x%02x...", 
              session_id[0], session_id[1], session_id[2], session_id[3]);
 
@@ -193,13 +202,13 @@ static void smp_connect(void) {
     
     ret = smp_write_handshake_block(&ssl, block, client_hello, pos);
     if (ret != 0) goto cleanup;
-    ESP_LOGI(TAG, "      ✅ ClientHello sent!");
+    ESP_LOGI(TAG, "      âœ… ClientHello sent!");
 
     // ========== Step 4: Load or Create Contacts ==========
     ESP_LOGI(TAG, "[4/5] Loading contacts...");
     
     // Fresh start for testing - comment out in production!
-    ESP_LOGW(TAG, "      🧹 Clearing old contacts for fresh test...");
+    ESP_LOGW(TAG, "      ðŸ§¹ Clearing old contacts for fresh test...");
     clear_all_contacts();
     
     load_contacts_from_nvs();
@@ -208,11 +217,11 @@ static void smp_connect(void) {
         ESP_LOGI(TAG, "      No contacts found - creating 'ESP32'...");
         int idx = add_contact(&ssl, block, session_id, "ESP32");
         if (idx < 0) {
-            ESP_LOGE(TAG, "      ❌ Failed to create contact!");
+            ESP_LOGE(TAG, "      âŒ Failed to create contact!");
             goto cleanup;
         }
     } else {
-        ESP_LOGI(TAG, "      ✅ %d contact(s) loaded from NVS", contacts_db.num_contacts);
+        ESP_LOGI(TAG, "      âœ… %d contact(s) loaded from NVS", contacts_db.num_contacts);
     }
     
     list_contacts();
@@ -225,10 +234,10 @@ static void smp_connect(void) {
     print_invitation_links(ca_hash, SMP_HOST, SMP_PORT);
     
     // ========== Message Receive Loop ==========
-    ESP_LOGI(TAG, "╔════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║   📨 Waiting for messages...       ║");
-    ESP_LOGI(TAG, "║   (Connect with SimpleX App!)      ║");
-    ESP_LOGI(TAG, "╚════════════════════════════════════╝");
+    ESP_LOGI(TAG, "â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
+    ESP_LOGI(TAG, "â•‘   ðŸ“¨ Waiting for messages...       â•‘");
+    ESP_LOGI(TAG, "â•‘   (Connect with SimpleX App!)      â•‘");
+    ESP_LOGI(TAG, "â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
     ESP_LOGI(TAG, "");
     
     while (1) {
@@ -272,18 +281,18 @@ static void smp_connect(void) {
                                entLen == our_queue.rcv_id_len &&
                                memcmp(entity_id, our_queue.rcv_id, entLen) == 0);
         if (is_reply_queue) {
-            ESP_LOGI(TAG, "   📬 Message on REPLY QUEUE from peer!");
+            ESP_LOGI(TAG, "   ðŸ“¬ Message on REPLY QUEUE from peer!");
         }
         
         // Parse command
         if (p + 1 < content_len && resp[p] == 'O' && resp[p+1] == 'K') {
-            ESP_LOGI(TAG, "   ✅ OK");
+            ESP_LOGI(TAG, "   âœ… OK");
         }
         else if (p + 2 < content_len && resp[p] == 'E' && resp[p+1] == 'N' && resp[p+2] == 'D') {
             if (contact) {
-                ESP_LOGI(TAG, "   🔚 END [%s] - No more messages", contact->name);
+                ESP_LOGI(TAG, "   ðŸ”š END [%s] - No more messages", contact->name);
             } else {
-                ESP_LOGI(TAG, "   🔚 END - No more messages");
+                ESP_LOGI(TAG, "   ðŸ”š END - No more messages");
             }
         }
         else if (p + 3 < content_len && resp[p] == 'M' && resp[p+1] == 'S' && resp[p+2] == 'G' && resp[p+3] == ' ') {
@@ -300,12 +309,12 @@ static void smp_connect(void) {
             
             if (contact) {
                 ESP_LOGI(TAG, "");
-                ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
-                ESP_LOGI(TAG, "║   💬 MESSAGE RECEIVED for [%s]!", contact->name);
-                ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
+                ESP_LOGI(TAG, "â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
+                ESP_LOGI(TAG, "â•‘   ðŸ’¬ MESSAGE RECEIVED for [%s]!", contact->name);
+                ESP_LOGI(TAG, "â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
             } else {
                 ESP_LOGI(TAG, "");
-                ESP_LOGI(TAG, "   💬 MESSAGE (unknown contact)!");
+                ESP_LOGI(TAG, "   ðŸ’¬ MESSAGE (unknown contact)!");
             }
             ESP_LOGI(TAG, "   MsgId: %02x%02x%02x%02x...", msg_id[0], msg_id[1], msg_id[2], msg_id[3]);
             ESP_LOGI(TAG, "   Encrypted: %d bytes", enc_len);
@@ -316,11 +325,11 @@ static void smp_connect(void) {
                 if (plain) {
                     int plain_len = 0;
                     if (decrypt_smp_message(contact, &resp[p], enc_len, msg_id, msgIdLen, plain, &plain_len)) {
-                        ESP_LOGI(TAG, "   🔓 SMP-Level Decryption OK! (%d bytes)", plain_len);
+                        ESP_LOGI(TAG, "   ðŸ”“ SMP-Level Decryption OK! (%d bytes)", plain_len);
                         
-                        // === DEBUG: HEX-DUMP der entschlüsselten Agent-Nachricht ===
+                        // === DEBUG: HEX-DUMP der entschlÃ¼sselten Agent-Nachricht ===
                         ESP_LOGI(TAG, "");
-                        ESP_LOGI(TAG, "   📦 RAW AGENT MESSAGE (first 60 bytes):");
+                        ESP_LOGI(TAG, "   ðŸ“¦ RAW AGENT MESSAGE (first 60 bytes):");
                         printf("   ");
                         for (int i = 0; i < plain_len && i < 60; i++) {
                             printf("%02x ", plain[i]);
@@ -333,7 +342,7 @@ static void smp_connect(void) {
                         parse_agent_message(contact, plain, plain_len);
                         
                         // Send ACK
-                        ESP_LOGI(TAG, "   📨 Sending ACK...");
+                        ESP_LOGI(TAG, "   ðŸ“¨ Sending ACK...");
                         
                         uint8_t ack_body[64];
                         int ap = 0;
@@ -374,21 +383,21 @@ static void smp_connect(void) {
                         
                         smp_write_command_block(&ssl, block, ack_trans, atp);
                     } else {
-                        ESP_LOGE(TAG, "   ❌ Decryption failed!");
+                        ESP_LOGE(TAG, "   âŒ Decryption failed!");
                     }
                     free(plain);
                 }
             } else {
-                ESP_LOGW(TAG, "      ⚠️ Cannot decrypt - no contact keys");
+                ESP_LOGW(TAG, "      âš ï¸ Cannot decrypt - no contact keys");
             }
             ESP_LOGI(TAG, "");
         }
         else if (p + 2 < content_len && resp[p] == 'E' && resp[p+1] == 'R' && resp[p+2] == 'R') {
-            ESP_LOGE(TAG, "   ❌ ERR: %.*s", 
+            ESP_LOGE(TAG, "   âŒ ERR: %.*s", 
                      (content_len - p > 20) ? 20 : content_len - p, &resp[p]);
         }
         else {
-            ESP_LOGW(TAG, "   ❓ Unknown: %c%c%c", 
+            ESP_LOGW(TAG, "   â“ Unknown: %c%c%c", 
                      (p < content_len) ? resp[p] : '?',
                      (p+1 < content_len) ? resp[p+1] : '?',
                      (p+2 < content_len) ? resp[p+2] : '?');
@@ -396,9 +405,9 @@ static void smp_connect(void) {
     }
 
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "╔════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║       Session ended                ║");
-    ESP_LOGI(TAG, "╚════════════════════════════════════╝");
+    ESP_LOGI(TAG, "â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
+    ESP_LOGI(TAG, "â•‘       Session ended                â•‘");
+    ESP_LOGI(TAG, "â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
 
 cleanup:
     free(block);
@@ -437,9 +446,40 @@ void app_main(void) {
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
-    ESP_LOGI(TAG, "NVS initialized");
 
-    // Initialize WiFi
+    // ========== Display + LVGL Init ==========
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "Initializing Display...");
+    ret = tdeck_display_init();
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Display init failed: %s", esp_err_to_name(ret));
+    } else {
+        ESP_LOGI(TAG, "Initializing LVGL...");
+        ret = tdeck_lvgl_init();
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "LVGL init failed: %s", esp_err_to_name(ret));
+        } else {
+            // Initialize Touch
+            ESP_LOGI(TAG, "Initializing Touch...");
+            ret = tdeck_touch_init();
+            if (ret == ESP_OK) {
+                tdeck_touch_register_lvgl();
+                ESP_LOGI(TAG, "Touch input enabled!");
+            } else {
+                ESP_LOGW(TAG, "Touch init failed - continuing without touch");
+            }
+            
+            // Initialize UI system
+            ESP_LOGI(TAG, "Initializing UI...");
+            ui_manager_init();
+            tdeck_lvgl_start();  // Start rendering AFTER splash is loaded
+            
+            // Kurz warten bis Splash gerendert ist, DANN Backlight an
+            vTaskDelay(pdMS_TO_TICKS(50));
+            tdeck_display_backlight(100);
+        }
+    }
+    ESP_LOGI(TAG, "");
     wifi_init();
 
     // Wait for WiFi connection
@@ -451,15 +491,15 @@ void app_main(void) {
 
     // ========== Step 0: Create our Reply Queue ==========
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "══════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
     ESP_LOGI(TAG, "  STEP 0: Creating our reply queue on %s:%d", SMP_HOST, SMP_PORT);
-    ESP_LOGI(TAG, "══════════════════════════════════════════════════════════════");
+    ESP_LOGI(TAG, "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
     
     if (!queue_create(SMP_HOST, SMP_PORT)) {
-        ESP_LOGE(TAG, "❌ Failed to create reply queue!");
-        ESP_LOGW(TAG, "⚠️  Continuing without reply queue...");
+        ESP_LOGE(TAG, "âŒ Failed to create reply queue!");
+        ESP_LOGW(TAG, "âš ï¸  Continuing without reply queue...");
     } else {
-        ESP_LOGI(TAG, "✅ Reply queue created!");
+        ESP_LOGI(TAG, "âœ… Reply queue created!");
         ESP_LOGI(TAG, "   sndId: %02x%02x%02x%02x... (%d bytes)",
                  our_queue.snd_id[0], our_queue.snd_id[1],
                  our_queue.snd_id[2], our_queue.snd_id[3],
