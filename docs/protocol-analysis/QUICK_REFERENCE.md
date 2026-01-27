@@ -1,8 +1,21 @@
-﻿# Quick Reference
+# Quick Reference
 
 ## Constants, Wire Formats, and KDF Parameters
 
 This document provides a quick reference for all the technical details needed when working with SimpleGo.
+
+**Updated: 2026-01-27 - Session 8 (🎉 BREAKTHROUGH!)**
+
+---
+
+## 🎉 BREAKTHROUGH STATUS
+
+```
+✅ AgentConfirmation: APP ACCEPTS!
+✅ Double Ratchet E2E: FULLY WORKING!
+✅ Contact "ESP32": VISIBLE IN APP!
+✅ All 14 bugs: FIXED!
+```
 
 ---
 
@@ -15,6 +28,7 @@ This document provides a quick reference for all the technical details needed wh
 5. [SPKI Key Formats](#5-spki-key-formats)
 6. [Encoding Rules](#6-encoding-rules)
 7. [Maybe Encoding](#7-maybe-encoding)
+8. [Session 8 Critical Fixes](#8-session-8-critical-fixes)
 
 ---
 
@@ -31,13 +45,13 @@ This document provides a quick reference for all the technical details needed wh
 | MsgHeader (msgMaxVersion) | 2 | - | 0x00 0x02 |
 
 ### 1.2 Version Constants in Code
-`c
+```c
 #define SMP_CLIENT_VERSION      4
 #define AGENT_VERSION           7
 #define E2E_VERSION             2
 #define EH_VERSION              2
 #define MSG_HEADER_VERSION      2
-`
+```
 
 ---
 
@@ -73,67 +87,81 @@ This document provides a quick reference for all the technical details needed wh
 | AAD Type | Size | Composition |
 |----------|------|-------------|
 | Header AAD (rcAD) | 112 | 56 + 56 raw keys |
-| Payload AAD | 235 | 112 + 123 (rcAD + emHeader) |
+| **Payload AAD** | **235** | **112 + 123 (rcAD + emHeader, NO prefix!)** |
+
+⚠️ **CRITICAL:** Payload AAD is 235 bytes, NOT 236! No length prefix before emHeader!
 
 ---
 
 ## 3. Wire Formats
 
 ### 3.1 EncRatchetMessage
-`
+```
   +---------------+-----------------+----------------+-------------------+
   | emHeader-len  | emHeader        | Payload AuthTag| Encrypted Payload |
   | (1 byte)      | (123 bytes)     | (16 bytes)     | (Tail-no prefix)  |
   | 0x7B          | [EncMsgHeader]  | [tag]          | [encrypted]       |
   +---------------+-----------------+----------------+-------------------+
-`
+```
 
 ### 3.2 EncMessageHeader (123 bytes)
-`
+```
   +-----------+--------+------------+-------------+------------------+
   | ehVersion | ehIV   | ehAuthTag  | ehBody-len  | ehBody           |
   | (2 bytes) | (16 B) | (16 bytes) | (1 byte)    | (88 bytes)       |
   | 00 02     | [iv]   | [tag]      | 58          | [encrypted hdr]  |
   +-----------+--------+------------+-------------+------------------+
   Total: 2 + 16 + 16 + 1 + 88 = 123 bytes
-`
+```
 
 ### 3.3 MsgHeader (88 bytes, plaintext)
-`
+```
   +------------+-------------+------------------+----------+----------+---------+
   | Word16 len | msgMaxVer   | msgDHRs          | msgPN    | msgNs    | Padding |
   | (2 bytes)  | (2 bytes)   | (1+68 bytes)     | (4 bytes)| (4 bytes)| (7 B)   |
   | 00 4F      | 00 02       | 44 [SPKI]        | [PN BE]  | [Ns BE]  | '#####' |
   +------------+-------------+------------------+----------+----------+---------+
   Total: 2 + 2 + 1 + 68 + 4 + 4 + 7 = 88 bytes
-`
+```
 
 ### 3.4 HELLO Plaintext (12 bytes)
-`
+```
   +-----+---------------------------+-----------+-----+
   | 'M' | sndMsgId (8 bytes BE)     | prevHash  | 'H' |
   | 4D  | 00 00 00 00 00 00 00 01   | len (2B)  | 48  |
   |     |                           | 00 00     |     |
   +-----+---------------------------+-----------+-----+
   Total: 1 + 8 + 2 + 1 = 12 bytes
-`
+```
 
 ### 3.5 E2E Params (140 bytes)
-`
+```
   +-----------+-------------+----------------+-------------+----------------+
   | e2eVer    | key1-len    | key1 (SPKI)    | key2-len    | key2 (SPKI)    |
   | (2 bytes) | (1 byte)    | (68 bytes)     | (1 byte)    | (68 bytes)     |
   | 00 02     | 44          | [SPKI key1]    | 44          | [SPKI key2]    |
   +-----------+-------------+----------------+-------------+----------------+
   Total: 2 + 1 + 68 + 1 + 68 = 140 bytes
-`
+```
+
+### 3.6 Payload AAD (235 bytes) - CORRECTED!
+```
+  +------------------+------------------+
+  | rcAD             | emHeader         |
+  | (112 bytes)      | (123 bytes)      |
+  | [raw keys]       | [NO len prefix!] |
+  +------------------+------------------+
+  Total: 112 + 123 = 235 bytes (NOT 236!)
+```
+
+⚠️ **Session 8 Fix:** emHeader is concatenated DIRECTLY without length prefix!
 
 ---
 
 ## 4. KDF Parameters
 
 ### 4.1 X3DH Key Derivation
-`
+```
 X3DH:
   Hash:   SHA512
   Salt:   64 zero bytes
@@ -143,10 +171,10 @@ X3DH:
     [0:32]   header_key (hk)
     [32:64]  next_header_key (nhk)
     [64:96]  root_key (sk)
-`
+```
 
 ### 4.2 Root KDF
-`
+```
 Root KDF:
   Hash:   SHA512
   Salt:   current root_key (32 bytes)
@@ -156,10 +184,10 @@ Root KDF:
     [0:32]   new_root_key
     [32:64]  chain_key
     [64:96]  next_header_key
-`
+```
 
-### 4.3 Chain KDF
-`
+### 4.3 Chain KDF - CORRECTED IV ORDER!
+```
 Chain KDF:
   Hash:   SHA512
   Salt:   EMPTY (0 bytes!) <-- Important!
@@ -168,37 +196,39 @@ Chain KDF:
   Output: 96 bytes
     [0:32]   next_chain_key
     [32:64]  message_key
-    [64:80]  header_iv   <-- FIRST!
-    [80:96]  message_iv  <-- SECOND!
-`
+    [64:80]  MESSAGE_IV (iv1)  <-- FOR PAYLOAD! (Session 8 fix)
+    [80:96]  HEADER_IV (iv2)   <-- FOR HEADER! (Session 8 fix)
+```
+
+⚠️ **Session 8 Fix:** iv1 = message IV, iv2 = header IV (was swapped before!)
 
 ---
 
 ## 5. SPKI Key Formats
 
 ### 5.1 X448 SPKI (68 bytes)
-`
+```
 Header (12 bytes):
   30 42 30 05 06 03 2b 65 6f 03 39 00
 
 + Raw key (56 bytes)
-`
+```
 
 ### 5.2 X25519 SPKI (44 bytes)
-`
+```
 Header (12 bytes):
   30 2a 30 05 06 03 2b 65 6e 03 21 00
 
 + Raw key (32 bytes)
-`
+```
 
 ### 5.3 Ed25519 SPKI (44 bytes)
-`
+```
 Header (12 bytes):
   30 2a 30 05 06 03 2b 65 70 03 21 00
 
 + Raw key (32 bytes)
-`
+```
 
 ---
 
@@ -213,39 +243,39 @@ Header (12 bytes):
 | Tail field | NO prefix! |
 
 ### 6.2 Word16 (Big Endian)
-`
+```
 Value 68:  0x00 0x44
 Value 79:  0x00 0x4F
 Value 88:  0x00 0x58
 Value 123: 0x00 0x7B
-`
+```
 
 ### 6.3 Word32 (Big Endian)
-`
+```
 Value 0:   0x00 0x00 0x00 0x00
 Value 1:   0x00 0x00 0x00 0x01
-`
+```
 
 ---
 
 ## 7. Maybe Encoding
 
 ### 7.1 Standard Maybe
-`
+```
 Nothing:  '0' (0x30)
 Just x:   '1' (0x31) + encoded x
-`
+```
 
 ### 7.2 Special Cases
-`
+```
 queueMode (NOT standard Maybe!):
   Nothing:              (empty - zero bytes!)
   Just QMMessaging:     "M"
   Just QMSubscription:  "S"
-`
+```
 
 ### 7.3 Padding Functions
-`
+```
 TWO different pad() functions exist:
 
 Crypto/Lazy.hs (LazyByteString):
@@ -256,9 +286,44 @@ Crypto.hs (strict ByteString):
   - 2-byte Word16 length prefix
   - Used for: encryptAEAD (AES-GCM)
   - THIS IS WHAT DOUBLE RATCHET USES!
-`
+```
 
 ---
 
-*Quick Reference v1.0*  
-*Last updated: January 25, 2026*
+## 8. Session 8 Critical Fixes
+
+### 8.1 Bug #13: Payload AAD Construction
+
+```c
+// WRONG (236 bytes with prefix):
+uint8_t payload_aad[236];
+memcpy(payload_aad, rcAD, 112);
+payload_aad[112] = 0x7B;  // Length prefix ← ERROR!
+memcpy(payload_aad + 113, em_header, 123);
+
+// CORRECT (235 bytes, no prefix):
+uint8_t payload_aad[235];
+memcpy(payload_aad, rcAD, 112);
+memcpy(payload_aad + 112, em_header, 123);  // Direct!
+```
+
+**Why:** In Haskell `(rcAD <> emHeader)`, emHeader is the PARSED header (after largeP), which doesn't include the length prefix.
+
+### 8.2 Bug #14: chainKdf IV Assignment
+
+```c
+// WRONG (swapped):
+memcpy(header_iv, kdf_output + 64, 16);  // iv1
+memcpy(msg_iv, kdf_output + 80, 16);     // iv2
+
+// CORRECT:
+memcpy(msg_iv, kdf_output + 64, 16);     // iv1 = for payload
+memcpy(header_iv, kdf_output + 80, 16);  // iv2 = for header
+```
+
+**Why:** Per Haskell `let (ck', mk, iv, ehIV) = chainKdf rcCKs`, iv (iv1) is for message, ehIV (iv2) is for header.
+
+---
+
+*Quick Reference v2.0*  
+*Last updated: January 27, 2026 - Session 8 (🎉 BREAKTHROUGH!)*
