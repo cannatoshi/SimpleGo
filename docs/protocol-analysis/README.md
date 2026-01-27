@@ -6,24 +6,19 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## 🎉 BREAKTHROUGH ACHIEVED! (2026-01-27)
+## Current Status (2026-01-27 Session 9)
 
 ```
-═══════════════════════════════════════════════════════════════════
+Session 9 - Reply Queue Unlocked:
+- Reply Queue decryption WORKING
+- HSalsa20 key derivation bug fixed (Bug #15)
+- A_CRYPTO error discovered in App (Bug #16 - investigating)
 
-🎉 HISTORIC ACHIEVEMENT - SESSION 8!
-├── ✅ AgentConfirmation ACCEPTED by SimpleX App!
-├── ✅ Double Ratchet E2E encryption WORKING!
-├── ✅ Contact "ESP32" appears in app!
-├── ✅ Connection status: JOINED!
-└── 🏆 FIRST native ESP32 SMP implementation WORLDWIDE!
-
-Community Recognition:
-├── 💬 Evgeny Poberezkin: "amazing", "super cool"
-├── 📣 First external SMP implementation confirmed
-└── 🤝 SimpleX team offers support
-
-═══════════════════════════════════════════════════════════════════
+Verification Status:
+- All cryptography Python-verified (100% match)
+- Server accepts messages ("OK")
+- Reply Queue decrypt: WORKING
+- App decrypt: A_CRYPTO error (header AAD issue)
 ```
 
 ---
@@ -52,16 +47,18 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 
 | Document | Lines | Description |
 |----------|-------|-------------|
-| [SESSION_1_3_FOUNDATION.md](SESSION_1_3_FOUNDATION.md) | ~1200 | Project setup, TLS 1.3, basic SMP protocol |
-| [SESSION_4_WIRE_FORMAT.md](SESSION_4_WIRE_FORMAT.md) | ~2500 | Wire format analysis, bugs #1-8 |
-| [SESSION_5_X448_BREAKTHROUGH.md](SESSION_5_X448_BREAKTHROUGH.md) | ~1800 | The wolfSSL byte-order discovery, bug #9 |
-| [SESSION_6_SMPQUEUEINFO.md](SESSION_6_SMPQUEUEINFO.md) | ~1500 | SMPQueueInfo encoding, bugs #10-12 |
-| [SESSION_7_DEEP_RESEARCH.md](SESSION_7_DEEP_RESEARCH.md) | ~2000 | AES-GCM verification, Tail encoding |
-| [SESSION_8_BREAKTHROUGH.md](SESSION_8_BREAKTHROUGH.md) | ~400 | 🎉 **THE BREAKTHROUGH!** Bugs #13-14 |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~500 | Constants, wire formats, KDF parameters |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~900 | Complete bug documentation (14 bugs) |
+| [01_SIMPLEX_PROTOCOL_INDEX.md](01_SIMPLEX_PROTOCOL_INDEX.md) | ~100 | Navigation index |
+| [02_SIMPLEX_STATUS.md](02_SIMPLEX_STATUS.md) | ~250 | Current status summary |
+| [03_PART1_INTRO_SESSIONS_1-2.md](03_PART1_INTRO_SESSIONS_1-2.md) | ~2300 | Foundation, TLS 1.3, basic SMP |
+| [04_PART2_SESSIONS_3-4.md](04_PART2_SESSIONS_3-4.md) | ~1000 | Wire format, bugs #1-8 |
+| [05_PART3_SESSIONS_5-6.md](05_PART3_SESSIONS_5-6.md) | ~800 | X448 breakthrough, SMPQueueInfo |
+| [06_PART4_SESSION_7.md](06_PART4_SESSION_7.md) | ~3200 | AES-GCM verification, Tail encoding |
+| [07_PART5_SESSION_8_BREAKTHROUGH.md](07_PART5_SESSION_8_BREAKTHROUGH.md) | ~400 | AgentConfirmation works! |
+| [08_PART6_SESSION_9.md](08_PART6_SESSION_9.md) | ~450 | Reply Queue decrypt, A_CRYPTO |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1000 | Complete bug documentation (16 bugs) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~600 | Constants, wire formats, KDF parameters |
 
-**Total: ~11,000 lines of detailed protocol analysis**
+**Total: ~12,000 lines of detailed protocol analysis**
 
 ---
 
@@ -70,7 +67,7 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 ```
 SimpleGo Achievement:
 
-  🏆 FIRST native SMP protocol implementation WORLDWIDE!
+  FIRST native SMP protocol implementation WORLDWIDE!
   - Outside the official Haskell codebase
   - Direct binary-level protocol communication
   - No WebSocket wrapper - true SMP protocol!
@@ -78,7 +75,7 @@ SimpleGo Achievement:
   All other "implementations" are wrappers around the JSON WebSocket API.
   SimpleGo speaks the REAL SMP protocol at the binary level.
 
-  January 27, 2026: BREAKTHROUGH! App accepts our messages!
+  January 27, 2026: Reply Queue decryption working!
 ```
 
 ---
@@ -92,34 +89,8 @@ SimpleGo Achievement:
 | 5 | Jan 24, 2026 | X448 byte-order breakthrough | #9 |
 | 6 | Jan 24, 2026 | SMPQueueInfo encoding | #10-12 |
 | 7 | Jan 24-25, 2026 | Crypto verification, SimpleX contact | - |
-| **8** | **Jan 27, 2026** | **🎉 THE BREAKTHROUGH!** | **#13-14** |
-
----
-
-## Current Status
-
-```
-Verification Status (Session 8 - BREAKTHROUGH!):
-
-  ✅ X448 Diffie-Hellman        (Python match - 100%)
-  ✅ X3DH HKDF                  (Python match - 100%)
-  ✅ Root KDF                   (Python match - 100%)
-  ✅ Chain KDF                  (Python match - 100%)
-  ✅ AES-256-GCM                (Python match - 100%)
-  ✅ 16-byte IV GHASH           (Python match - 100%)
-  ✅ Wire Format                (Haskell source verified)
-  ✅ 14 Encoding Bugs           (All fixed!)
-  ✅ Server Acceptance          ("OK" response)
-  ✅ Tail Encoding              (Verified correct)
-  ✅ MsgHeader Padding          (Word16 + '#')
-  
-  🎉 AgentConfirmation          APP ACCEPTS!
-  🎉 Double Ratchet E2E         FULLY WORKING!
-  🎉 Contact "ESP32"            VISIBLE IN APP!
-  
-  🔥 HELLO Handshake            ERR AUTH (next priority)
-  ⏳ Incoming Decryption        Not implemented yet
-```
+| 8 | Jan 27, 2026 | AgentConfirmation WORKS! | #13-14 |
+| **9** | **Jan 27, 2026** | **Reply Queue decrypt** | **#15** |
 
 ---
 
@@ -127,32 +98,25 @@ Verification Status (Session 8 - BREAKTHROUGH!):
 
 ### By Topic
 
-- **TLS Connection**: [Session 1-3](SESSION_1_3_FOUNDATION.md#6-tls-13-connection)
-- **SMP Handshake**: [Session 1-3](SESSION_1_3_FOUNDATION.md#8-smp-handshake)
-- **Double Ratchet**: [Session 4](SESSION_4_WIRE_FORMAT.md#2-protocol-stack-deep-dive)
-- **X448 Cryptography**: [Session 5](SESSION_5_X448_BREAKTHROUGH.md)
-- **Wire Format**: [Quick Reference](QUICK_REFERENCE.md#3-wire-formats)
+- **TLS Connection**: [Part 1](03_PART1_INTRO_SESSIONS_1-2.md)
+- **SMP Handshake**: [Part 1](03_PART1_INTRO_SESSIONS_1-2.md)
+- **Double Ratchet**: [Part 2](04_PART2_SESSIONS_3-4.md)
+- **X448 Cryptography**: [Part 3](05_PART3_SESSIONS_5-6.md)
+- **Wire Format**: [Quick Reference](QUICK_REFERENCE.md)
 - **All Bugs**: [Bug Tracker](BUG_TRACKER.md)
-- **🎉 Breakthrough**: [Session 8](SESSION_8_BREAKTHROUGH.md)
+- **Breakthrough**: [Part 5 - Session 8](07_PART5_SESSION_8_BREAKTHROUGH.md)
+- **Reply Queue**: [Part 6 - Session 9](08_PART6_SESSION_9.md)
 
 ### By Bug Number
 
 | Bug | Description | Document |
 |-----|-------------|----------|
-| #1 | E2E key length | [Session 4](SESSION_4_WIRE_FORMAT.md) |
-| #2 | prevMsgHash length | [Session 4](SESSION_4_WIRE_FORMAT.md) |
-| #3 | MsgHeader DH key | [Session 4](SESSION_4_WIRE_FORMAT.md) |
-| #4 | ehBody length | [Session 4](SESSION_4_WIRE_FORMAT.md) |
-| #5 | emHeader size | [Session 4](SESSION_4_WIRE_FORMAT.md) |
-| #6 | Payload AAD size | [Session 4](SESSION_4_WIRE_FORMAT.md) |
-| #7 | Root KDF order | [Session 4](SESSION_4_WIRE_FORMAT.md) |
-| #8 | Chain KDF IV order | [Session 4](SESSION_4_WIRE_FORMAT.md) |
-| #9 | wolfSSL X448 byte-order | [Session 5](SESSION_5_X448_BREAKTHROUGH.md) |
-| #10 | Port encoding | [Session 6](SESSION_6_SMPQUEUEINFO.md) |
-| #11 | smpQueues count | [Session 6](SESSION_6_SMPQUEUEINFO.md) |
-| #12 | queueMode Nothing | [Session 6](SESSION_6_SMPQUEUEINFO.md) |
-| **#13** | **Payload AAD prefix** | [**Session 8**](SESSION_8_BREAKTHROUGH.md) |
-| **#14** | **chainKdf IV assignment** | [**Session 8**](SESSION_8_BREAKTHROUGH.md) |
+| #1-8 | Wire format bugs | [Part 2](04_PART2_SESSIONS_3-4.md) |
+| #9 | wolfSSL X448 byte-order | [Part 3](05_PART3_SESSIONS_5-6.md) |
+| #10-12 | SMPQueueInfo encoding | [Part 3](05_PART3_SESSIONS_5-6.md) |
+| #13-14 | AAD prefix, IV order | [Part 5](07_PART5_SESSION_8_BREAKTHROUGH.md) |
+| **#15** | **HSalsa20 key derivation** | [**Part 6**](08_PART6_SESSION_9.md) |
+| **#16** | **A_CRYPTO (investigating)** | [**Part 6**](08_PART6_SESSION_9.md) |
 
 ---
 
@@ -187,4 +151,4 @@ The SimpleX protocol is the intellectual property of SimpleX Chat Ltd, used here
 
 ---
 
-*Last updated: January 27, 2026 - Session 8 (🎉 THE BREAKTHROUGH!)*
+*Last updated: January 27, 2026 - Session 9 (Reply Queue Unlocked)*

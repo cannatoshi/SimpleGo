@@ -4,17 +4,17 @@
 
 This document provides a quick reference for all the technical details needed when working with SimpleGo.
 
-**Updated: 2026-01-27 - Session 8 (🎉 BREAKTHROUGH!)**
+**Updated: 2026-01-27 - Session 9 (Reply Queue Unlocked)**
 
 ---
 
-## 🎉 BREAKTHROUGH STATUS
+## Current Status
 
 ```
-✅ AgentConfirmation: APP ACCEPTS!
-✅ Double Ratchet E2E: FULLY WORKING!
-✅ Contact "ESP32": VISIBLE IN APP!
-✅ All 14 bugs: FIXED!
+Session 9:
+- Reply Queue decryption: WORKING
+- HSalsa20 key derivation: FIXED (Bug #15)
+- A_CRYPTO in App: INVESTIGATING (Bug #16)
 ```
 
 ---
@@ -28,7 +28,7 @@ This document provides a quick reference for all the technical details needed wh
 5. [SPKI Key Formats](#5-spki-key-formats)
 6. [Encoding Rules](#6-encoding-rules)
 7. [Maybe Encoding](#7-maybe-encoding)
-8. [Session 8 Critical Fixes](#8-session-8-critical-fixes)
+8. [NaCl Crypto Layers](#8-nacl-crypto-layers)
 
 ---
 
@@ -73,6 +73,7 @@ This document provides a quick reference for all the technical details needed wh
 | X25519 Raw Key | 32 | |
 | AES-GCM IV | 16 | |
 | AES-GCM Tag | 16 | |
+| Poly1305 Tag | 16 | crypto_box_MACBYTES |
 
 ### 2.2 Padding Sizes
 
@@ -89,7 +90,7 @@ This document provides a quick reference for all the technical details needed wh
 | Header AAD (rcAD) | 112 | 56 + 56 raw keys |
 | **Payload AAD** | **235** | **112 + 123 (rcAD + emHeader, NO prefix!)** |
 
-⚠️ **CRITICAL:** Payload AAD is 235 bytes, NOT 236! No length prefix before emHeader!
+CRITICAL: Payload AAD is 235 bytes, NOT 236! No length prefix before emHeader!
 
 ---
 
@@ -154,7 +155,13 @@ This document provides a quick reference for all the technical details needed wh
   Total: 112 + 123 = 235 bytes (NOT 236!)
 ```
 
-⚠️ **Session 8 Fix:** emHeader is concatenated DIRECTLY without length prefix!
+### 3.7 crypto_box Wire Format
+```
+  +------------------+------------------+
+  | Poly1305 Tag     | Ciphertext       |
+  | (16 bytes)       | (variable)       |
+  +------------------+------------------+
+```
 
 ---
 
@@ -199,8 +206,6 @@ Chain KDF:
     [64:80]  MESSAGE_IV (iv1)  <-- FOR PAYLOAD! (Session 8 fix)
     [80:96]  HEADER_IV (iv2)   <-- FOR HEADER! (Session 8 fix)
 ```
-
-⚠️ **Session 8 Fix:** iv1 = message IV, iv2 = header IV (was swapped before!)
 
 ---
 
@@ -290,40 +295,57 @@ Crypto.hs (strict ByteString):
 
 ---
 
-## 8. Session 8 Critical Fixes
+## 8. NaCl Crypto Layers (Session 9)
 
-### 8.1 Bug #13: Payload AAD Construction
+### 8.1 The Three Layers
 
-```c
-// WRONG (236 bytes with prefix):
-uint8_t payload_aad[236];
-memcpy(payload_aad, rcAD, 112);
-payload_aad[112] = 0x7B;  // Length prefix ← ERROR!
-memcpy(payload_aad + 113, em_header, 123);
-
-// CORRECT (235 bytes, no prefix):
-uint8_t payload_aad[235];
-memcpy(payload_aad, rcAD, 112);
-memcpy(payload_aad + 112, em_header, 123);  // Direct!
+```
++-------------------------------------------------------------+
+|                     NaCl crypto_box                         |
++-------------------------------------------------------------+
+|  1. X25519 DH:       scalarmult(sk, pk) -> raw_secret       |
+|  2. HSalsa20:        derive(raw_secret) -> box_key          |
+|  3. XSalsa20-Poly1305: encrypt(box_key, nonce, msg)         |
++-------------------------------------------------------------+
+|  crypto_scalarmult:    Only step 1                          |
+|  crypto_box_beforenm:  Steps 1 + 2 (returns box_key)        |
+|  crypto_box_easy:      All steps in one call                |
++-------------------------------------------------------------+
 ```
 
-**Why:** In Haskell `(rcAD <> emHeader)`, emHeader is the PARSED header (after largeP), which doesn't include the length prefix.
+### 8.2 Function Comparison
 
-### 8.2 Bug #14: chainKdf IV Assignment
+| Function | X25519 DH | HSalsa20 | XSalsa20-Poly1305 |
+|----------|-----------|----------|-------------------|
+| crypto_scalarmult | Yes | No | No |
+| crypto_box_beforenm | Yes | Yes | No |
+| crypto_box_easy | Yes | Yes | Yes |
+| crypto_box_open_easy_afternm | No | No | Yes (decrypt) |
 
+### 8.3 Critical Rule
+**Always use the same crypto primitive chain as the sender!**
+
+If sender uses `crypto_box_*` -> receiver must use `crypto_box_open_*`
+
+Raw `crypto_scalarmult` output is NOT compatible with NaCl crypto_box!
+
+### 8.4 Reply Queue Decrypt Pattern
 ```c
-// WRONG (swapped):
-memcpy(header_iv, kdf_output + 64, 16);  // iv1
-memcpy(msg_iv, kdf_output + 80, 16);     // iv2
+// Compute derived key (X25519 + HSalsa20)
+crypto_box_beforenm(shared_secret, server_pk, our_sk);
 
-// CORRECT:
-memcpy(msg_iv, kdf_output + 64, 16);     // iv1 = for payload
-memcpy(header_iv, kdf_output + 80, 16);  // iv2 = for header
+// Decrypt with XSalsa20-Poly1305
+crypto_box_open_easy_afternm(plaintext, ciphertext, len, nonce, shared_secret);
 ```
 
-**Why:** Per Haskell `let (ck', mk, iv, ehIV) = chainKdf rcCKs`, iv (iv1) is for message, ehIV (iv2) is for header.
+### 8.5 Nonce Format for Reply Queue
+```c
+uint8_t nonce[24];
+memset(nonce, 0, 24);
+memcpy(nonce, msg_id, msg_id_len);  // msgId as nonce, zero-padded
+```
 
 ---
 
-*Quick Reference v2.0*  
-*Last updated: January 27, 2026 - Session 8 (🎉 BREAKTHROUGH!)*
+*Quick Reference v3.0*  
+*Last updated: January 27, 2026 - Session 9 (Reply Queue Unlocked)*
