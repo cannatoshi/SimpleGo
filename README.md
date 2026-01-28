@@ -255,7 +255,7 @@ Adding support for new hardware requires implementing the HAL interfaces. See [A
 
 ```bash
 # Clone the repository
-git clone https://github.com/nicokuehn-dci/simplego.git
+git clone https://github.com/cannatoshi/simplego.git
 cd simplego
 
 # Set up ESP-IDF environment
