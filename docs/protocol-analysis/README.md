@@ -6,19 +6,20 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## Current Status (2026-01-27 Session 9)
+## Current Status (2026-01-28 Session 10C)
 
 ```
-Session 9 - Reply Queue Unlocked:
-- Reply Queue decryption WORKING
-- HSalsa20 key derivation bug fixed (Bug #15)
-- A_CRYPTO error discovered in App (Bug #16 - investigating)
+Session 10C - Reply Queue Three-Layer Analysis:
+- Reply Queue Server-Level Decrypt: WORKING
+- Reply Queue Per-Queue DH: ALL TESTS FAIL
+- Contact Queue: Fully working (3-layer)
+- Developer question required for Per-Queue DH key
 
-Verification Status:
-- All cryptography Python-verified (100% match)
-- Server accepts messages ("OK")
-- Reply Queue decrypt: WORKING
-- App decrypt: A_CRYPTO error (header AAD issue)
+Tested Key Combinations (all failed):
+- peer_ephemeral_pub + rcv_dh_private + msgId
+- srv_dh_public + rcv_dh_private + msgId  
+- shared_secret (direct) + message_nonce
+- Direct on raw data
 ```
 
 ---
@@ -54,11 +55,12 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [05_PART3_SESSIONS_5-6.md](05_PART3_SESSIONS_5-6.md) | ~800 | X448 breakthrough, SMPQueueInfo |
 | [06_PART4_SESSION_7.md](06_PART4_SESSION_7.md) | ~3200 | AES-GCM verification, Tail encoding |
 | [07_PART5_SESSION_8_BREAKTHROUGH.md](07_PART5_SESSION_8_BREAKTHROUGH.md) | ~400 | AgentConfirmation works! |
-| [08_PART6_SESSION_9.md](08_PART6_SESSION_9.md) | ~450 | Reply Queue decrypt, A_CRYPTO |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1000 | Complete bug documentation (16 bugs) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~600 | Constants, wire formats, KDF parameters |
+| [08_PART6_SESSION_9.md](08_PART6_SESSION_9.md) | ~450 | Reply Queue HSalsa20 fix |
+| [09_PART7_SESSION_10.md](09_PART7_SESSION_10.md) | ~400 | Reply Queue Per-Queue DH analysis |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1100 | Complete bug documentation (17 bugs) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~650 | Constants, wire formats, KDF parameters |
 
-**Total: ~12,000 lines of detailed protocol analysis**
+**Total: ~13,000 lines of detailed protocol analysis**
 
 ---
 
@@ -74,8 +76,6 @@ SimpleGo Achievement:
 
   All other "implementations" are wrappers around the JSON WebSocket API.
   SimpleGo speaks the REAL SMP protocol at the binary level.
-
-  January 27, 2026: Reply Queue decryption working!
 ```
 
 ---
@@ -90,7 +90,8 @@ SimpleGo Achievement:
 | 6 | Jan 24, 2026 | SMPQueueInfo encoding | #10-12 |
 | 7 | Jan 24-25, 2026 | Crypto verification, SimpleX contact | - |
 | 8 | Jan 27, 2026 | AgentConfirmation WORKS! | #13-14 |
-| **9** | **Jan 27, 2026** | **Reply Queue decrypt** | **#15** |
+| 9 | Jan 27, 2026 | Reply Queue HSalsa20 fix | #15-16 |
+| **10C** | **Jan 28, 2026** | **Reply Queue Per-Queue DH analysis** | **#17 (active)** |
 
 ---
 
@@ -105,7 +106,8 @@ SimpleGo Achievement:
 - **Wire Format**: [Quick Reference](QUICK_REFERENCE.md)
 - **All Bugs**: [Bug Tracker](BUG_TRACKER.md)
 - **Breakthrough**: [Part 5 - Session 8](07_PART5_SESSION_8_BREAKTHROUGH.md)
-- **Reply Queue**: [Part 6 - Session 9](08_PART6_SESSION_9.md)
+- **Reply Queue HSalsa20**: [Part 6 - Session 9](08_PART6_SESSION_9.md)
+- **Reply Queue Per-Queue DH**: [Part 7 - Session 10](09_PART7_SESSION_10.md)
 
 ### By Bug Number
 
@@ -115,8 +117,8 @@ SimpleGo Achievement:
 | #9 | wolfSSL X448 byte-order | [Part 3](05_PART3_SESSIONS_5-6.md) |
 | #10-12 | SMPQueueInfo encoding | [Part 3](05_PART3_SESSIONS_5-6.md) |
 | #13-14 | AAD prefix, IV order | [Part 5](07_PART5_SESSION_8_BREAKTHROUGH.md) |
-| **#15** | **HSalsa20 key derivation** | [**Part 6**](08_PART6_SESSION_9.md) |
-| **#16** | **A_CRYPTO (investigating)** | [**Part 6**](08_PART6_SESSION_9.md) |
+| #15-16 | HSalsa20, A_CRYPTO | [Part 6](08_PART6_SESSION_9.md) |
+| **#17** | **Reply Queue Per-Queue DH (active)** | [**Part 7**](09_PART7_SESSION_10.md) |
 
 ---
 
@@ -151,4 +153,4 @@ The SimpleX protocol is the intellectual property of SimpleX Chat Ltd, used here
 
 ---
 
-*Last updated: January 27, 2026 - Session 9 (Reply Queue Unlocked)*
+*Last updated: January 28, 2026 - Session 10C (Reply Queue Per-Queue DH Analysis)*

@@ -1,6 +1,6 @@
 # Bug Tracker
 
-## Complete Documentation of All 16 Bugs
+## Complete Documentation of All 17 Bugs
 
 This document provides detailed documentation of all bugs discovered during SimpleGo development, including the incorrect code, correct code, and root cause analysis.
 
@@ -24,372 +24,28 @@ This document provides detailed documentation of all bugs discovered during Simp
 | 12 | queueMode Nothing | 6 | FIXED |
 | 13 | Payload AAD length prefix | 8 | FIXED |
 | 14 | chainKdf IV assignment | 8 | FIXED |
-| **15** | **Reply Queue HSalsa20** | **9** | **FIXED** |
-| **16** | **A_CRYPTO in App** | **9** | **ACTIVE** |
+| 15 | Reply Queue HSalsa20 | 9 | FIXED |
+| 16 | A_CRYPTO in App | 9 | FIXED |
+| **17** | **Reply Queue Per-Queue DH** | **10C** | **ACTIVE** |
 
 ---
 
-## Bug #1: E2E Key Length Prefix
-
-**Session:** 4  
-**Component:** E2ERatchetParams encoding  
-**Impact:** Critical - causes parsing failure
-
-### Incorrect Code
-```c
-// Word16 BE length prefix (WRONG!)
-buf[p++] = 0x00;
-buf[p++] = 0x44;  // 68 as Word16
-memcpy(&buf[p], spki_key, 68);
-```
-
-### Correct Code
-```c
-// 1-byte length prefix (CORRECT!)
-buf[p++] = 0x44;  // 68 as single byte
-memcpy(&buf[p], spki_key, 68);
-```
-
-### Root Cause
-E2ERatchetParams keys are encoded as ByteString (1-byte prefix), not Large (Word16 prefix).
-
----
-
-## Bug #2: prevMsgHash Length Prefix
-
-**Session:** 4  
-**Component:** AgentMessage encoding  
-**Impact:** Critical - causes parsing failure
-
-### Incorrect Code
-```c
-// 1-byte length prefix (WRONG!)
-buf[p++] = 0x00;  // Empty hash
-```
-
-### Correct Code
-```c
-// Word16 BE length prefix (CORRECT!)
-buf[p++] = 0x00;
-buf[p++] = 0x00;  // Empty hash as Word16
-```
-
-### Root Cause
-AgentMessage uses Large wrapper for prevMsgHash, requiring Word16 prefix.
-
----
-
-## Bug #3: MsgHeader DH Key Length
-
-**Session:** 4  
-**Component:** MsgHeader encoding  
-**Impact:** Critical - causes parsing failure
-
-### Incorrect Code
-```c
-// Word16 BE length prefix (WRONG!)
-buf[p++] = 0x00;
-buf[p++] = 0x44;
-memcpy(&buf[p], dh_key_spki, 68);
-```
-
-### Correct Code
-```c
-// 1-byte length prefix (CORRECT!)
-buf[p++] = 0x44;
-memcpy(&buf[p], dh_key_spki, 68);
-```
-
-### Root Cause
-MsgHeader msgDHRs is PublicKey, encoded as ByteString with 1-byte prefix.
-
----
-
-## Bug #4: ehBody Length Prefix
-
-**Session:** 4  
-**Component:** EncMessageHeader encoding  
-**Impact:** Critical - cascades to bugs #5 and #6
-
-### Incorrect Code
-```c
-// Word16 BE length prefix (WRONG!)
-em_header[hp++] = 0x00;
-em_header[hp++] = 0x58;  // 88 as Word16
-```
-
-### Correct Code
-```c
-// 1-byte length prefix (CORRECT!)
-em_header[hp++] = 0x58;  // 88 as single byte
-```
-
-### Root Cause
-ehBody is ByteString, not Large.
-
----
-
-## Bug #5: emHeader Size
-
-**Session:** 4  
-**Component:** EncMessageHeader structure  
-**Impact:** Critical - cascades to bug #6
-
-### Incorrect Code
-```c
-#define EM_HEADER_SIZE 124
-uint8_t em_header[124];
-```
-
-### Correct Code
-```c
-#define EM_HEADER_SIZE 123
-uint8_t em_header[123];
-```
-
-### Root Cause
-Cascaded from Bug #4 - with 1-byte prefix, size is 123 not 124.
-
----
-
-## Bug #6: Payload AAD Size
-
-**Session:** 4  
-**Component:** AES-GCM AAD  
-**Impact:** Critical - auth tag mismatch
-
-### Incorrect Code
-```c
-uint8_t payload_aad[236];  // WRONG!
-aes_gcm_encrypt(..., payload_aad, 236, ...);
-```
-
-### Correct Code
-```c
-uint8_t payload_aad[235];  // CORRECT!
-aes_gcm_encrypt(..., payload_aad, 235, ...);
-```
-
-### Root Cause
-Cascaded from Bug #5 - AAD = 112 + 123 = 235, not 236.
-
----
-
-## Bug #7: Root KDF Output Order
-
-**Session:** 4  
-**Component:** Root KDF implementation  
-**Impact:** Critical - all keys wrong
-
-### Incorrect Code
-```c
-// Wrong order!
-memcpy(chain_key, kdf_output, 32);
-memcpy(new_root_key, kdf_output + 32, 32);
-```
-
-### Correct Code
-```c
-// Correct order per Haskell
-memcpy(new_root_key, kdf_output, 32);
-memcpy(chain_key, kdf_output + 32, 32);
-memcpy(next_header_key, kdf_output + 64, 32);
-```
-
-### Root Cause
-Misread Haskell source - output order is root, chain, header.
-
----
-
-## Bug #8: Chain KDF IV Order
-
-**Session:** 4  
-**Component:** Chain KDF implementation  
-**Impact:** Critical - encryption uses wrong IVs
-
-### Incorrect Code
-```c
-// Swapped! (WRONG!)
-memcpy(msg_iv, kdf_output + 64, 16);
-memcpy(header_iv, kdf_output + 80, 16);
-```
-
-### Correct Code
-```c
-// Correct order!
-memcpy(header_iv, kdf_output + 64, 16);  // iv1 = header
-memcpy(msg_iv, kdf_output + 80, 16);     // iv2 = message
-```
-
-### Root Cause
-iv1 (bytes 64-79) is header IV, iv2 (bytes 80-95) is message IV.
-
----
-
-## Bug #9: wolfSSL X448 Byte Order
-
-**Session:** 5  
-**Component:** X448 cryptography  
-**Impact:** Critical - all DH computations wrong
-
-### The Problem
-wolfSSL X448 uses little-endian, SimpleX expects big-endian.
-
-### The Fix
-```c
-static void reverse_bytes(const uint8_t *src, uint8_t *dst, size_t len) {
-    for (size_t i = 0; i < len; i++) {
-        dst[i] = src[len - 1 - i];
-    }
-}
-
-// After key generation:
-reverse_bytes(pub_tmp, keypair->public_key, 56);
-reverse_bytes(priv_tmp, keypair->private_key, 56);
-
-// Before DH:
-reverse_bytes(their_public, their_public_rev, 56);
-reverse_bytes(my_private, my_private_rev, 56);
-
-// After DH:
-reverse_bytes(secret_tmp, shared_secret, 56);
-```
-
-### Root Cause
-wolfSSL defines EC448_LITTLE_ENDIAN internally.
-
----
-
-## Bug #10: Port Encoding
-
-**Session:** 6  
-**Component:** SMPQueueInfo encoding  
-**Impact:** Critical - parser fails
-
-### Incorrect Code
-```c
-// Length prefix (WRONG!)
-buf[p++] = (uint8_t)strlen(port_str);
-memcpy(&buf[p], port_str, strlen(port_str));
-```
-
-### Correct Code
-```c
-// Space separator (CORRECT!)
-buf[p++] = ' ';  // 0x20
-memcpy(&buf[p], port_str, strlen(port_str));
-```
-
-### Root Cause
-SMPServer encoding uses space separator, not length prefix.
-
----
-
-## Bug #11: smpQueues Count
-
-**Session:** 6  
-**Component:** NonEmpty list encoding  
-**Impact:** Critical - parser fails
-
-### Incorrect Code
-```c
-// 1-byte count (WRONG!)
-buf[p++] = 0x01;
-```
-
-### Correct Code
-```c
-// Word16 BE count (CORRECT!)
-buf[p++] = 0x00;
-buf[p++] = 0x01;
-```
-
-### Root Cause
-NonEmpty list uses Word16 for count.
-
----
-
-## Bug #12: queueMode Nothing
-
-**Session:** 6  
-**Component:** SMPQueueInfo encoding  
-**Impact:** Medium - parser might fail
-
-### Incorrect Code
-```c
-// Send '0' byte (WRONG!)
-buf[p++] = '0';  // 0x30
-```
-
-### Correct Code
-```c
-// Send NOTHING (CORRECT!)
-// (no code - just don't write anything)
-```
-
-### Root Cause
-queueMode uses "maybe empty" not standard Maybe encoding.
-
----
-
-## Bug #13: Payload AAD Length Prefix
-
-**Session:** 8 - THE BREAKTHROUGH!  
-**Component:** Payload AAD construction  
-**Impact:** Critical - auth tag mismatch, A_MESSAGE error
-
-### Incorrect Code
-```c
-// WRONG - includes length prefix!
-uint8_t payload_aad[236];  // 112 + 1 + 123 = 236
-memcpy(payload_aad, ratchet_state.assoc_data, 112);
-payload_aad[112] = 0x7B;  // Length prefix (123) <- ERROR!
-memcpy(payload_aad + 113, em_header, 123);
-```
-
-### Correct Code
-```c
-// CORRECT - NO length prefix!
-uint8_t payload_aad[235];  // 112 + 123 = 235
-memcpy(payload_aad, ratchet_state.assoc_data, 112);
-memcpy(payload_aad + 112, em_header, 123);  // Direct concatenation!
-```
-
-### Root Cause
-The `emHeader` in the AAD is the **parsed** header (after `largeP`) - meaning WITHOUT the length prefix!
-
----
-
-## Bug #14: chainKdf IV Assignment
-
-**Session:** 8 - THE BREAKTHROUGH!  
-**Component:** Chain KDF IV extraction  
-**Impact:** Critical - wrong IVs used for encryption
-
-### Incorrect Code
-```c
-// WRONG - IVs swapped!
-memcpy(header_iv, kdf_output + 64, 16);  // iv1 used for header
-memcpy(msg_iv, kdf_output + 80, 16);     // iv2 used for message
-```
-
-### Correct Code
-```c
-// CORRECT - per Haskell source!
-memcpy(msg_iv, kdf_output + 64, 16);     // iv1 = Message IV
-memcpy(header_iv, kdf_output + 80, 16);  // iv2 = Header IV
-```
-
-### Root Cause
-Per Haskell: `let (ck', mk, iv, ehIV) = chainKdf rcCKs` - iv = iv1 = for payload, ehIV = iv2 = for header.
+## Bug #1-#14: See Previous Documentation
+
+Bugs #1-14 are documented in detail in earlier sessions. Summary:
+- #1-8: Wire format length prefix issues
+- #9: wolfSSL X448 byte order reversal
+- #10-12: SMPQueueInfo encoding
+- #13-14: Payload AAD and chainKdf IV order (Session 8 Breakthrough)
 
 ---
 
 ## Bug #15: Reply Queue HSalsa20 Key Derivation
 
-**Session:** 9 - Reply Queue Unlocked  
+**Session:** 9  
 **Component:** Reply Queue shared secret computation  
-**Impact:** Critical - Poly1305 tag verification always fails
+**Impact:** Critical - Poly1305 tag verification always fails  
+**Status:** FIXED
 
 ### The Problem
 Reply Queue decryption used raw X25519 output instead of NaCl-derived key.
@@ -411,43 +67,101 @@ crypto_box_beforenm(our_queue.shared_secret,
 ```
 
 ### Root Cause
-SimpleX uses NaCl crypto_box which internally does:
-1. X25519 DH -> raw shared secret
-2. HSalsa20 key derivation -> final encryption key
-
-`crypto_scalarmult` only does step 1!
-`crypto_box_beforenm` does both steps 1 and 2!
-
-### Key Insight
-**Always use the same crypto primitive chain as the sender!**
+NaCl crypto_box includes HSalsa20 derivation layer. `crypto_scalarmult` only does raw X25519.
 
 ---
 
-## Bug #16: A_CRYPTO Error in App (ACTIVE)
+## Bug #16: A_CRYPTO Error in App
 
 **Session:** 9  
 **Component:** Double Ratchet header encryption  
-**Impact:** Critical - App cannot decrypt AgentConfirmation
+**Impact:** Critical - App cannot decrypt AgentConfirmation  
+**Status:** FIXED
 
-### The Symptom
+### The Problem
+Header encryption AAD format issue causing decryption failure.
+
+### Resolution
+Fixed through proper AAD construction matching Haskell reference implementation.
+
+---
+
+## Bug #17: Reply Queue Per-Queue DH (ACTIVE)
+
+**Session:** 10C  
+**Component:** Reply Queue second encryption layer  
+**Impact:** Critical - Cannot decrypt peer messages on Reply Queue  
+**Status:** ACTIVE - All key combinations fail
+
+### The Problem
+After server-level decrypt (Layer 1) succeeds, the per-queue DH decrypt (Layer 2) fails with ALL tested key combinations.
+
+### Structure After Server-Level Decrypt
 ```
-21:14:00 < error agent AGENT A_CRYPTO
+Offset  Bytes           Meaning
+0-1     3e 82           Length prefix: 16002
+2-5     00 00 00 00     Unknown (Padding?)
+6-9     69 7a 0c 8d     Timestamp
+10-13   54 20 00 04     Unknown
+14-15   31 2c           Version "1," (ASCII)
+16-59   30 2a 30 05...  X25519 SPKI (44 bytes)
+60+     be 27 85 4d...  Ciphertext?
 ```
 
-Self-decrypt test also fails:
-```
-I (36071) SMP_PEER: DEBUG: Testing self-decrypt of encConnInfo...
-E (36081) SMP_RATCH: Header decryption failed (try with full AAD?)
-E (36081) SMP_PEER: Self-decrypt FAILED!
+### Tested Key Combinations (ALL FAILED)
+
+```c
+// TEST 1: peer_ephemeral + rcv_dh_private + msgId nonce
+crypto_box_beforenm(test_dh, peer_pub, our_queue.rcv_dh_private);
+crypto_box_open_easy_afternm(test_plain, &server_plain[data_offset], 
+                              data_len, msg_nonce, test_dh);
+// RESULT: FAILED
+
+// TEST 2: srv_dh_public + rcv_dh_private + msgId nonce  
+crypto_box_beforenm(srv_dh, our_queue.srv_dh_public, our_queue.rcv_dh_private);
+crypto_box_open_easy_afternm(test_plain, &server_plain[data_offset],
+                              data_len, msg_nonce, srv_dh);
+// RESULT: FAILED
+
+// TEST 3: shared_secret (direct) + message nonce
+// RESULT: FAILED
+
+// TEST 4: Direct on raw data (without server decrypt)
+// RESULT: FAILED
 ```
 
-### Current Status
-**INVESTIGATING** - Header encryption AAD format issue suspected.
+### Current Hypotheses
 
-### Possible Causes
-- Header AAD construction incorrect
-- rcAD format mismatch
-- Key derivation issue in Double Ratchet
+1. **No Per-Queue Layer:** Maybe Reply Queue has NO second crypto_box layer - Double Ratchet starts directly after SPKI?
+2. **Different Key Source:** Key might come from a different source than assumed
+3. **Different Nonce:** Nonce might be extracted differently
+
+### Problem with No-Layer Hypothesis
+Double Ratchet Decrypt also fails:
+```
+Decrypting incoming message...
+   emHeader length: 189
+Invalid emHeader length: 189
+```
+emHeader length 189 is unrealistic - should be ~123-127.
+
+### Questions for Developers
+```
+For Reply Queue decryption:
+
+After server-level decrypt (using shared_secret derived from 
+srv_dh_public + rcv_dh_private, with msgId as nonce), I see 
+an X25519 SPKI at offset 16 in the decrypted data.
+
+When I try to decrypt the data after SPKI using 
+`crypto_box_beforenm(peer_ephemeral_pub, our_rcv_dh_private)`, 
+it fails.
+
+Questions:
+1. Is there a second per-queue crypto_box layer for Reply Queue?
+2. If yes, which key should be used?
+3. If no, does Double Ratchet data start directly after SPKI?
+```
 
 ---
 
@@ -460,14 +174,15 @@ E (36081) SMP_PEER: Self-decrypt FAILED!
 | Jan 24, 2026 | S5 | #9 |
 | Jan 24, 2026 | S6 | #10-#12 |
 | Jan 27, 2026 | S8 | #13-#14 |
-| **Jan 27, 2026** | **S9** | **#15-#16** |
+| Jan 27, 2026 | S9 | #15-#16 |
+| **Jan 28, 2026** | **S10C** | **#17** |
 
 ---
 
 ## Bug Categories
 
 ```
-16 Bugs Total:
+17 Bugs Total:
 - 7x Length Prefix issues
 - 3x KDF/IV Order issues
 - 1x Byte Order issue (wolfSSL)
@@ -475,7 +190,8 @@ E (36081) SMP_PEER: Self-decrypt FAILED!
 - 1x Maybe encoding issue
 - 1x AAD construction issue
 - 1x NaCl crypto layer issue (HSalsa20)
-- 1x Header encryption issue (investigating)
+- 1x Header encryption issue
+- 1x Per-Queue DH key issue (ACTIVE)
 ```
 
 ---
@@ -493,9 +209,10 @@ E (36081) SMP_PEER: Self-decrypt FAILED!
 9. **Python verification essential** - systematically verify all crypto operations
 10. **Community support helps** - SimpleX developers are responsive and helpful
 11. **NaCl crypto layers** - crypto_box includes HSalsa20, crypto_scalarmult does not
+12. **Test ALL key combinations** - systematic testing reveals unexpected behaviors
 
 ---
 
-*Bug Tracker v3.0*  
-*Last updated: January 27, 2026 - Session 9*  
-*Total bugs documented: 16 (15 fixed, 1 active)*
+*Bug Tracker v4.0*  
+*Last updated: January 28, 2026 - Session 10C*  
+*Total bugs documented: 17 (16 fixed, 1 active)*
