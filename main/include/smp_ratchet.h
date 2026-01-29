@@ -118,6 +118,9 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
 int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
                     uint8_t *plaintext, size_t *pt_len);
 
+int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
+                             uint8_t *plaintext, size_t *pt_len);
+
 // ============== State Access / Debug ==============
 
 /**

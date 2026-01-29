@@ -262,7 +262,8 @@ bool send_hello_message(
     const uint8_t *peer_dh_public,
     const uint8_t *our_dh_private,
     const uint8_t *our_dh_public,
-    ratchet_state_t *ratchet
+    ratchet_state_t *ratchet,
+    const uint8_t *snd_auth_private  // NEW!
 ) {
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
@@ -392,28 +393,56 @@ bool send_hello_message(
 
     ESP_LOGI(TAG, "   📮 SEND body: %d bytes", sbp);
 
-    // 5. Build transmission
-    uint8_t *transmission = malloc(HELLO_BUFFER_SIZE);
-    if (!transmission) {
-        ESP_LOGE(TAG, "   ❌ Failed to allocate transmission!");
+    // 5. Build the "authorized" part (what we sign)
+    // authorized = sessionIdentifier corrId entityId smpCommand
+    uint8_t *authorized = malloc(HELLO_BUFFER_SIZE);
+    if (!authorized) {
+        ESP_LOGE(TAG, "   ❌ Failed to allocate authorized!");
         free(send_body);
         return false;
     }
+    int ap = 0;
+    
+    // sessionIdentifier (length-prefixed)
+    authorized[ap++] = 32;
+    memcpy(&authorized[ap], session_id, 32);
+    ap += 32;
+    
+    // The rest is send_body (corrId + entityId + command)
+    memcpy(&authorized[ap], send_body, sbp);
+    ap += sbp;
+    
+    free(send_body);
+    
+    // 6. Sign the authorized part with Ed25519
+    uint8_t signature[64];
+    crypto_sign_detached(signature, NULL, authorized, ap, snd_auth_private);
+    
+    ESP_LOGI(TAG, "   🔏 Signed SEND command (%d bytes)", ap);
+    
+    // 7. Build transmission = authorization + authorized
+    uint8_t *transmission = malloc(HELLO_BUFFER_SIZE);
+    if (!transmission) {
+        ESP_LOGE(TAG, "   ❌ Failed to allocate transmission!");
+        free(authorized);
+        return false;
+    }
     int tp = 0;
+    
+    // authorization = [length][signature]
+    transmission[tp++] = 64;  // Signature length
+    memcpy(&transmission[tp], signature, 64);
+    tp += 64;
+    
+    // authorized part (without the length prefix for session_id this time - it's already in authorized)
+    memcpy(&transmission[tp], authorized, ap);
+    tp += ap;
+    
+    free(authorized);
+    
+    ESP_LOGI(TAG, "   📡 Transmission: %d bytes (with signature)", tp);
 
-    transmission[tp++] = 0;
-    transmission[tp++] = 32;
-    memcpy(&transmission[tp], session_id, 32);
-    tp += 32;
-
-    memcpy(&transmission[tp], send_body, sbp);
-    tp += sbp;
-
-    free(send_body);  // Nicht mehr benötigt
-
-    ESP_LOGI(TAG, "   📡 Transmission: %d bytes", tp);
-
-    // 6. Send
+    // 8. Send
     int ret = smp_write_command_block(ssl, block, transmission, tp);
     free(transmission);  // Nicht mehr benötigt
     
@@ -424,7 +453,7 @@ bool send_hello_message(
     
     ESP_LOGI(TAG, "   📤 HELLO sent! Waiting for response...");
     
-    // 7. Wait for OK response
+    // 9. Wait for OK response
     int content_len = smp_read_block(ssl, block, 10000);
     if (content_len < 0) {
         ESP_LOGE(TAG, "   ❌ No response!");
@@ -546,7 +575,8 @@ bool complete_handshake(
     const uint8_t *peer_dh_public,
     const uint8_t *our_dh_private,
     const uint8_t *our_dh_public,
-    ratchet_state_t *ratchet
+    ratchet_state_t *ratchet,
+    const uint8_t *snd_auth_private  // NEW!
 ) {
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
@@ -570,7 +600,7 @@ bool complete_handshake(
     if (!send_hello_message(peer_ssl, block, peer_session_id,
                             peer_queue_id, peer_queue_id_len,
                             peer_dh_public, our_dh_private, our_dh_public,
-                            ratchet)) {
+                            ratchet, snd_auth_private)) {  // Pass it through!
         ESP_LOGE(TAG, "   ❌ Failed to send HELLO!");
         return false;
     }

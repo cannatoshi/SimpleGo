@@ -373,6 +373,15 @@ bool queue_create(const char *host, int port) {
     // Now we should be at the command
     ESP_LOGI(TAG, "   Command at %d: %c%c%c", p, resp[p], resp[p+1], resp[p+2]);
     
+    // DEBUG: Full IDS response from command onwards
+    ESP_LOGI(TAG, "   FULL IDS payload from position %d:", p);
+    printf("      ");
+    for (int i = 0; i < 100 && (p + i) < content_len; i++) {
+        printf("%02x ", resp[p + i]);
+        if ((i + 1) % 32 == 0) printf("\n      ");
+    }
+    printf("\n");
+    
     if (resp[p] == 'I' && resp[p+1] == 'D' && resp[p+2] == 'S') {
         p += 3;  // Skip "IDS"
         if (resp[p] == ' ') p++;  // Skip space
@@ -401,7 +410,15 @@ bool queue_create(const char *host, int port) {
         }
         memcpy(our_queue.snd_id, &resp[p], our_queue.snd_id_len);
         p += our_queue.snd_id_len;
-        
+
+        // DEBUG: Dump remaining bytes
+        ESP_LOGI(TAG, "   DEBUG: Remaining response from position %d:", p);
+        printf("      ");
+        for (int i = 0; i < 50 && (p + i) < content_len; i++) {
+            printf("%02x ", resp[p + i]);
+        }
+        printf("\n");    
+    
         // rcvPublicDhKey = Server's X25519 SPKI
         int dhLen = resp[p++];
         if (dhLen != 44) {
@@ -411,16 +428,38 @@ bool queue_create(const char *host, int port) {
         }
         // Skip SPKI header (12 bytes), copy raw key (32 bytes)
         memcpy(our_queue.srv_dh_public, &resp[p + 12], 32);
+        ESP_LOGI(TAG, "   srv_dh_public: %02x%02x%02x%02x %02x%02x%02x%02x",
+                 our_queue.srv_dh_public[0], our_queue.srv_dh_public[1],
+                 our_queue.srv_dh_public[2], our_queue.srv_dh_public[3],
+                 our_queue.srv_dh_public[4], our_queue.srv_dh_public[5],
+                 our_queue.srv_dh_public[6], our_queue.srv_dh_public[7]);
+        ESP_LOGI(TAG, "   rcv_dh_private: %02x%02x%02x%02x %02x%02x%02x%02x",
+                 our_queue.rcv_dh_private[0], our_queue.rcv_dh_private[1],
+                 our_queue.rcv_dh_private[2], our_queue.rcv_dh_private[3],
+                 our_queue.rcv_dh_private[4], our_queue.rcv_dh_private[5],
+                 our_queue.rcv_dh_private[6], our_queue.rcv_dh_private[7]);
         p += dhLen;
         
         // Compute shared secret for message decryption
-        if (crypto_scalarmult(our_queue.shared_secret, 
-                              our_queue.rcv_dh_private, 
-                              our_queue.srv_dh_public) != 0) {
+        if (crypto_box_beforenm(our_queue.shared_secret,
+                                our_queue.srv_dh_public,
+                                our_queue.rcv_dh_private) != 0) {
             ESP_LOGE(TAG, "   âŒ DH failed");
             free(block);
             return false;
         }
+
+        // ADD THIS:
+        ESP_LOGI(TAG, "   shared_secret at creation: %02x%02x%02x%02x...",
+                 our_queue.shared_secret[0], our_queue.shared_secret[1],
+                 our_queue.shared_secret[2], our_queue.shared_secret[3]);
+        
+        ESP_LOGI(TAG, "      shared_secret FULL:");
+        printf("         ");
+        for (int i = 0; i < 32; i++) {
+            printf("%02x ", our_queue.shared_secret[i]);
+        }
+        printf("\n");       
         
         our_queue.valid = true;
         

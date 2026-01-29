@@ -32,6 +32,7 @@
 #include "smp_utils.h"
 #include "smp_crypto.h"
 #include "smp_network.h"
+#include "smp_ratchet.h"
 #include "smp_contacts.h"
 #include "smp_parser.h"
 #include "smp_peer.h"
@@ -112,9 +113,9 @@ static void smp_connect(void) {
     }
 
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
-    ESP_LOGI(TAG, "â•‘  SimpleGo v0.1.17-alpha Connection!    â•‘");
-    ESP_LOGI(TAG, "â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+    ESP_LOGI(TAG, "+----------------------------------------+");
+    ESP_LOGI(TAG, "|  SimpleGo v0.1.17-alpha Connection!    |");
+    ESP_LOGI(TAG, "+----------------------------------------+");
     ESP_LOGI(TAG, "");
 
     mbedtls_ssl_init(&ssl);
@@ -156,13 +157,13 @@ static void smp_connect(void) {
             goto cleanup;
         }
     }
-    ESP_LOGI(TAG, "      âœ… TLS OK! ALPN: %s", mbedtls_ssl_get_alpn_protocol(&ssl));
+    ESP_LOGI(TAG, "      TLS OK! ALPN: %s", mbedtls_ssl_get_alpn_protocol(&ssl));
 
     // ========== Step 2: ServerHello ==========
     ESP_LOGI(TAG, "[2/5] Waiting for ServerHello...");
     int content_len = smp_read_block(&ssl, block, 30000);
     if (content_len < 0) {
-        ESP_LOGE(TAG, "      âŒ No ServerHello");
+        ESP_LOGE(TAG, "      No ServerHello");
         goto cleanup;
     }
 
@@ -172,12 +173,12 @@ static void smp_connect(void) {
     uint8_t sessIdLen = hello[4];
     
     if (sessIdLen != 32) {
-        ESP_LOGE(TAG, "      âŒ Unexpected sessionId length: %d", sessIdLen);
+        ESP_LOGE(TAG, "      Unexpected sessionId length: %d", sessIdLen);
         goto cleanup;
     }
     memcpy(session_id, &hello[5], 32);
     
-    ESP_LOGI(TAG, "      âœ… Versions: %d-%d", minVer, maxVer);
+    ESP_LOGI(TAG, "      Versions: %d-%d", minVer, maxVer);
     ESP_LOGI(TAG, "      SessionId: %02x%02x%02x%02x...", 
              session_id[0], session_id[1], session_id[2], session_id[3]);
 
@@ -203,13 +204,13 @@ static void smp_connect(void) {
     
     ret = smp_write_handshake_block(&ssl, block, client_hello, pos);
     if (ret != 0) goto cleanup;
-    ESP_LOGI(TAG, "      âœ… ClientHello sent!");
+    ESP_LOGI(TAG, "      ClientHello sent!");
 
     // ========== Step 4: Load or Create Contacts ==========
     ESP_LOGI(TAG, "[4/5] Loading contacts...");
     
     // Fresh start for testing - comment out in production!
-    ESP_LOGW(TAG, "      ðŸ§¹ Clearing old contacts for fresh test...");
+    ESP_LOGW(TAG, "      Clearing old contacts for fresh test...");
     clear_all_contacts();
     
     load_contacts_from_nvs();
@@ -218,11 +219,15 @@ static void smp_connect(void) {
         ESP_LOGI(TAG, "      No contacts found - creating 'ESP32'...");
         int idx = add_contact(&ssl, block, session_id, "ESP32");
         if (idx < 0) {
-            ESP_LOGE(TAG, "      âŒ Failed to create contact!");
+            ESP_LOGE(TAG, "      Failed to create contact!");
             goto cleanup;
         }
+        // ADD DEBUG HERE: After Contact erstellen
+        ESP_LOGI(TAG, "DEBUG shared_secret check: %02x%02x%02x%02x", 
+                 our_queue.shared_secret[0], our_queue.shared_secret[1],
+                 our_queue.shared_secret[2], our_queue.shared_secret[3]);
     } else {
-        ESP_LOGI(TAG, "      âœ… %d contact(s) loaded from NVS", contacts_db.num_contacts);
+        ESP_LOGI(TAG, "      %d contact(s) loaded from NVS", contacts_db.num_contacts);
     }
     
     list_contacts();
@@ -230,23 +235,27 @@ static void smp_connect(void) {
     // ========== Step 5: Subscribe All Contacts ==========
     ESP_LOGI(TAG, "[5/5] Subscribing to queues...");
     subscribe_all_contacts(&ssl, block, session_id);
+    // ADD DEBUG HERE: After dem SUB senden
+    ESP_LOGI(TAG, "DEBUG shared_secret check: %02x%02x%02x%02x", 
+             our_queue.shared_secret[0], our_queue.shared_secret[1],
+             our_queue.shared_secret[2], our_queue.shared_secret[3]);
     
     // Print connection info
     print_invitation_links(ca_hash, SMP_HOST, SMP_PORT);
         
-        // Send invite link to UI
-        {
-            static char invite_link[1500];
-            if (get_invite_link(ca_hash, SMP_HOST, SMP_PORT, invite_link, sizeof(invite_link))) {
-                ui_connect_set_invite_link(invite_link);
-            }
+    // Send invite link to UI
+    {
+        static char invite_link[1500];
+        if (get_invite_link(ca_hash, SMP_HOST, SMP_PORT, invite_link, sizeof(invite_link))) {
+            ui_connect_set_invite_link(invite_link);
         }
+    }
     
     // ========== Message Receive Loop ==========
-    ESP_LOGI(TAG, "â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
-    ESP_LOGI(TAG, "â•‘   ðŸ“¨ Waiting for messages...       â•‘");
-    ESP_LOGI(TAG, "â•‘   (Connect with SimpleX App!)      â•‘");
-    ESP_LOGI(TAG, "â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+    ESP_LOGI(TAG, "+--------------------------------------+");
+    ESP_LOGI(TAG, "|   Waiting for messages...            |");
+    ESP_LOGI(TAG, "|   (Connect with SimpleX App!)        |");
+    ESP_LOGI(TAG, "+--------------------------------------+");
     ESP_LOGI(TAG, "");
     
     while (1) {
@@ -290,24 +299,25 @@ static void smp_connect(void) {
                                entLen == our_queue.rcv_id_len &&
                                memcmp(entity_id, our_queue.rcv_id, entLen) == 0);
         if (is_reply_queue) {
-            ESP_LOGI(TAG, "   ðŸ“¬ Message on REPLY QUEUE from peer!");
+            ESP_LOGI(TAG, "   Message on REPLY QUEUE from peer!");
         }
-        
+
         // Parse command
         if (p + 1 < content_len && resp[p] == 'O' && resp[p+1] == 'K') {
-            ESP_LOGI(TAG, "   âœ… OK");
+            ESP_LOGI(TAG, "   OK");
         }
         else if (p + 2 < content_len && resp[p] == 'E' && resp[p+1] == 'N' && resp[p+2] == 'D') {
             if (contact) {
-                ESP_LOGI(TAG, "   ðŸ”š END [%s] - No more messages", contact->name);
+                ESP_LOGI(TAG, "   END [%s] - No more messages", contact->name);
             } else {
-                ESP_LOGI(TAG, "   ðŸ”š END - No more messages");
+                ESP_LOGI(TAG, "   END - No more messages");
             }
         }
         else if (p + 3 < content_len && resp[p] == 'M' && resp[p+1] == 'S' && resp[p+2] == 'G' && resp[p+3] == ' ') {
             p += 4;
             
             uint8_t msgIdLen = resp[p++];
+            ESP_LOGI(TAG, "   DEBUG: msgIdLen = %d", msgIdLen);  // ADD THIS!
             uint8_t msg_id[24];
             memset(msg_id, 0, 24);
             if (msgIdLen > 24) msgIdLen = 24;
@@ -316,29 +326,277 @@ static void smp_connect(void) {
             
             int enc_len = content_len - p;
             
+            // ADD THIS DEBUG:
+            ESP_LOGI(TAG, "   DEBUG: content_len=%d, p=%d, enc_len=%d", content_len, p, enc_len);
+            ESP_LOGI(TAG, "   DEBUG: bytes at p-4 to p+20:");
+            printf("      ");
+            for (int i = -4; i < 20 && (p+i) >= 0 && (p+i) < content_len; i++) {
+                if (i == 0) printf("| ");  // Mark where p starts
+                printf("%02x ", resp[p + i]);
+            }
+            printf("\n");
+            
             if (contact) {
                 ESP_LOGI(TAG, "");
-                ESP_LOGI(TAG, "â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
-                ESP_LOGI(TAG, "â•‘   ðŸ’¬ MESSAGE RECEIVED for [%s]!", contact->name);
-                ESP_LOGI(TAG, "â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+                ESP_LOGI(TAG, "+----------------------------------------------------------+");
+                ESP_LOGI(TAG, "|   MESSAGE RECEIVED for [%s]!", contact->name);
+                ESP_LOGI(TAG, "+----------------------------------------------------------+");
             } else {
                 ESP_LOGI(TAG, "");
-                ESP_LOGI(TAG, "   ðŸ’¬ MESSAGE (unknown contact)!");
+                ESP_LOGI(TAG, "   MESSAGE (unknown contact)!");
             }
             ESP_LOGI(TAG, "   MsgId: %02x%02x%02x%02x...", msg_id[0], msg_id[1], msg_id[2], msg_id[3]);
             ESP_LOGI(TAG, "   Encrypted: %d bytes", enc_len);
-            
+
+            // ADD THIS DEBUG LINE:
+            ESP_LOGI(TAG, "   Raw bytes at p: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                     resp[p], resp[p+1], resp[p+2], resp[p+3], 
+                     resp[p+4], resp[p+5], resp[p+6], resp[p+7],
+                     resp[p+8], resp[p+9], resp[p+10], resp[p+11],
+                     resp[p+12], resp[p+13], resp[p+14], resp[p+15]);
+
+            // ADD DEBUG HERE: Beim Message-Empfang (vor dem Decrypt)
+            ESP_LOGI(TAG, "DEBUG shared_secret check: %02x%02x%02x%02x", 
+                     our_queue.shared_secret[0], our_queue.shared_secret[1],
+                     our_queue.shared_secret[2], our_queue.shared_secret[3]);
+
+            // === REPLY QUEUE DECRYPTION ===
+            if (is_reply_queue && our_queue.valid && enc_len > crypto_box_MACBYTES) {
+                ESP_LOGI(TAG, "");
+                ESP_LOGI(TAG, "   🔓 Decrypting REPLY QUEUE message...");
+                
+                // Prepare nonce (24 bytes)
+                uint8_t server_nonce[24];
+                memset(server_nonce, 0, 24);
+                memcpy(server_nonce, msg_id, msgIdLen);
+                
+                uint8_t *server_plain = malloc(enc_len);
+                if (server_plain) {
+                    // Layer 1: Server-level decrypt
+                    if (crypto_box_open_easy_afternm(server_plain, &resp[p], enc_len, 
+                                                      server_nonce, our_queue.shared_secret) == 0) {
+                        int plain_len = enc_len - crypto_box_MACBYTES;
+                        ESP_LOGI(TAG, "      ✅ Server-level decrypt SUCCESS! (%d bytes)", plain_len);
+                        // === DETAILED DEBUG ===
+                        ESP_LOGI(TAG, "      📊 First 64 bytes after server-decrypt:");
+                        printf("         ");
+                        for (int i = 0; i < 64 && i < plain_len; i++) {
+                            printf("%02x ", server_plain[i]);
+                            if ((i + 1) % 16 == 0) printf("\n         ");
+                        }
+                        printf("\n");
+                        
+                        // Parse the structure
+                        ESP_LOGI(TAG, "      📋 Structure analysis:");
+                        uint16_t len_prefix = (server_plain[0] << 8) | server_plain[1];
+                        ESP_LOGI(TAG, "         [0-1] Length prefix: %d (0x%04x)", len_prefix, len_prefix);
+                        ESP_LOGI(TAG, "         [2-5] Unknown: %02x %02x %02x %02x", 
+                                 server_plain[2], server_plain[3], server_plain[4], server_plain[5]);
+                        ESP_LOGI(TAG, "         [6-9] Unknown: %02x %02x %02x %02x (timestamp?)",
+                                 server_plain[6], server_plain[7], server_plain[8], server_plain[9]);
+                        ESP_LOGI(TAG, "         [10-13]: %02x %02x %02x %02x",
+                                 server_plain[10], server_plain[11], server_plain[12], server_plain[13]);
+                        
+                        // Check for version marker at different offsets
+                        for (int i = 0; i < 20; i++) {
+                            if (server_plain[i] == 0x30 && server_plain[i+1] == 0x2a) {
+                                ESP_LOGI(TAG, "         🔑 X25519 SPKI at offset %d", i);
+                            }
+                            if (server_plain[i] == 0x00 && server_plain[i+1] == 0x07) {
+                                ESP_LOGI(TAG, "         📦 Agent version 7 marker at offset %d", i);
+                            }
+                        }
+                        // === END DETAILED DEBUG ===
+                        
+                        // Layer 2: Per-queue DH decrypt
+                        // Find X25519 SPKI key in decrypted data
+                        int dh_offset = -1;
+                        for (int i = 0; i < plain_len - 44; i++) {
+                            if (server_plain[i] == 0x30 && server_plain[i+1] == 0x2a &&
+                                server_plain[i+2] == 0x30 && server_plain[i+3] == 0x05 &&
+                                server_plain[i+4] == 0x06 && server_plain[i+5] == 0x03 &&
+                                server_plain[i+6] == 0x2b && server_plain[i+7] == 0x65 &&
+                                server_plain[i+8] == 0x6e) {
+                                dh_offset = i;
+                                break;
+                            }
+                        }
+                        
+                        if (dh_offset >= 0) {
+                            // TEST: Try different nonce sources
+                            ESP_LOGI(TAG, "      🔬 EXTENDED TESTS...");
+                            
+                            // Get the ciphertext AFTER SPKI (offset 60)
+                            int data_offset = dh_offset + 44;  // After SPKI
+                            int data_len = plain_len - data_offset;
+                            
+                            // TEST 1: Use msgId as nonce (like Contact Queue!)
+                            uint8_t msg_nonce[24];
+                            memset(msg_nonce, 0, 24);
+                            memcpy(msg_nonce, msg_id, msgIdLen);
+                            
+                            // Compute DH with peer's ephemeral key
+                            uint8_t peer_pub[32];
+                            memcpy(peer_pub, &server_plain[dh_offset + 12], 32);
+                            uint8_t test_dh[32];
+                            crypto_box_beforenm(test_dh, peer_pub, our_queue.rcv_dh_private);
+                            
+                            uint8_t *test_plain = malloc(data_len);
+                            if (test_plain && data_len > 16) {
+                                ESP_LOGI(TAG, "      TEST1: peer_dh + msgId nonce");
+                                if (crypto_box_open_easy_afternm(test_plain, &server_plain[data_offset], data_len,
+                                                                  msg_nonce, test_dh) == 0) {
+                                    ESP_LOGI(TAG, "      ✅ TEST1 SUCCESS!");
+                                    ESP_LOGI(TAG, "      First 16: %02x %02x %02x %02x %02x %02x %02x %02x",
+                                             test_plain[0], test_plain[1], test_plain[2], test_plain[3],
+                                             test_plain[4], test_plain[5], test_plain[6], test_plain[7]);
+                                } else {
+                                    ESP_LOGE(TAG, "      ❌ TEST1 FAILED");
+                                }
+                                
+                                // TEST 2: Use srv_dh_public instead of peer ephemeral
+                                ESP_LOGI(TAG, "      TEST2: srv_dh_public + msgId nonce");
+                                uint8_t srv_dh[32];
+                                crypto_box_beforenm(srv_dh, our_queue.srv_dh_public, our_queue.rcv_dh_private);
+                                if (crypto_box_open_easy_afternm(test_plain, &server_plain[data_offset], data_len,
+                                                                  msg_nonce, srv_dh) == 0) {
+                                    ESP_LOGI(TAG, "      ✅ TEST2 SUCCESS!");
+                                    ESP_LOGI(TAG, "      First 16: %02x %02x %02x %02x %02x %02x %02x %02x",
+                                             test_plain[0], test_plain[1], test_plain[2], test_plain[3],
+                                             test_plain[4], test_plain[5], test_plain[6], test_plain[7]);
+                                } else {
+                                    ESP_LOGE(TAG, "      ❌ TEST2 FAILED");
+                                }
+                                
+                                // TEST 3: Skip server-level, try DIRECT on raw data
+                                ESP_LOGI(TAG, "      TEST3: Direct on raw (no server decrypt first)");
+                                // Find SPKI in RAW resp[p] data
+                                int raw_spki = -1;
+                                for (int i = 0; i < enc_len - 44; i++) {
+                                    if (resp[p+i] == 0x30 && resp[p+i+1] == 0x2a) {
+                                        raw_spki = i;
+                                        break;
+                                    }
+                                }
+                                if (raw_spki >= 0) {
+                                    ESP_LOGI(TAG, "         Raw SPKI at offset %d", raw_spki);
+                                    uint8_t raw_peer[32];
+                                    memcpy(raw_peer, &resp[p + raw_spki + 12], 32);
+                                    uint8_t raw_dh[32];
+                                    crypto_box_beforenm(raw_dh, raw_peer, our_queue.rcv_dh_private);
+                                    int raw_data_off = raw_spki + 44;
+                                    int raw_data_len = enc_len - raw_data_off;
+                                    if (crypto_box_open_easy_afternm(test_plain, &resp[p + raw_data_off], raw_data_len,
+                                                                      msg_nonce, raw_dh) == 0) {
+                                        ESP_LOGI(TAG, "      ✅ TEST3 SUCCESS!");
+                                    } else {
+                                        ESP_LOGE(TAG, "      ❌ TEST3 FAILED");
+                                    }
+                                } else {
+                                    ESP_LOGI(TAG, "         No SPKI in raw data");
+                                }
+                                
+                                free(test_plain);
+                            }
+                            // END EXTENDED TESTS
+                            
+                            // Extract peer's ephemeral X25519 public key (skip 12-byte SPKI header)
+                            uint8_t peer_dh_pub[32];
+                            memcpy(peer_dh_pub, &server_plain[dh_offset + 12], 32);
+                            
+                            ESP_LOGI(TAG, "      DEBUG: peer_dh_pub: %02x%02x%02x%02x...",
+                                     peer_dh_pub[0], peer_dh_pub[1], peer_dh_pub[2], peer_dh_pub[3]);
+                            ESP_LOGI(TAG, "      DEBUG: our rcv_dh_public: %02x%02x%02x%02x...",
+                                     our_queue.rcv_dh_public[0], our_queue.rcv_dh_public[1],
+                                     our_queue.rcv_dh_public[2], our_queue.rcv_dh_public[3]);
+                            
+                            // Data after SPKI key = nonce + ciphertext + MAC
+                            int after_key_offset = dh_offset + 44;
+                            int after_key_len = plain_len - after_key_offset;
+                            
+                            if (after_key_len > 40) {
+                                // Compute shared secret with our reply queue DH private key
+                                uint8_t dh_shared[32];
+                                if (crypto_box_beforenm(dh_shared, peer_dh_pub, our_queue.rcv_dh_private) == 0) {
+                                    ESP_LOGI(TAG, "      DEBUG: dh_shared: %02x%02x%02x%02x...",
+                                             dh_shared[0], dh_shared[1], dh_shared[2], dh_shared[3]);
+                                    
+                                    // Nonce is first 24 bytes after SPKI
+                                    uint8_t *dh_nonce = &server_plain[after_key_offset];
+                                    uint8_t *dh_ciphertext = &server_plain[after_key_offset + 24];
+                                    int dh_ct_len = after_key_len - 24;
+                                    
+                                    ESP_LOGI(TAG, "      DEBUG: nonce: %02x%02x%02x%02x...",
+                                             dh_nonce[0], dh_nonce[1], dh_nonce[2], dh_nonce[3]);
+                                    ESP_LOGI(TAG, "      DEBUG: dh_ct_len: %d", dh_ct_len);
+                                    
+                                    uint8_t *dh_plain = malloc(dh_ct_len);
+                                    if (dh_plain) {
+                                        if (crypto_box_open_easy_afternm(dh_plain, dh_ciphertext, dh_ct_len,
+                                                                          dh_nonce, dh_shared) == 0) {
+                                            int dh_plain_len = dh_ct_len - crypto_box_MACBYTES;
+                                            ESP_LOGI(TAG, "      ✅ Per-queue DH decrypt SUCCESS! (%d bytes)", dh_plain_len);
+                                            ESP_LOGI(TAG, "      First 32 bytes:");
+                                            printf("         ");
+                                            for (int i = 0; i < 32 && i < dh_plain_len; i++) printf("%02x ", dh_plain[i]);
+                                            printf("\n");
+                                            
+                                            // Now parse AgentMsgEnvelope and Double Ratchet
+                                            if (dh_plain_len > 5 && ratchet_is_initialized()) {
+                                                int ap = 2;  // Skip length prefix
+                                                uint16_t agent_ver = (dh_plain[ap] << 8) | dh_plain[ap + 1];
+                                                ap += 2;
+                                                char msg_type = (char)dh_plain[ap++];
+                                                
+                                                ESP_LOGI(TAG, "      📦 AgentMsgEnvelope: version=%d, type='%c' (0x%02x)", 
+                                                         agent_ver, msg_type >= 0x20 ? msg_type : '?', (uint8_t)msg_type);
+                                                
+                                                if (msg_type == 'M') {
+                                                    ESP_LOGI(TAG, "      🔐 Double Ratchet decrypt...");
+                                                    uint8_t *dr_plain = malloc(dh_plain_len);
+                                                    if (dr_plain) {
+                                                        size_t dr_len = 0;
+                                                        if (ratchet_decrypt_incoming(&dh_plain[ap], dh_plain_len - ap, dr_plain, &dr_len) == 0) {
+                                                            ESP_LOGI(TAG, "      ✅ Double Ratchet SUCCESS! (%zu bytes)", dr_len);
+                                                            printf("         ");
+                                                            for (size_t i = 0; i < 32 && i < dr_len; i++) printf("%02x ", dr_plain[i]);
+                                                            printf("\n");
+                                                        } else {
+                                                            ESP_LOGE(TAG, "      ❌ Double Ratchet decrypt FAILED");
+                                                        }
+                                                        free(dr_plain);
+                                                    }
+                                                }
+                                            }
+                                        } else {
+                                            ESP_LOGE(TAG, "      ❌ Per-queue DH decrypt FAILED!");
+                                        }
+                                        free(dh_plain);
+                                    }
+                                }
+                            }
+                        } else {
+                            ESP_LOGE(TAG, "      ❌ No X25519 SPKI found in reply!");
+                        }
+                    } else {
+                        ESP_LOGE(TAG, "      ❌ Server-level decrypt FAILED!");
+                    }
+                    free(server_plain);
+                }
+            }
+            // === END REPLY QUEUE DECRYPTION ===
+
             // Decrypt
             if (contact && contact->have_srv_dh && enc_len > crypto_box_MACBYTES) {
                 uint8_t *plain = malloc(enc_len);
                 if (plain) {
                     int plain_len = 0;
                     if (decrypt_smp_message(contact, &resp[p], enc_len, msg_id, msgIdLen, plain, &plain_len)) {
-                        ESP_LOGI(TAG, "   ðŸ”“ SMP-Level Decryption OK! (%d bytes)", plain_len);
+                        ESP_LOGI(TAG, "   SMP-Level Decryption OK! (%d bytes)", plain_len);
                         
-                        // === DEBUG: HEX-DUMP der entschlÃ¼sselten Agent-Nachricht ===
+                        // === DEBUG: HEX-DUMP of the decrypted Agent message ===
                         ESP_LOGI(TAG, "");
-                        ESP_LOGI(TAG, "   ðŸ“¦ RAW AGENT MESSAGE (first 60 bytes):");
+                        ESP_LOGI(TAG, "   RAW AGENT MESSAGE (first 60 bytes):");
                         printf("   ");
                         for (int i = 0; i < plain_len && i < 60; i++) {
                             printf("%02x ", plain[i]);
@@ -351,7 +609,7 @@ static void smp_connect(void) {
                         parse_agent_message(contact, plain, plain_len);
                         
                         // Send ACK
-                        ESP_LOGI(TAG, "   ðŸ“¨ Sending ACK...");
+                        ESP_LOGI(TAG, "   Sending ACK...");
                         
                         uint8_t ack_body[64];
                         int ap = 0;
@@ -392,21 +650,42 @@ static void smp_connect(void) {
                         
                         smp_write_command_block(&ssl, block, ack_trans, atp);
                     } else {
-                        ESP_LOGE(TAG, "   âŒ Decryption failed!");
+                        ESP_LOGE(TAG, "   Decryption failed!");
+                    }
+                    free(plain);
+                }
+            } else if (ratchet_is_initialized()) {
+                // Try Double Ratchet decrypt for incoming messages
+                ESP_LOGI(TAG, "   🔐 Attempting Double Ratchet decrypt...");
+                uint8_t *plain = malloc(enc_len + 100);
+                if (plain) {
+                    size_t plain_len = 0;
+                    if (ratchet_decrypt_incoming(&resp[p], enc_len, plain, &plain_len) == 0) {
+                        ESP_LOGI(TAG, "   ✅ Double Ratchet decrypt SUCCESS! (%zu bytes)", plain_len);
+                        ESP_LOGI(TAG, "   First 16 bytes:");
+                        printf("      ");
+                        for (size_t i = 0; i < 16 && i < plain_len; i++) {
+                            printf("%02x ", plain[i]);
+                        }
+                        printf("\n");
+                        // Parse the decrypted agent message
+                        // TODO: parse_agent_message(NULL, plain, plain_len);
+                    } else {
+                        ESP_LOGE(TAG, "   ❌ Double Ratchet decrypt FAILED");
                     }
                     free(plain);
                 }
             } else {
-                ESP_LOGW(TAG, "      âš ï¸ Cannot decrypt - no contact keys");
+                ESP_LOGW(TAG, "      Cannot decrypt - no contact keys and ratchet not initialized");
             }
             ESP_LOGI(TAG, "");
         }
         else if (p + 2 < content_len && resp[p] == 'E' && resp[p+1] == 'R' && resp[p+2] == 'R') {
-            ESP_LOGE(TAG, "   âŒ ERR: %.*s", 
+            ESP_LOGE(TAG, "   ERR: %.*s", 
                      (content_len - p > 20) ? 20 : content_len - p, &resp[p]);
         }
         else {
-            ESP_LOGW(TAG, "   â“ Unknown: %c%c%c", 
+            ESP_LOGW(TAG, "   Unknown: %c%c%c", 
                      (p < content_len) ? resp[p] : '?',
                      (p+1 < content_len) ? resp[p+1] : '?',
                      (p+2 < content_len) ? resp[p+2] : '?');
@@ -414,9 +693,9 @@ static void smp_connect(void) {
     }
 
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "â•”â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•—");
-    ESP_LOGI(TAG, "â•‘       Session ended                â•‘");
-    ESP_LOGI(TAG, "â•šâ•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+    ESP_LOGI(TAG, "+--------------------------------------+");
+    ESP_LOGI(TAG, "|       Session ended                  |");
+    ESP_LOGI(TAG, "+--------------------------------------+");
 
 cleanup:
     free(block);
@@ -483,7 +762,7 @@ void app_main(void) {
             ui_manager_init();
             tdeck_lvgl_start();  // Start rendering AFTER splash is loaded
             
-            // Kurz warten bis Splash gerendert ist, DANN Backlight an
+            // Wait briefly until splash is rendered, THEN turn on backlight
             vTaskDelay(pdMS_TO_TICKS(50));
             tdeck_display_backlight(100);
         }
@@ -500,19 +779,23 @@ void app_main(void) {
 
     // ========== Step 0: Create our Reply Queue ==========
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+    ESP_LOGI(TAG, "=================================================================");
     ESP_LOGI(TAG, "  STEP 0: Creating our reply queue on %s:%d", SMP_HOST, SMP_PORT);
-    ESP_LOGI(TAG, "â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•");
+    ESP_LOGI(TAG, "=================================================================");
     
     if (!queue_create(SMP_HOST, SMP_PORT)) {
-        ESP_LOGE(TAG, "âŒ Failed to create reply queue!");
-        ESP_LOGW(TAG, "âš ï¸  Continuing without reply queue...");
+        ESP_LOGE(TAG, "Failed to create reply queue!");
+        ESP_LOGW(TAG, "  Continuing without reply queue...");
     } else {
-        ESP_LOGI(TAG, "âœ… Reply queue created!");
+        ESP_LOGI(TAG, "Reply queue created!");
         ESP_LOGI(TAG, "   sndId: %02x%02x%02x%02x... (%d bytes)",
                  our_queue.snd_id[0], our_queue.snd_id[1],
                  our_queue.snd_id[2], our_queue.snd_id[3],
                  our_queue.snd_id_len);
+        // ADD DEBUG HERE: After queue_create() return in main.c
+        ESP_LOGI(TAG, "DEBUG shared_secret check: %02x%02x%02x%02x", 
+                 our_queue.shared_secret[0], our_queue.shared_secret[1],
+                 our_queue.shared_secret[2], our_queue.shared_secret[3]);
     }
     
     // Close queue connection - main connection will be separate

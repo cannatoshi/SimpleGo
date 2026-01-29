@@ -2,6 +2,7 @@
  * SimpleGo - smp_handshake.h
  * Connection Handshake Implementation
  * Based on official agent-protocol.md specification
+ * v0.1.18-alpha - Added Ed25519 signing for SEND commands
  */
 
 #ifndef SMP_HANDSHAKE_H
@@ -38,6 +39,7 @@ bool send_skey_command(
  * @param our_dh_private    Our X25519 DH private key (32 bytes)
  * @param our_dh_public     Our X25519 DH public key (32 bytes)
  * @param ratchet           Ratchet state for encryption
+ * @param snd_auth_private  Ed25519 private key for signing SEND (64 bytes)
  * @return true on success
  */
 bool send_hello_message(
@@ -49,7 +51,8 @@ bool send_hello_message(
     const uint8_t *peer_dh_public,
     const uint8_t *our_dh_private,
     const uint8_t *our_dh_public,
-    ratchet_state_t *ratchet
+    ratchet_state_t *ratchet,
+    const uint8_t *snd_auth_private
 );
 
 /**
@@ -80,6 +83,7 @@ bool parse_hello_message(const uint8_t *data, int len, uint64_t *msg_id_out);
  * @param our_dh_private    Our DH private key
  * @param our_dh_public     Our DH public key
  * @param ratchet           Ratchet state
+ * @param snd_auth_private  Ed25519 private key for signing SEND (64 bytes)
  * @return true if handshake initiated successfully
  */
 bool complete_handshake(
@@ -91,7 +95,8 @@ bool complete_handshake(
     const uint8_t *peer_dh_public,
     const uint8_t *our_dh_private,
     const uint8_t *our_dh_public,
-    ratchet_state_t *ratchet
+    ratchet_state_t *ratchet,
+    const uint8_t *snd_auth_private
 );
 
 // Status getters

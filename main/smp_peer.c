@@ -245,8 +245,7 @@ bool send_agent_confirmation(contact_t *contact) {
     agent_conn_info[aci_len++] = 'D';
 
     // smpQueues = NonEmpty list with 1 element
-    agent_conn_info[aci_len++] = 0x00;  // smpQueues length high byte
-    agent_conn_info[aci_len++] = 0x01;  // smpQueues length low byte (1 queue)
+    agent_conn_info[aci_len++] = 0x01;  // 1 queue in list
 
     int queue_info_len = queue_encode_info(&agent_conn_info[aci_len], sizeof(agent_conn_info) - (size_t)aci_len);
     if (queue_info_len < 0) {
@@ -255,25 +254,28 @@ bool send_agent_confirmation(contact_t *contact) {
         return false;
     }
     aci_len += queue_info_len;
-
     // connInfo = JSON tail (no extra length prefix here)
-    memcpy(&agent_conn_info[aci_len], conn_info_json, (size_t)json_len);
-    aci_len += json_len;
+        memcpy(&agent_conn_info[aci_len], conn_info_json, (size_t)json_len);
+        aci_len += json_len;
 
-    ESP_LOGI(TAG, "   📦 AgentConnInfoReply: %d bytes (tag='D' + queue + JSON)", aci_len);
-    ESP_LOGI(TAG, "      Queue: %s, sndId: %02x%02x%02x%02x...",
-             our_queue.server_host,
-             our_queue.snd_id[0], our_queue.snd_id[1],
-             our_queue.snd_id[2], our_queue.snd_id[3]);
+        // 🔥 DEBUG: Bestätige dass erstes Byte 'D' ist!
+        ESP_LOGI(TAG, "🔍 DEBUG: agent_conn_info[0] = 0x%02X ('%c') - sollte 0x44 ('D') sein!", 
+                agent_conn_info[0], agent_conn_info[0]);
 
-    printf("      Raw AgentConnInfoReply (%d bytes):\n", aci_len);
-    for (int i = 0; i < aci_len; i += 16) {
-        printf("      ");
-        for (int j = 0; j < 16 && (i+j) < aci_len; j++) {
-            printf("%02x ", agent_conn_info[i+j]);
+        ESP_LOGI(TAG, "   📦 AgentConnInfoReply: %d bytes (tag='D' + queue + JSON)", aci_len);
+        ESP_LOGI(TAG, "      Queue: %s, sndId: %02x%02x%02x%02x...",
+                our_queue.server_host,
+                our_queue.snd_id[0], our_queue.snd_id[1],
+                our_queue.snd_id[2], our_queue.snd_id[3]);
+
+        printf("      Raw AgentConnInfoReply (%d bytes):\n", aci_len);
+        for (int i = 0; i < aci_len; i += 16) {
+            printf("      ");
+            for (int j = 0; j < 16 && (i+j) < aci_len; j++) {
+                printf("%02x ", agent_conn_info[i+j]);
+            }
+            printf("\n");
         }
-        printf("\n");
-    }
 
     // ========== Generate E2E Ratchet Parameters ==========
     e2e_params_t *e2e_params = (e2e_params_t *)heap_caps_malloc(sizeof(e2e_params_t), MALLOC_CAP_8BIT);
@@ -337,6 +339,24 @@ bool send_agent_confirmation(contact_t *contact) {
         free(block);
         return false;
     }
+
+    // 🔥 DEBUG: Selbst-Test - können wir es wieder entschlüsseln?
+    ESP_LOGI(TAG, "🔍 DEBUG: Testing self-decrypt of encConnInfo...");
+    uint8_t *test_decrypt = malloc(14832);
+    size_t test_len = 0;
+    if (ratchet_decrypt(enc_conn_info, enc_conn_info_len, test_decrypt, &test_len) == 0) {
+        ESP_LOGI(TAG, "✅ Self-decrypt SUCCESS! First bytes: %02x %02x %02x %02x",
+                 test_decrypt[0], test_decrypt[1], test_decrypt[2], test_decrypt[3]);
+        if (test_decrypt[0] == 'D') {
+            ESP_LOGI(TAG, "✅ First byte is 'D' - CORRECT!");
+        } else {
+            ESP_LOGE(TAG, "❌ First byte is NOT 'D'! Got: 0x%02X ('%c')", 
+                     test_decrypt[0], test_decrypt[0]);
+        }
+    } else {
+        ESP_LOGE(TAG, "❌ Self-decrypt FAILED!");
+    }
+    free(test_decrypt);
     
     // DEBUG: Show encConnInfo after successful encrypt
     ESP_LOGI(TAG, "📋 encConnInfo FULL (first 64 bytes):");
@@ -389,7 +409,7 @@ bool send_agent_confirmation(contact_t *contact) {
     printf("...\n");
 
     // ========== Build ClientMessage Plaintext ==========
-    // PrivHeader for Confirmation = 'K' + Ed25519 SPKI (KEIN length prefix!)
+    // PrivHeader for Confirmation = 'K' + Length + Ed25519 SPKI
     uint8_t *plaintext = malloc(20000);
     if (!plaintext) {
         ESP_LOGE(TAG, "❌ Failed to allocate plaintext!");
@@ -404,7 +424,10 @@ bool send_agent_confirmation(contact_t *contact) {
     // 'K' = PHConfirmation tag
     plaintext[pp++] = 'K';
 
-    // Ed25519 SPKI direkt (12 header + 32 key = 44 bytes, KEIN length prefix!)
+    // Ed25519 SPKI MIT LENGTH PREFIX (44 bytes)
+    plaintext[pp++] = 44;  // ← LENGTH PREFIX HINZUGEFÜGT!
+
+    // Ed25519 SPKI (12 header + 32 key = 44 bytes)
     memcpy(&plaintext[pp], ED25519_SPKI_HEADER, 12);
     pp += 12;
     memcpy(&plaintext[pp], our_queue.rcv_auth_public, 32);
@@ -665,7 +688,8 @@ bool send_agent_confirmation(contact_t *contact) {
                         pending_peer.dh_public,
                         our_dh_private,
                         our_dh_public,
-                        ratchet_get_state()
+                        ratchet_get_state(),
+                        our_queue.rcv_auth_private  // NEW: Pass the auth key!
                     );
 
                     if (hello_ok) {
