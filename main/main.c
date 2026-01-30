@@ -498,6 +498,64 @@ static void smp_connect(void) {
                                 
                                 free(test_plain);
                             }
+
+                            // ========== TEST 4: CORRECT - Use cmNonce from ClientMsgEnvelope ==========
+                            ESP_LOGI(TAG, "      TEST4: CORRECT - peer_e2e + cmNonce from envelope");
+
+                            int version_offset = 12;
+                            int maybe_tag_offset = 14;
+                            int spki_offset = 16;
+                            int cm_nonce_offset = spki_offset + 44;        // [60-83]
+                            int cm_enc_body_offset = cm_nonce_offset + 24; // [84+]
+
+                            ESP_LOGI(TAG, "         Structure offsets: version=%d, maybe=%d, spki=%d, cmNonce=%d, cmEncBody=%d",
+                                     version_offset, maybe_tag_offset, spki_offset, cm_nonce_offset, cm_enc_body_offset);
+
+                            uint8_t maybe_e2e = server_plain[maybe_tag_offset + 1];
+                            ESP_LOGI(TAG, "         ✓ Maybe tag = '%c' (%s)", maybe_e2e, 
+                                     maybe_e2e == '1' ? "Just - has e2ePubKey" : "Nothing");
+
+                            if (maybe_e2e == '1' && plain_len > cm_enc_body_offset + 16) {
+                                uint8_t cm_nonce[24];
+                                memcpy(cm_nonce, &server_plain[cm_nonce_offset], 24);
+                                ESP_LOGI(TAG, "         cmNonce: %02x %02x %02x %02x %02x %02x %02x %02x...",
+                                         cm_nonce[0], cm_nonce[1], cm_nonce[2], cm_nonce[3],
+                                         cm_nonce[4], cm_nonce[5], cm_nonce[6], cm_nonce[7]);
+
+                                uint8_t peer_e2e_pub[32];
+                                memcpy(peer_e2e_pub, &server_plain[spki_offset + 12], 32);
+                                ESP_LOGI(TAG, "         peer_e2ePub: %02x %02x %02x %02x...",
+                                         peer_e2e_pub[0], peer_e2e_pub[1], peer_e2e_pub[2], peer_e2e_pub[3]);
+
+                                uint8_t e2e_dh_secret[32];
+                                crypto_box_beforenm(e2e_dh_secret, peer_e2e_pub, our_queue.rcv_dh_private);
+
+                                int cm_body_len = plain_len - cm_enc_body_offset;
+                                uint8_t *cm_plain = malloc(cm_body_len);
+                                if (cm_plain) {
+                                    if (crypto_box_open_easy_afternm(cm_plain, &server_plain[cm_enc_body_offset], cm_body_len,
+                                                                      cm_nonce, e2e_dh_secret) == 0) {
+                                        int cm_plain_len = cm_body_len - crypto_box_MACBYTES;
+                                        ESP_LOGI(TAG, "      ✅ TEST4 SUCCESS! Per-queue E2E decrypt worked!");
+                                        ESP_LOGI(TAG, "         Decrypted %d bytes (ClientMessage)", cm_plain_len);
+                                        printf("            ");
+                                        for (int i = 0; i < 32 && i < cm_plain_len; i++) printf("%02x ", cm_plain[i]);
+                                        printf("\n");
+
+                                        if (cm_plain_len > 4) {
+                                            char priv_tag = (char)cm_plain[2];
+                                            ESP_LOGI(TAG, "         PrivHeader tag: '%c' (0x%02x)", priv_tag, (uint8_t)priv_tag);
+                                            if (priv_tag == 'K') {
+                                                ESP_LOGI(TAG, "      🎉 Received PEER'S AgentConfirmation!");
+                                            }
+                                        }
+                                    } else {
+                                        ESP_LOGE(TAG, "      ❌ TEST4 FAILED");
+                                    }
+                                    free(cm_plain);
+                                }
+                            }
+
                             // END EXTENDED TESTS
                             
                             // Extract peer's ephemeral X25519 public key (skip 12-byte SPKI header)
