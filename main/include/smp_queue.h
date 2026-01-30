@@ -31,6 +31,10 @@ typedef struct {
     uint8_t rcv_auth_private[64];              // Ed25519 private
     uint8_t rcv_dh_public[DH_PUBLIC_SIZE];    // X25519 public
     uint8_t rcv_dh_private[DH_PUBLIC_SIZE];   // X25519 private
+
+    // E2E keys (separate from server DH!)
+    uint8_t e2e_public[DH_PUBLIC_SIZE];       // X25519 public for E2E
+    uint8_t e2e_private[DH_PUBLIC_SIZE];      // X25519 private for E2E
     
     // Shared secret (our_dh_private * srv_dh_public)
     uint8_t shared_secret[DH_PUBLIC_SIZE];
@@ -77,5 +81,9 @@ int queue_encode_info(uint8_t *buf, int max_len);
  * Disconnect from our queue server
  */
 void queue_disconnect(void);
+
+// Reply Queue E2E peer public key (from AgentConnInfoReply)
+extern uint8_t reply_queue_e2e_peer_public[32];
+extern bool reply_queue_e2e_peer_valid;
 
 #endif // SMP_QUEUE_H
