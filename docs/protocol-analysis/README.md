@@ -6,20 +6,17 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## Current Status (2026-01-28 Session 10C)
+## Current Status (2026-01-30 Session 11)
 
 ```
-Session 10C - Reply Queue Three-Layer Analysis:
-- Reply Queue Server-Level Decrypt: WORKING
-- Reply Queue Per-Queue DH: ALL TESTS FAIL
-- Contact Queue: Fully working (3-layer)
-- Developer question required for Per-Queue DH key
+Session 11 - RECOVERED from Format Experiments Regression:
+- App status: "connecting" (restored!)
+- Bug #17 (cmNonce) fix re-applied
+- All format experiments reverted via git reset
+- Contact Queue decrypt: WORKING
+- Reply Queue decrypt: PENDING (needs Double Ratchet receiver)
 
-Tested Key Combinations (all failed):
-- peer_ephemeral_pub + rcv_dh_private + msgId
-- srv_dh_public + rcv_dh_private + msgId  
-- shared_secret (direct) + message_nonce
-- Direct on raw data
+Lesson Learned: If it works, don't touch it!
 ```
 
 ---
@@ -56,11 +53,12 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [06_PART4_SESSION_7.md](06_PART4_SESSION_7.md) | ~3200 | AES-GCM verification, Tail encoding |
 | [07_PART5_SESSION_8_BREAKTHROUGH.md](07_PART5_SESSION_8_BREAKTHROUGH.md) | ~400 | AgentConfirmation works! |
 | [08_PART6_SESSION_9.md](08_PART6_SESSION_9.md) | ~450 | Reply Queue HSalsa20 fix |
-| [09_PART7_SESSION_10.md](09_PART7_SESSION_10.md) | ~400 | Reply Queue Per-Queue DH analysis |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1100 | Complete bug documentation (17 bugs) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~650 | Constants, wire formats, KDF parameters |
+| [09_PART7_SESSION_10.md](09_PART7_SESSION_10.md) | ~400 | Reply Queue Per-Queue DH, cmNonce |
+| [10_PART8_SESSION_11.md](10_PART8_SESSION_11.md) | ~400 | Regression & Recovery |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1200 | Complete bug documentation (18 bugs) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~700 | Constants, wire formats, KDF parameters |
 
-**Total: ~13,000 lines of detailed protocol analysis**
+**Total: ~14,000 lines of detailed protocol analysis**
 
 ---
 
@@ -91,7 +89,8 @@ SimpleGo Achievement:
 | 7 | Jan 24-25, 2026 | Crypto verification, SimpleX contact | - |
 | 8 | Jan 27, 2026 | AgentConfirmation WORKS! | #13-14 |
 | 9 | Jan 27, 2026 | Reply Queue HSalsa20 fix | #15-16 |
-| **10C** | **Jan 28, 2026** | **Reply Queue Per-Queue DH analysis** | **#17 (active)** |
+| 10C | Jan 28, 2026 | cmNonce fix, app "connecting" | #17 |
+| **11** | **Jan 30, 2026** | **Regression & Recovery** | **#18 (open)** |
 
 ---
 
@@ -106,8 +105,8 @@ SimpleGo Achievement:
 - **Wire Format**: [Quick Reference](QUICK_REFERENCE.md)
 - **All Bugs**: [Bug Tracker](BUG_TRACKER.md)
 - **Breakthrough**: [Part 5 - Session 8](07_PART5_SESSION_8_BREAKTHROUGH.md)
-- **Reply Queue HSalsa20**: [Part 6 - Session 9](08_PART6_SESSION_9.md)
-- **Reply Queue Per-Queue DH**: [Part 7 - Session 10](09_PART7_SESSION_10.md)
+- **cmNonce Fix**: [Part 7 - Session 10](09_PART7_SESSION_10.md)
+- **Regression Recovery**: [Part 8 - Session 11](10_PART8_SESSION_11.md)
 
 ### By Bug Number
 
@@ -118,7 +117,27 @@ SimpleGo Achievement:
 | #10-12 | SMPQueueInfo encoding | [Part 3](05_PART3_SESSIONS_5-6.md) |
 | #13-14 | AAD prefix, IV order | [Part 5](07_PART5_SESSION_8_BREAKTHROUGH.md) |
 | #15-16 | HSalsa20, A_CRYPTO | [Part 6](08_PART6_SESSION_9.md) |
-| **#17** | **Reply Queue Per-Queue DH (active)** | [**Part 7**](09_PART7_SESSION_10.md) |
+| #17 | cmNonce instead of msgId | [Part 7](09_PART7_SESSION_10.md) |
+| **#18** | **Reply Queue Double Ratchet (open)** | [**Part 8**](10_PART8_SESSION_11.md) |
+
+---
+
+## Lessons from Session 11
+
+**Anti-Patterns to Avoid:**
+
+| Anti-Pattern | Description |
+|--------------|-------------|
+| Shotgun Debugging | Many changes at once |
+| Circular Changes | Back and forth between options |
+| Ignoring Evidence | Python tests showed: Crypto OK |
+| No Checkpoints | No commit at working state |
+
+**Best Practices:**
+1. If it works, don't touch it
+2. Git commit at every working state
+3. Trust verified crypto tests
+4. Recognize circular debugging early
 
 ---
 
@@ -134,17 +153,6 @@ SimpleGo Achievement:
 
 ---
 
-## Related Documentation
-
-| Document | Description |
-|----------|-------------|
-| [../ARCHITECTURE.md](../ARCHITECTURE.md) | Module structure overview |
-| [../CRYPTO.md](../CRYPTO.md) | Cryptographic implementation summary |
-| [../WIRE_FORMAT.md](../WIRE_FORMAT.md) | Protocol encoding summary |
-| [../../CHANGELOG.md](../../CHANGELOG.md) | Version history |
-
----
-
 ## License
 
 This documentation is part of SimpleGo, licensed under AGPL-3.0.
@@ -153,4 +161,4 @@ The SimpleX protocol is the intellectual property of SimpleX Chat Ltd, used here
 
 ---
 
-*Last updated: January 28, 2026 - Session 10C (Reply Queue Per-Queue DH Analysis)*
+*Last updated: January 30, 2026 - Session 11 (Regression & Recovery)*

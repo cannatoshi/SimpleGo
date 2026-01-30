@@ -4,18 +4,19 @@
 
 This document provides a quick reference for all the technical details needed when working with SimpleGo.
 
-**Updated: 2026-01-28 - Session 10C (Reply Queue Per-Queue DH Analysis)**
+**Updated: 2026-01-30 - Session 11 (Regression & Recovery)**
 
 ---
 
 ## Current Status
 
 ```
-Session 10C:
-- Contact Queue Decrypt: WORKING (3-layer)
-- Reply Queue Server-Level: WORKING
-- Reply Queue Per-Queue DH: ALL TESTS FAIL (Bug #17)
-- Developer question required
+Session 11 - RECOVERED:
+- App status: "connecting"
+- Contact Queue decrypt: WORKING (TEST4)
+- Reply Queue decrypt: PENDING (Double Ratchet receiver needed)
+- All format experiments reverted
+- cmNonce fix (Bug #17) re-applied
 ```
 
 ---
@@ -30,13 +31,14 @@ Session 10C:
 6. [Encoding Rules](#6-encoding-rules)
 7. [Maybe Encoding](#7-maybe-encoding)
 8. [NaCl Crypto Layers](#8-nacl-crypto-layers)
-9. [Reply Queue Structure](#9-reply-queue-structure)
+9. [ClientMsgEnvelope Structure](#9-clientmsgenvelope-structure)
+10. [Working Code State](#10-working-code-state)
 
 ---
 
 ## 1. Version Numbers
 
-### 1.1 Protocol Versions
+### 1.1 Protocol Versions (VERIFIED WORKING)
 
 | Protocol | Our Value | Valid Range | Hex |
 |----------|-----------|-------------|-----|
@@ -45,6 +47,9 @@ Session 10C:
 | E2E (e2eVersion) | 2 | 2-3 | 0x00 0x02 |
 | EncHeader (ehVersion) | 2 | - | 0x00 0x02 |
 | MsgHeader (msgMaxVersion) | 2 | - | 0x00 0x02 |
+| **RATCHET_VERSION** | **2** | - | **0x00 0x02** |
+
+**WARNING:** RATCHET_VERSION must be 2, not 3! Session 11 proved version 3 causes regression.
 
 ### 1.2 Version Constants in Code
 ```c
@@ -53,44 +58,32 @@ Session 10C:
 #define E2E_VERSION             2
 #define EH_VERSION              2
 #define MSG_HEADER_VERSION      2
+#define RATCHET_VERSION         2   // DO NOT CHANGE!
 ```
 
 ---
 
 ## 2. Size Constants
 
-### 2.1 Structure Sizes
+### 2.1 Structure Sizes (VERIFIED WORKING)
 
 | Structure | Size (bytes) | Notes |
 |-----------|--------------|-------|
-| EncMessageHeader | 123 | NOT 124! |
+| **EncMessageHeader** | **123** | **NOT 124! Session 11 verified** |
 | MsgHeader (plaintext) | 88 | With padding |
 | MsgHeader (content) | 79 | Without padding |
 | HELLO (plaintext) | 12 | Minimal message |
 | E2E Params | 140 | 2 X448 keys |
 | X448 SPKI Key | 68 | 12 header + 56 raw |
 | X25519 SPKI Key | 44 | 12 header + 32 raw |
-| Ed25519 SPKI Key | 44 | 12 header + 32 raw |
-| X448 Raw Key | 56 | |
-| X25519 Raw Key | 32 | |
-| AES-GCM IV | 16 | |
-| AES-GCM Tag | 16 | |
-| Poly1305 Tag | 16 | crypto_box_MACBYTES |
+| cmNonce | 24 | In ClientMsgEnvelope |
 
-### 2.2 Padding Sizes
-
-| Message Type | Padded Size |
-|--------------|-------------|
-| AgentConfirmation (encConnInfo) | 14,832 bytes |
-| HELLO / A_MSG | 15,840 bytes |
-| ClientMessage (outer) | 15,904 bytes |
-
-### 2.3 AAD Sizes
+### 2.2 AAD Sizes
 
 | AAD Type | Size | Composition |
 |----------|------|-------------|
 | Header AAD (rcAD) | 112 | 56 + 56 raw keys |
-| **Payload AAD** | **235** | **112 + 123 (rcAD + emHeader, NO prefix!)** |
+| **Payload AAD** | **235** | **112 + 123 (NO prefix!)** |
 
 ---
 
@@ -105,65 +98,23 @@ Session 10C:
   +---------------+-----------------+----------------+-------------------+
 ```
 
-### 3.2 EncMessageHeader (123 bytes)
+### 3.2 EncMessageHeader (123 bytes) - VERSION 2
 ```
   +-----------+--------+------------+-------------+------------------+
   | ehVersion | ehIV   | ehAuthTag  | ehBody-len  | ehBody           |
-  | (2 bytes) | (16 B) | (16 bytes) | (1 byte)    | (88 bytes)       |
+  | (2 bytes) | (16 B) | (16 bytes) | (1 byte!)   | (88 bytes)       |
   | 00 02     | [iv]   | [tag]      | 58          | [encrypted hdr]  |
   +-----------+--------+------------+-------------+------------------+
   Total: 2 + 16 + 16 + 1 + 88 = 123 bytes
-```
 
-### 3.3 MsgHeader (88 bytes, plaintext)
-```
-  +------------+-------------+------------------+----------+----------+---------+
-  | Word16 len | msgMaxVer   | msgDHRs          | msgPN    | msgNs    | Padding |
-  | (2 bytes)  | (2 bytes)   | (1+68 bytes)     | (4 bytes)| (4 bytes)| (7 B)   |
-  | 00 4F      | 00 02       | 44 [SPKI]        | [PN BE]  | [Ns BE]  | '#####' |
-  +------------+-------------+------------------+----------+----------+---------+
-  Total: 2 + 2 + 1 + 68 + 4 + 4 + 7 = 88 bytes
-```
-
-### 3.4 crypto_box Wire Format
-```
-  +------------------+------------------+
-  | Poly1305 Tag     | Ciphertext       |
-  | (16 bytes)       | (variable)       |
-  +------------------+------------------+
+  NOTE: ehBody-len is 1 BYTE for version 2! (not 2 bytes)
 ```
 
 ---
 
 ## 4. KDF Parameters
 
-### 4.1 X3DH Key Derivation
-```
-X3DH:
-  Hash:   SHA512
-  Salt:   64 zero bytes
-  IKM:    DH1 || DH2 || DH3 (168 bytes)
-  Info:   "SimpleXX3DH" (11 bytes)
-  Output: 96 bytes
-    [0:32]   header_key (hk)
-    [32:64]  next_header_key (nhk)
-    [64:96]  root_key (sk)
-```
-
-### 4.2 Root KDF
-```
-Root KDF:
-  Hash:   SHA512
-  Salt:   current root_key (32 bytes)
-  IKM:    DH output (56 bytes)
-  Info:   "SimpleXRootRatchet" (18 bytes)
-  Output: 96 bytes
-    [0:32]   new_root_key
-    [32:64]  chain_key
-    [64:96]  next_header_key
-```
-
-### 4.3 Chain KDF
+### 4.1 Chain KDF (VERIFIED)
 ```
 Chain KDF:
   Hash:   SHA512
@@ -185,7 +136,6 @@ Chain KDF:
 ```
 Header (12 bytes):
   30 42 30 05 06 03 2b 65 6f 03 39 00
-
 + Raw key (56 bytes)
 ```
 
@@ -193,15 +143,6 @@ Header (12 bytes):
 ```
 Header (12 bytes):
   30 2a 30 05 06 03 2b 65 6e 03 21 00
-
-+ Raw key (32 bytes)
-```
-
-### 5.3 Ed25519 SPKI (44 bytes)
-```
-Header (12 bytes):
-  30 2a 30 05 06 03 2b 65 70 03 21 00
-
 + Raw key (32 bytes)
 ```
 
@@ -217,30 +158,39 @@ Header (12 bytes):
 | > 254 bytes | 0xFF + Word16 BE prefix |
 | Tail field | NO prefix! |
 
-### 6.2 Word16 (Big Endian)
-```
-Value 68:  0x00 0x44
-Value 79:  0x00 0x4F
-Value 88:  0x00 0x58
-Value 123: 0x00 0x7B
+### 6.2 Word16 (Big Endian) - CRITICAL!
+```c
+// CORRECT:
+output[offset++] = 0x00;              // HIGH byte
+output[offset++] = value;             // LOW byte
+// Result: 00 02 = Version 2
+
+// WRONG (Session 11 mistake):
+output[offset++] = value;             // First byte
+output[offset++] = value;             // Second byte
+// Result: 02 02 = Version 514!
 ```
 
 ---
 
-## 7. Maybe Encoding
+## 7. Maybe Encoding (CRITICAL!)
 
-### 7.1 Standard Maybe
-```
-Nothing:  '0' (0x30)
-Just x:   '1' (0x31) + encoded x
+### 7.1 Standard Maybe - ASCII Characters!
+```c
+// CORRECT:
+agent_msg[amp++] = '1';   // ASCII 0x31 for Just
+agent_msg[amp++] = '0';   // ASCII 0x30 for Nothing
+
+// WRONG (Session 11 mistake):
+agent_msg[amp++] = 0x01;  // Binary 1 - FAILS!
 ```
 
-### 7.2 Special Cases
-```
-queueMode (NOT standard Maybe!):
-  Nothing:              (empty - zero bytes!)
-  Just QMMessaging:     "M"
-  Just QMSubscription:  "S"
+### 7.2 Haskell Reference
+```haskell
+instance Encoding a => Encoding (Maybe a) where
+  smpEncode = maybe "0" (('1' `B.cons`) . smpEncode)
+  -- Nothing = '0' (0x30)
+  -- Just x  = '1' (0x31) + encoded x
 ```
 
 ---
@@ -248,7 +198,6 @@ queueMode (NOT standard Maybe!):
 ## 8. NaCl Crypto Layers
 
 ### 8.1 The Three Layers
-
 ```
 +-------------------------------------------------------------+
 |                     NaCl crypto_box                         |
@@ -263,71 +212,90 @@ queueMode (NOT standard Maybe!):
 +-------------------------------------------------------------+
 ```
 
-### 8.2 Critical Rule
-**Always use the same crypto primitive chain as the sender!**
-
 ---
 
-## 9. Reply Queue Structure (Session 10C)
+## 9. ClientMsgEnvelope Structure (Bug #17 Fix)
 
-### 9.1 Three-Layer Encryption Model
-
+### 9.1 Structure Layout
 ```
-+-------------------------------------------------------------+
-|  Layer 1: Server-Level XSalsa20-Poly1305                    |
-|           Key: shared_secret (srv_dh_public + rcv_dh_private)|
-|           Nonce: msgId (24 bytes)                           |
-|           Status: WORKING                                   |
-+-------------------------------------------------------------+
-|  Layer 2: Per-Queue DH (NaCl crypto_box)                    |
-|           Key: ??? (all tested combinations FAIL)           |
-|           Status: BLOCKED                                   |
-+-------------------------------------------------------------+
-|  Layer 3: Double Ratchet (AES-GCM)                          |
-|           Status: Blocked by Layer 2                        |
-+-------------------------------------------------------------+
+Offset  Size  Content
+------  ----  -------
+[0-1]   2     length prefix
+[2-11]  10    padding/unknown
+[12-13] 2     version
+[14]    1     maybe tag
+[15]    1     maybe tag for e2ePubKey
+[16-59] 44    X25519 SPKI (e2ePubKey)
+[60-83] 24    cmNonce <- CORRECT NONCE FOR DECRYPT!
+[84+]   var   cmEncBody
 ```
 
-### 9.2 Structure After Server-Level Decrypt
-
-```
-Offset  Bytes           Meaning
-------  -----           -------
-0-1     3e 82           Length prefix: 16002
-2-5     00 00 00 00     Unknown (Padding?)
-6-9     69 7a 0c 8d     Timestamp
-10-13   54 20 00 04     Unknown
-14-15   31 2c           Version "1," (ASCII)
-16-59   30 2a 30 05...  X25519 SPKI (44 bytes)
-60+     ???             Ciphertext (Layer 2 or Double Ratchet?)
-```
-
-### 9.3 Tested Key Combinations (ALL FAILED)
-
-| Test | Key | Nonce | Result |
-|------|-----|-------|--------|
-| 1 | peer_ephemeral + rcv_dh_private | msgId | FAILED |
-| 2 | srv_dh_public + rcv_dh_private | msgId | FAILED |
-| 3 | shared_secret (direct) | message_nonce | FAILED |
-| 4 | Direct on raw data | - | FAILED |
-
-### 9.4 our_queue_t Structure
-
+### 9.2 Nonce Extraction (CRITICAL!)
 ```c
-typedef struct {
-    bool valid;
-    uint8_t rcv_id[24];
-    uint8_t snd_id[24];
-    uint8_t srv_dh_public[32];    // From server IDS
-    uint8_t rcv_dh_public[32];    // Our public key
-    uint8_t rcv_dh_private[32];   // Our private key
-    uint8_t shared_secret[32];    // Precomputed
-    uint8_t rcv_auth_public[32];
-    uint8_t rcv_auth_secret[64];
-} our_queue_t;
+// WRONG - used msgId from MSG header
+memcpy(nonce, msg_id, msgIdLen);  // This is server-level nonce!
+
+// CORRECT - extract cmNonce from ClientMsgEnvelope
+int spki_offset = 16;
+int cm_nonce_offset = spki_offset + 44;  // = 60
+memcpy(cm_nonce, &server_plain[cm_nonce_offset], 24);
 ```
 
 ---
 
-*Quick Reference v4.0*  
-*Last updated: January 28, 2026 - Session 10C*
+## 10. Working Code State (Session 11 Verified)
+
+### 10.1 smp_ratchet.c
+```c
+#define RATCHET_VERSION         2       // DO NOT CHANGE!
+uint8_t em_header[123];                 // 123 bytes, NOT 124!
+em_header[hp++] = 0x00; 
+em_header[hp++] = RATCHET_VERSION;      // ehVersion (Word16 BE)
+em_header[hp++] = 0x58;                 // ehBody-len = 88 (1 BYTE!)
+output[p++] = 0x7B;                     // emHeader len = 123
+```
+
+### 10.2 smp_peer.c
+```c
+agent_msg[amp++] = '1';                 // ASCII '1' (0x31) NOT 0x01!
+```
+
+### 10.3 smp_x448.c
+```c
+output[offset++] = 0x00;                // HIGH byte first!
+output[offset++] = params->version_min; // LOW byte = 0x02
+// Result: 00 02 = Version 2
+```
+
+### 10.4 main.c (TEST4 - cmNonce Fix)
+```c
+// Extract cmNonce for per-queue E2E decryption
+int cm_nonce_offset = spki_offset + 44;        // [60-83]
+int cm_enc_body_offset = cm_nonce_offset + 24; // [84+]
+memcpy(cm_nonce, &server_plain[cm_nonce_offset], 24);
+
+// Decrypt with cmNonce (NOT msgId!)
+crypto_box_open_easy_afternm(plain, &data[cm_enc_body_offset], 
+                              enc_len, cm_nonce, dh_shared);
+```
+
+---
+
+## Session 11 Anti-Patterns
+
+**DO NOT repeat these mistakes:**
+
+| Mistake | What Happened | Correct |
+|---------|---------------|---------|
+| RATCHET_VERSION = 3 | Regression | Keep at 2 |
+| em_header[124] | Regression | Keep at 123 |
+| Maybe = 0x01 | Regression | Use '1' (0x31) |
+| Version 02 02 | Regression | Use 00 02 |
+| DH order swap | Regression | Keep original |
+
+**If app shows "connecting" - DON'T EXPERIMENT!**
+
+---
+
+*Quick Reference v5.0*  
+*Last updated: January 30, 2026 - Session 11*
