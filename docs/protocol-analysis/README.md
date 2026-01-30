@@ -6,17 +6,19 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## Current Status (2026-01-30 Session 12)
+## Current Status (2026-01-30 Session 13)
 
 ```
-Session 12 - E2E Keypair Fix Attempt:
-- Discovered: Haskell uses TWO separate X25519 keypairs
-- Implemented: Separate e2e_public/e2e_private in our code
-- Fixed: SMPQueueInfo sends e2e_public (not rcv_dh_public)
-- PROBLEM: App sends phE2ePubDhKey = Nothing
-- App pre-computes e2eDhSecret, never sends its e2e_public to us!
+Session 13 - E2E Crypto Deep Analysis:
+- Fixed: Message parsing with correct offsets
+- Discovered: HSalsa20 difference (Haskell vs libsodium)
+- Discovered: MAC position [MAC][Cipher] vs [Cipher][MAC]
+- Tested: 5 different crypto approaches - ALL FAILED
+- Found: SMPConfirmation contains e2ePubKey
+- Observed: Android vs Desktop apps behave differently
 
-Current Question: Where does app's E2E public key come from?
+Bug #18: Reply Queue E2E - Still failing, root cause investigation continues
+Next: Parse SMPConfirmation to extract App's e2ePubKey
 ```
 
 ---
@@ -53,10 +55,11 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [09_PART7_SESSION_10.md](09_PART7_SESSION_10.md) | ~400 | cmNonce fix, app "connecting" |
 | [10_PART8_SESSION_11.md](10_PART8_SESSION_11.md) | ~400 | Regression & Recovery |
 | [11_PART9_SESSION_12.md](11_PART9_SESSION_12.md) | ~400 | E2E Keypair Fix Attempt |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1300 | Complete bug documentation (18 bugs) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~750 | Constants, wire formats, KDF parameters |
+| [12_PART10_SESSION_13.md](12_PART10_SESSION_13.md) | ~700 | E2E Crypto Deep Analysis |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1500 | Complete bug documentation (18 bugs) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~900 | Constants, wire formats, crypto differences |
 
-**Total: ~15,000 lines of detailed protocol analysis**
+**Total: ~16,000 lines of detailed protocol analysis**
 
 ---
 
@@ -73,7 +76,48 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | 9 | Jan 27, 2026 | Reply Queue HSalsa20 fix | #15-16 |
 | 10C | Jan 28, 2026 | cmNonce fix, app "connecting" | #17 |
 | 11 | Jan 30, 2026 | Regression & Recovery | - |
-| **12** | **Jan 30, 2026** | **E2E Keypair Analysis** | **#18 (open)** |
+| 12 | Jan 30, 2026 | E2E Keypair Analysis | - |
+| **13** | **Jan 30, 2026** | **E2E Crypto Deep Analysis** | **#18 (open)** |
+
+---
+
+## Session 13 Key Discoveries
+
+### 1. HSalsa20 Difference
+
+| Step | Haskell | libsodium |
+|------|---------|-----------|
+| 1 | DH(pub, priv) -> secret | DH(pub, priv) -> secret |
+| 2 | XSalsa20(secret, nonce, msg) | **HSalsa20(secret)** -> key |
+| 3 | - | XSalsa20(key, nonce, msg) |
+
+**libsodium has an EXTRA HSalsa20 step!**
+
+### 2. MAC Position Difference
+
+| Format | Layout |
+|--------|--------|
+| **Haskell** | `[MAC 16 bytes][Ciphertext]` |
+| **libsodium** | `[Ciphertext][MAC 16 bytes]` |
+
+### 3. Correct Message Structure
+
+```
+[12-13]  phVersion (00 04)
+[14]     Maybe tag: '1' = Just (key present!)
+[15]     SPKI length = 44 (0x2c)
+[16-59]  X25519 SPKI (44 bytes)
+[60-83]  cmNonce (24 bytes)
+[84+]    cmEncBody
+```
+
+### 4. All 5 Crypto Tests Failed
+
+1. crypto_box_open_easy + e2e_private
+2. crypto_box_open_easy + rcv_dh_private  
+3. crypto_secretbox_open_easy (direct)
+4. crypto_secretbox_open_easy (MAC reordered)
+5. crypto_secretbox_open_detached (MAC separate)
 
 ---
 
@@ -89,24 +133,7 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | #13-14 | AAD prefix, IV order | [Part 5](07_PART5_SESSION_8_BREAKTHROUGH.md) |
 | #15-16 | HSalsa20, A_CRYPTO | [Part 6](08_PART6_SESSION_9.md) |
 | #17 | cmNonce instead of msgId | [Part 7](09_PART7_SESSION_10.md) |
-| **#18** | **Reply Queue E2E (open)** | [**Part 9**](11_PART9_SESSION_12.md) |
-
----
-
-## Session 12 Key Discovery
-
-**Haskell uses TWO separate X25519 keypairs:**
-
-| Keypair | Purpose | Used in |
-|---------|---------|---------|
-| dhKey / privDhKey | Server-level DH (NEW command) | rcvDhSecret |
-| e2eDhKey / e2ePrivKey | E2E-level DH (Peer encryption) | SMPQueueAddress |
-
-**The Problem:**
-- App receives our `e2e_public` from SMPQueueInfo
-- App generates its own keypair and pre-computes `e2eDhSecret`
-- App NEVER sends its `e2e_public` key to us!
-- Message header has `phE2ePubDhKey = Nothing`
+| **#18** | **Reply Queue E2E (open)** | [**Part 10**](12_PART10_SESSION_13.md) |
 
 ---
 
@@ -116,4 +143,4 @@ This documentation is part of SimpleGo, licensed under AGPL-3.0.
 
 ---
 
-*Last updated: January 30, 2026 - Session 12 (E2E Keypair Analysis)*
+*Last updated: January 30, 2026 - Session 13 (E2E Crypto Deep Analysis)*

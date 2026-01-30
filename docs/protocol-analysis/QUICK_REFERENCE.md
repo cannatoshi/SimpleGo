@@ -1,19 +1,21 @@
 # Quick Reference
 
-## Constants, Wire Formats, and KDF Parameters
+## Constants, Wire Formats, Crypto Differences
 
-**Updated: 2026-01-30 - Session 12 (E2E Keypair Analysis)**
+**Updated: 2026-01-30 - Session 13 (E2E Crypto Deep Analysis)**
 
 ---
 
 ## Current Status
 
 ```
-Session 12 - E2E Keypair Analysis:
-- Discovered: Haskell uses TWO separate X25519 keypairs
-- Implemented: e2e_public/e2e_private in our_queue_t
-- Problem: App sends phE2ePubDhKey = Nothing
-- App pre-computes e2eDhSecret, never sends key to us!
+Session 13 - E2E Crypto Deep Analysis:
+- Fixed: Message parsing with correct offsets
+- Discovered: HSalsa20 difference (Haskell vs libsodium)
+- Discovered: MAC position [MAC][Cipher] vs [Cipher][MAC]
+- Tested: 5 crypto approaches - ALL FAILED
+- Found: SMPConfirmation contains e2ePubKey
+- Next: Parse SMPConfirmation for App's key
 ```
 
 ---
@@ -22,10 +24,12 @@ Session 12 - E2E Keypair Analysis:
 
 1. [Version Numbers](#1-version-numbers)
 2. [Size Constants](#2-size-constants)
-3. [Two Keypair Architecture](#3-two-keypair-architecture)
-4. [ClientMsgEnvelope Structure](#4-clientmsgenvelope-structure)
-5. [Maybe Encoding](#5-maybe-encoding)
-6. [Working Code State](#6-working-code-state)
+3. [Message Structure (Verified)](#3-message-structure-verified)
+4. [HSalsa20 Difference](#4-hsalsa20-difference)
+5. [MAC Position Difference](#5-mac-position-difference)
+6. [Crypto Tests Summary](#6-crypto-tests-summary)
+7. [e2ePubKey Flow](#7-e2epubkey-flow)
+8. [Working Code State](#8-working-code-state)
 
 ---
 
@@ -49,129 +53,208 @@ Session 12 - E2E Keypair Analysis:
 | X448 SPKI | 68 | 12 header + 56 raw |
 | X25519 SPKI | 44 | 12 header + 32 raw |
 | cmNonce | 24 | In ClientMsgEnvelope |
+| Poly1305 MAC | 16 | Authentication tag |
 | Payload AAD | **235** | NO prefix! |
 
 ---
 
-## 3. Two Keypair Architecture (Session 12 Discovery)
+## 3. Message Structure (Verified Session 13)
 
-### 3.1 Haskell Uses TWO Separate Keypairs!
-
-| Keypair | Purpose | Used For |
-|---------|---------|----------|
-| **Server DH** | NEW command, server-level encrypt | rcvDhSecret, shared_secret |
-| **E2E DH** | Peer-to-peer encrypt | e2eDhSecret, SMPQueueAddress |
-
-### 3.2 our_queue_t Structure (Updated)
-
-```c
-typedef struct {
-    // Server-level DH (for NEW command)
-    uint8_t rcv_dh_public[32];
-    uint8_t rcv_dh_private[32];
-    
-    // E2E-level DH (for peer encryption) - NEW!
-    uint8_t e2e_public[32];
-    uint8_t e2e_private[32];
-    
-    // Server-level shared secret
-    uint8_t shared_secret[32];
-    // ...
-} our_queue_t;
-```
-
-### 3.3 Key Usage
+### 3.1 ClientRcvMsgBody (after Server-decrypt)
 
 ```
-Server Level (shared_secret):
-  DH(srv_dh_public, rcv_dh_private) = shared_secret
-  Used for: Server MSG decrypt (XSalsa20-Poly1305)
+=== Full Layout ===
+[0-1]    Length prefix (Word16 BE, e.g. 0x3e82 = 16002)
+[2-9]    msgTs (SystemTime = Int64 BE, 8 bytes)
+[10]     msgFlags (1 byte)
+[11]     Space ' ' (0x20)
 
-E2E Level (e2eDhSecret):
-  DH(peer_e2e_public, our_e2e_private) = e2eDhSecret
-  Used for: Per-queue E2E decrypt (crypto_box)
-  
-  PROBLEM: App doesn't send peer_e2e_public!
+=== ClientMsgEnvelope starts at offset 12 ===
+[12-13]  phVersion (Word16 BE, e.g. 00 04 = v4)
+[14]     phE2ePubDhKey Maybe tag:
+         - '1' (0x31) = Just (key present!)
+         - '0' (0x30) = Nothing
+         - ',' (0x2c) = Nothing (alternative)
 ```
 
-### 3.4 The E2E Problem
+### 3.2 When Maybe = '1' (Just)
 
-**What App Does:**
+```
+[15]     SPKI length = 44 (0x2c)
+[16-59]  X25519 SPKI (44 bytes)
+  [16-27]  SPKI header: 30 2a 30 05 06 03 2b 65 6e 03 21 00
+  [28-59]  Raw X25519 key (32 bytes) <- E2E PUBLIC KEY!
+[60-83]  cmNonce (24 bytes)
+[84+]    cmEncBody (encrypted data)
+```
+
+### 3.3 Log Verification
+
+```
+3e 82 00 00 00 00 69 7c e2 58 54 20 00 04 31 2c
+^len  ^----msgTs (8 bytes)---- ^flg^sp^ver ^1 ^44
+
+30 2a 30 05 06 03 2b 65 6e 03 21 00 42 60 ec a8
+^-------SPKI header (12 bytes)------^--raw key--
+```
+
+All offsets verified correct!
+
+---
+
+## 4. HSalsa20 Difference (Critical!)
+
+### 4.1 The Problem
+
+| Step | Haskell | libsodium |
+|------|---------|-----------|
+| 1 | DH(pub, priv) -> secret | DH(pub, priv) -> secret |
+| 2 | XSalsa20(secret, nonce) | **HSalsa20(secret)** -> key |
+| 3 | - | XSalsa20(key, nonce) |
+
+**libsodium adds an EXTRA HSalsa20 step!**
+
+### 4.2 Haskell Implementation
+
 ```haskell
--- App receives our e2e_public from SMPQueueInfo
--- App generates its own keypair
-(e2ePubKey, e2ePrivKey) <- generateKeyPair
--- App pre-computes shared secret
-e2eDhSecret = DH(our_e2e_public, app_e2e_private)
--- App NEVER sends e2ePubKey to us!
+cryptoBox secret nonce s = BA.convert tag <> c
+  where
+    (rs, c) = xSalsa20 secret nonce s  -- DH secret DIRECT!
+    tag = Poly1305.auth rs c
 ```
 
-**What We Need:**
-```c
-// We need app's e2e_public to compute:
-e2eDhSecret = DH(app_e2e_public, our_e2e_private)
-// But app sends phE2ePubDhKey = Nothing!
-```
-
----
-
-## 4. ClientMsgEnvelope Structure
-
-### 4.1 Full Layout
-
-```
-Offset  Size  Content
-------  ----  -------
-[0-1]   2     length prefix (16002 = 0x3e82)
-[2-5]   4     unknown (00 00 00 00)
-[6-9]   4     timestamp
-[10-13] 4     unknown
-[14]    1     maybe_corrId ('1' = Just, '0' = Nothing)
-[15]    1     maybe_e2e ('1' = Just, ',' = Nothing) <- PROBLEM!
-[16-59] 44    corrId X25519 SPKI (if maybe_corrId = '1')
-[60-83] 24    cmNonce
-[84+]   var   cmEncBody
-```
-
-### 4.2 The Nothing Problem
-
-```
-[15] = ',' (0x2c) means phE2ePubDhKey = Nothing
-
-When maybe_e2e = ',':
-  - No e2e_public key in message
-  - App already pre-computed e2eDhSecret
-  - We cannot compute the same secret!
-```
-
----
-
-## 5. Maybe Encoding (CRITICAL!)
-
-### 5.1 Standard Maybe - ASCII!
+### 4.3 libsodium Implementation
 
 ```c
-// CORRECT:
-'1' (0x31) = Just (has value)
-'0' (0x30) = Nothing (no value)
-',' (0x2c) = Nothing (alternative encoding!)
-
-// WRONG:
-0x01 = Binary 1 - FAILS!
+// crypto_box_beforenm applies HSalsa20!
+crypto_box_beforenm(k, peer_pub, our_priv);  // k = HSalsa20(DH)
+crypto_box_open_easy_afternm(..., k);         // Then XSalsa20
 ```
 
-### 5.2 When ',' Appears
+### 4.4 Double HSalsa20 Problem
 
-In ClientMsgEnvelope, `maybe_e2e = ','` means:
-- phE2ePubDhKey = Nothing
-- App didn't include its E2E public key
-- E2E secret was pre-computed on app side
+**Haskell (Correct):**
+```
+1. subkey = HSalsa20(dh_secret, nonce[0:16])
+2. Salsa20(subkey, nonce[16:24])
+```
+
+**libsodium with _beforenm (Wrong):**
+```
+1. k = HSalsa20(dh_secret, ZERO)        <- Extra!
+2. subkey = HSalsa20(k, nonce[0:16])
+3. Salsa20(subkey, nonce[16:24])
+```
+
+### 4.5 Solution Attempt
+
+Use raw DH without HSalsa20:
+```c
+uint8_t dh_secret[32];
+crypto_scalarmult(dh_secret, our_priv, peer_pub);  // Raw DH
+crypto_secretbox_open_easy(plain, cipher, len, nonce, dh_secret);
+```
+
+**Result:** Still failed - other issues present.
 
 ---
 
-## 6. Working Code State (Session 11/12)
+## 5. MAC Position Difference (Critical!)
 
-### 6.1 smp_ratchet.c (DO NOT CHANGE!)
+### 5.1 Haskell cbDecrypt
+
+```haskell
+sbDecryptNoPad_ secret nonce packet
+  where
+    (tag', c) = B.splitAt 16 packet  -- TAG FIRST!
+```
+
+### 5.2 Format Comparison
+
+| Format | Layout |
+|--------|--------|
+| **Haskell** | `[MAC 16 bytes][Ciphertext]` |
+| **libsodium** | `[Ciphertext][MAC 16 bytes]` |
+
+### 5.3 Reordering Code
+
+```c
+// Haskell: [MAC][Cipher] -> libsodium: [Cipher][MAC]
+uint8_t *reordered = malloc(enc_len);
+memcpy(reordered, &cipher[16], enc_len - 16);    // Cipher first
+memcpy(&reordered[enc_len - 16], cipher, 16);    // MAC last
+crypto_secretbox_open_easy(plain, reordered, enc_len, nonce, key);
+```
+
+**Result:** Still failed - other issues present.
+
+---
+
+## 6. Crypto Tests Summary (Session 13)
+
+### 6.1 All Tests
+
+| # | Method | MAC | Key | Result |
+|---|--------|-----|-----|--------|
+| 1 | crypto_box_open_easy | Auto | e2e_private | FAILED |
+| 2 | crypto_box_open_easy | Auto | rcv_dh_private | FAILED |
+| 3 | crypto_secretbox_open_easy | Direct | e2e_private | FAILED |
+| 4 | crypto_secretbox_open_easy | Reordered | e2e_private | FAILED |
+| 5 | crypto_secretbox_open_detached | Separate | e2e_private | FAILED |
+
+### 6.2 Test Data (from logs)
+
+```
+e2ePubKey:     88159398... (from [28-59])
+our_e2e_priv:  f3944334... (verified)
+cmNonce:       59c05b9e... (24 bytes)
+DH secret:     dea3d892...
+MAC:           143b0d95... (16 bytes)
+Ciphertext:    16006 bytes
+```
+
+---
+
+## 7. e2ePubKey Flow
+
+### 7.1 SMPConfirmation Contains Key!
+
+```haskell
+data SMPConfirmation = SMPConfirmation
+  { senderKey :: Maybe SndPublicAuthKey,
+    e2ePubKey :: C.PublicKeyX25519,      -- THE KEY!
+    connInfo :: ConnInfo,
+    smpReplyQueues :: [SMPQueueInfo],
+    smpClientVersion :: VersionSMPC
+  }
+```
+
+### 7.2 App's Key Generation
+
+```haskell
+newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
+  (e2ePubKey, e2ePrivKey) <- generateKeyPair
+  let sq = SndQueue
+        { e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,
+          e2ePubKey = Just e2ePubKey,
+        }
+```
+
+### 7.3 Key Transmission
+
+| Message # | e2ePubKey | Meaning |
+|-----------|-----------|---------|
+| First (Confirmation) | Just key | Key in header |
+| Subsequent | Nothing | Pre-computed secret |
+
+**Problem:** Reply Queue uses subsequent message format!
+
+---
+
+## 8. Working Code State
+
+### 8.1 smp_ratchet.c (DO NOT CHANGE!)
+
 ```c
 #define RATCHET_VERSION         2
 uint8_t em_header[123];         // 123 bytes!
@@ -179,41 +262,60 @@ em_header[hp++] = 0x58;         // ehBody-len = 88 (1 BYTE!)
 output[p++] = 0x7B;             // emHeader len = 123
 ```
 
-### 6.2 smp_queue.c (Updated Session 12)
-```c
-// Generate BOTH keypairs
-crypto_box_keypair(our_queue.rcv_dh_public, our_queue.rcv_dh_private);
-crypto_box_keypair(our_queue.e2e_public, our_queue.e2e_private);
+### 8.2 smp_queue.h (Session 12)
 
-// Send e2e_public in SMPQueueInfo (not rcv_dh_public!)
-memcpy(&buf[p], our_queue.e2e_public, 32);
+```c
+typedef struct {
+    uint8_t rcv_dh_public[32];    // Server DH
+    uint8_t rcv_dh_private[32];
+    
+    uint8_t e2e_public[32];       // E2E DH (separate!)
+    uint8_t e2e_private[32];
+    
+    uint8_t shared_secret[32];
+    // ...
+} our_queue_t;
 ```
 
-### 6.3 main.c (cmNonce Fix - Session 10C)
+### 8.3 Correct Parsing (Session 13)
+
 ```c
-// Extract cmNonce from ClientMsgEnvelope
-int cm_nonce_offset = spki_offset + 44;  // [60-83]
-memcpy(cm_nonce, &server_plain[cm_nonce_offset], 24);
+// After server-decrypt, ClientMsgEnvelope at offset 12
+int offset = 14;
+uint8_t maybe_e2e = plain[offset];  // '1' = Just
+
+if (maybe_e2e == '1') {
+    // SPKI at offset 16-59 (44 bytes)
+    // Raw key at offset 28-59 (32 bytes)
+    memcpy(peer_e2e_public, &plain[28], 32);
+    
+    // Nonce at offset 60-83 (24 bytes)
+    memcpy(cm_nonce, &plain[60], 24);
+    
+    // Encrypted body at offset 84+
+    int enc_len = total_len - 84;
+}
 ```
 
 ---
 
-## Session 12 Open Questions
+## 9. Open Questions
 
-1. **Where does app's E2E public key come from?**
-   - Not in message (phE2ePubDhKey = Nothing)
-   - In AgentConfirmation?
-   - Derived from X3DH?
-
-2. **Is E2E derived from X3DH?**
-   - X3DH produces root_key, header_key
-   - Maybe e2e_key is also derived?
-
-3. **Queue Mode difference?**
-   - QMMessaging vs QMContact
-   - Different E2E behavior?
+1. **Is key at [28-59] really e2ePubKey or corrId?**
+2. **Do we need to parse SMPConfirmation first?**
+3. **When maybe_e2e = ',' - is it direct Double Ratchet?**
+4. **Why do Android and Desktop apps behave differently?**
 
 ---
 
-*Quick Reference v6.0*  
-*Last updated: January 30, 2026 - Session 12*
+## 10. Next Steps
+
+1. Parse SMPConfirmation to extract App's e2ePubKey
+2. Try Double Ratchet receiver (skip per-queue E2E)
+3. Python verification with exact log values
+4. Analyze Android parsing failure
+
+---
+
+*Quick Reference v7.0*  
+*Last updated: January 30, 2026 - Session 13*
