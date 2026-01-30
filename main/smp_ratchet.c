@@ -178,6 +178,7 @@ bool ratchet_x3dh_sender(const uint8_t *peer_key1,
     printf("   dh2: "); for(int i=0; i<8; i++) printf("%02x", dh2[i]); printf("...\n");
     printf("   dh3: "); for(int i=0; i<8; i++) printf("%02x", dh3[i]); printf("...\n");
     printf("   hk:  "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
+    printf("   nhk: "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
     printf("   rk:  "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
 
     // AssocData = rcAD
@@ -205,7 +206,7 @@ bool ratchet_init_sender(const uint8_t *peer_dh_public, const x448_keypair_t *ou
     printf("   our_key2_pub:   "); for(int i=0; i<8; i++) printf("%02x", our_key2->public_key[i]); printf("...\n");
     printf("   our_key2_priv:  "); for(int i=0; i<8; i++) printf("%02x", our_key2->private_key[i]); printf("...\n");
     
-    ESP_LOGI(TAG, "🔄 Initializing send ratchet...");
+    ESP_LOGI(TAG, "🔄 Initializing initial send ratchet...");
 
     memcpy(&ratchet_state.dh_self, our_key2, sizeof(x448_keypair_t));
     memcpy(ratchet_state.dh_peer, peer_dh_public, 56);
@@ -273,8 +274,8 @@ static void build_msg_header(uint8_t *header, const uint8_t *dh_public,
     // p = 81 now (2 + 79)
     // '#' padding to reach 88 bytes
     memset(&header[p], '#', 88 - p);
-    // Layout: [2B Word16=79][2B version][1B len][68B SPKI][4B msgPN][4B msgNs][7B '#']
-    //              2       +     2     +   1   +   68   +    4    +    4    +   7   = 88 ✓
+    // Layout: [2B Word16=79][content][###]
+    // But in code, it's [2B len][version][len][SPKI][PN][Ns][#]
 }
 
 // ============== Encrypt Message ==============
@@ -305,18 +306,16 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
                      ratchet_state.prev_chain_len, ratchet_state.msg_num_send);
     
     // DEBUG: Show MsgHeader structure
-    // Layout: [8B Int64=79][2B version][1B len][68B SPKI][4B msgPN][4B msgNs][1B '#'] = 88
+    // Layout: [2B Word16=79][2B version][1B len][68B SPKI][4B msgPN][4B msgNs][7B '#'] = 88
     ESP_LOGI(TAG, "📋 MsgHeader debug:");
-    ESP_LOGI(TAG, "   Int64 len: %02x %02x %02x %02x %02x %02x %02x %02x", msg_header[0], msg_header[1], msg_header[2], msg_header[3], msg_header[4], msg_header[5], msg_header[6], msg_header[7]);
-    ESP_LOGI(TAG, "   msgMaxVersion: %02x %02x", msg_header[8], msg_header[9]);
-    ESP_LOGI(TAG, "   msgDHRs len: %02x (=%d)", msg_header[10], msg_header[10]);
-    ESP_LOGI(TAG, "   SPKI header: %02x %02x %02x %02x...", msg_header[11], msg_header[12], msg_header[13], msg_header[14]);
-    ESP_LOGI(TAG, "   X448 key: %02x %02x %02x %02x...", msg_header[23], msg_header[24], msg_header[25], msg_header[26]);
-    ESP_LOGI(TAG, "   msgPN: %02x%02x%02x%02x (offset 79)", msg_header[79], msg_header[80], msg_header[81], msg_header[82]);
-    ESP_LOGI(TAG, "   msgNs: %02x%02x%02x%02x (offset 83)", msg_header[83], msg_header[84], msg_header[85], msg_header[86]);
-    ESP_LOGI(TAG, "   padding: %02x%02x%02x%02x%02x%02x%02x%02x%02x",
-            msg_header[79], msg_header[80], msg_header[81], msg_header[82],
-            msg_header[83], msg_header[84], msg_header[85], msg_header[86], msg_header[87]);
+    ESP_LOGI(TAG, "   Word16 len: %02x %02x", msg_header[0], msg_header[1]);
+    ESP_LOGI(TAG, "   msgMaxVersion: %02x %02x", msg_header[2], msg_header[3]);
+    ESP_LOGI(TAG, "   msgDHRs len: %02x (=%d)", msg_header[4], msg_header[4]);
+    ESP_LOGI(TAG, "   SPKI header: %02x %02x %02x %02x...", msg_header[5], msg_header[6], msg_header[7], msg_header[8]);
+    ESP_LOGI(TAG, "   X448 key: %02x %02x %02x %02x...", msg_header[17], msg_header[18], msg_header[19], msg_header[20]);
+    ESP_LOGI(TAG, "   msgPN: %02x%02x%02x%02x (offset 73)", msg_header[73], msg_header[74], msg_header[75], msg_header[76]);
+    ESP_LOGI(TAG, "   msgNs: %02x%02x%02x%02x (offset 77)", msg_header[77], msg_header[78], msg_header[79], msg_header[80]);
+    ESP_LOGI(TAG, "   padding: %02x (offset 81)", msg_header[81]);
     
     // FULL HEX DUMP
     ESP_LOGI(TAG, "📋 MsgHeader FULL (88 bytes):");
@@ -407,7 +406,7 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     
     uint8_t payload_tag[GCM_TAG_LEN];
     if (aes_gcm_encrypt(message_key, msg_iv, GCM_IV_LEN,
-                        payload_aad, 235,  // ← 236 bytes AAD!
+                        payload_aad, 235,  // ← 235 bytes AAD!
                         padded_payload, padded_msg_len,  // ← PADDED!
                         encrypted_payload, payload_tag) != 0) {
         free(padded_payload);
@@ -532,31 +531,30 @@ int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
         return -1;
     }
     
-    if (ct_len < 1 + 123 + 16) {
+    if (ct_len < 123 + 16) {
         ESP_LOGE(TAG, "Ciphertext too short: %zu", ct_len);
         return -1;
     }
     
     ESP_LOGI(TAG, "🔓 Decrypting incoming message (%zu bytes)...", ct_len);
     
-    int p = 0;
-    
     // Parse EncRatchetMessage structure
-    uint8_t em_header_len = ciphertext[p++];
-    ESP_LOGI(TAG, "   emHeader length: %d", em_header_len);
-    
-    if (em_header_len != 123 && em_header_len != 0x7B) {
-        // Could be Large encoding (2-byte length for v3+)
-        if (ciphertext[0] < 32) {
-            uint16_t len = (ciphertext[0] << 8) | ciphertext[1];
-            ESP_LOGI(TAG, "   Large encoding, emHeader length: %d", len);
-            p = 2;
-            em_header_len = (uint8_t)len;
-        } else {
-            ESP_LOGE(TAG, "Invalid emHeader length: %d", em_header_len);
-            return -1;
-        }
+    int p = 0;
+    uint8_t em_header_len;
+
+    if (ciphertext[0] == 0x7b) {
+        // Standard v2 format: first byte is length prefix (123)
+        em_header_len = 123;
+        p = 1;
+        ESP_LOGI(TAG, "   ✓ Standard v2 format (0x7b prefix)");
+    } else {
+        // Assume encrypted v2 - treat first 123 bytes as emHeader content
+        ESP_LOGI(TAG, "   ⚠️ First byte is 0x%02x (not 0x7b) - trying without length prefix", ciphertext[0]);
+        em_header_len = 123;
+        p = 0;
     }
+
+    ESP_LOGI(TAG, "   emHeader length: %d, starting at offset %d", em_header_len, p);
     
     const uint8_t *em_header = &ciphertext[p];
     p += em_header_len;
@@ -587,20 +585,28 @@ int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
     // === Step 1: Decrypt Header ===
     uint8_t decrypted_header[MSG_HEADER_PADDED_LEN];
     
+    // === CRITICAL: Reverse rcAD for incoming messages ===
+    uint8_t rcAD_recv[112];
+    memcpy(rcAD_recv, ratchet_state.assoc_data + 56, 56);  // peer_key1 first
+    memcpy(rcAD_recv + 56, ratchet_state.assoc_data, 56);  // our_key1 second
+
+    ESP_LOGI(TAG, "   rcAD for RECV (reversed): %02x%02x...||%02x%02x...",
+             rcAD_recv[0], rcAD_recv[1], rcAD_recv[56], rcAD_recv[57]);
+
     ESP_LOGI(TAG, "   Trying header decrypt with header_key_recv...");
     ESP_LOGI(TAG, "   header_key_recv: %02x%02x%02x%02x...",
              ratchet_state.header_key_recv[0], ratchet_state.header_key_recv[1],
              ratchet_state.header_key_recv[2], ratchet_state.header_key_recv[3]);
     
     if (aes_gcm_decrypt(ratchet_state.header_key_recv, header_iv, GCM_IV_LEN,
-                        ratchet_state.assoc_data, 112,
+                        rcAD_recv, 112,
                         encrypted_header, eh_body_len,
                         header_tag, decrypted_header) != 0) {
         ESP_LOGE(TAG, "   ❌ Header decryption failed with header_key_recv!");
         
         ESP_LOGI(TAG, "   Trying with header_key_send...");
         if (aes_gcm_decrypt(ratchet_state.header_key_send, header_iv, GCM_IV_LEN,
-                            ratchet_state.assoc_data, 112,
+                            rcAD_recv, 112,
                             encrypted_header, eh_body_len,
                             header_tag, decrypted_header) != 0) {
             ESP_LOGE(TAG, "   ❌ Header decryption also failed with header_key_send!");
@@ -698,7 +704,7 @@ int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
         ESP_LOGE(TAG, "   ❌ malloc failed");
         return -1;
     }
-    memcpy(payload_aad, ratchet_state.assoc_data, 112);
+    memcpy(payload_aad, rcAD_recv, 112);
     memcpy(payload_aad + 112, em_header, em_header_len);
     
     if (aes_gcm_decrypt(message_key, msg_iv, GCM_IV_LEN,
