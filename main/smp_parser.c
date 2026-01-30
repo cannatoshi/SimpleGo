@@ -13,6 +13,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include "esp_log.h"
+#include "smp_queue.h"
+#include "smp_ratchet.h"
+#include "sodium.h"
 
 static const char *TAG = "SMP_PARS";
 
@@ -455,4 +458,230 @@ void parse_agent_message(contact_t *contact, const uint8_t *plain, int plain_len
     }
     
     ESP_LOGI(TAG, "");
+}
+
+// ============== NEW: Parse AgentConfirmation for Reply Queue E2E Key ==============
+
+// Skip length-prefixed data, returns new offset or -1 on error
+static int skip_len_prefixed(const uint8_t *data, int offset, int max_len) {
+    if (offset >= max_len) return -1;
+    
+    int len;
+    int new_offset;
+    
+    if (data[offset] < 0x20) {
+        // Large encoding: 2-byte length
+        if (offset + 2 > max_len) return -1;
+        len = (data[offset] << 8) | data[offset + 1];
+        new_offset = offset + 2;
+    } else {
+        // Small encoding: 1-byte length
+        len = data[offset];
+        new_offset = offset + 1;
+    }
+    
+    if (new_offset + len > max_len) return -1;
+    return new_offset + len;
+}
+
+/**
+ * Parse AgentConnInfoReply and extract dhPublicKey (X25519)
+ * Format: 'D' + list_len + SMPQueueInfo[] + connInfo
+ */
+static int parse_conn_info_reply(const uint8_t *data, size_t len, uint8_t *dh_public_out) {
+    ESP_LOGI(TAG, "   📋 Parsing AgentConnInfoReply (%zu bytes)...", len);
+    
+    if (len < 3 || data[0] != 'D') {
+        ESP_LOGE(TAG, "      ❌ Expected 'D', got 0x%02x", data[0]);
+        return -1;
+    }
+    ESP_LOGI(TAG, "      ✅ Tag = 'D' (AgentConnInfoReply)");
+    
+    // Search for X25519 SPKI header in the data
+    ESP_LOGI(TAG, "      🔎 Searching for X25519 SPKI (30 2a 30 05 06 03 2b 65 6e)...");
+    
+    for (size_t i = 2; i < len - 44; i++) {
+        if (data[i] == 0x30 && data[i+1] == 0x2a && 
+            data[i+2] == 0x30 && data[i+3] == 0x05 &&
+            data[i+4] == 0x06 && data[i+5] == 0x03 &&
+            data[i+6] == 0x2b && data[i+7] == 0x65 &&
+            data[i+8] == 0x6e) {
+            
+            ESP_LOGI(TAG, "      ✅ Found X25519 SPKI at offset %zu", i);
+            memcpy(dh_public_out, &data[i + 12], 32);
+            ESP_LOGI(TAG, "      🔑 dhPublicKey: %02x%02x%02x%02x%02x%02x%02x%02x...",
+                     dh_public_out[0], dh_public_out[1], dh_public_out[2], dh_public_out[3],
+                     dh_public_out[4], dh_public_out[5], dh_public_out[6], dh_public_out[7]);
+            return 0;
+        }
+    }
+    
+    ESP_LOGE(TAG, "      ❌ X25519 SPKI not found!");
+    return -1;
+}
+
+/**
+ * Parse AgentConfirmation from ClientMessage
+ * Extracts encConnInfo, decrypts with Double Ratchet, parses AgentConnInfoReply
+ * and stores the Reply Queue E2E peer public key
+ */
+int parse_agent_confirmation(const uint8_t *cm_plain, int cm_plain_len) {
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  📬 PARSING AGENT CONFIRMATION                               ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
+    
+    int offset = 0;
+    
+    // ========== 1. Parse PrivHeader ==========
+    if (cm_plain_len < 1) {
+        ESP_LOGE(TAG, "   ❌ Empty ClientMessage");
+        return -1;
+    }
+    
+    uint8_t priv_header_tag = cm_plain[0];
+    ESP_LOGI(TAG, "   [1] PrivHeader: '%c' (0x%02x)", 
+             (priv_header_tag >= 0x20 && priv_header_tag < 0x7f) ? priv_header_tag : '.', 
+             priv_header_tag);
+    offset = 1;
+    
+    if (priv_header_tag == 'K') {
+        // PHConfirmation - skip senderKey (length-prefixed SPKI)
+        offset = skip_len_prefixed(cm_plain, offset, cm_plain_len);
+        if (offset < 0) {
+            ESP_LOGE(TAG, "   ❌ Failed to skip senderKey");
+            return -1;
+        }
+        ESP_LOGI(TAG, "      Skipped senderKey, now at offset %d", offset);
+    } else if (priv_header_tag != '_') {
+        ESP_LOGE(TAG, "   ❌ Unknown PrivHeader: 0x%02x", priv_header_tag);
+        return -1;
+    }
+    
+    // ========== 2. Parse AgentMsgEnvelope header ==========
+    if (offset + 3 > cm_plain_len) {
+        ESP_LOGE(TAG, "   ❌ Not enough data for AgentConfirmation");
+        return -1;
+    }
+    
+    uint16_t agent_version = (cm_plain[offset] << 8) | cm_plain[offset + 1];
+    uint8_t msg_tag = cm_plain[offset + 2];
+    ESP_LOGI(TAG, "   [2] AgentVersion: %d, Tag: '%c'", agent_version, msg_tag);
+    offset += 3;
+    
+    if (msg_tag != 'C') {
+        ESP_LOGI(TAG, "   ℹ️  Not AgentConfirmation (tag='%c'), skipping", msg_tag);
+        return -1;
+    }
+    
+    // ========== 3. Parse Maybe e2eEncryption_ ==========
+    if (offset >= cm_plain_len) {
+        ESP_LOGE(TAG, "   ❌ Not enough data for e2eEncryption_");
+        return -1;
+    }
+    
+    uint8_t maybe_e2e = cm_plain[offset];
+    ESP_LOGI(TAG, "   [3] Maybe e2eEncryption_: '%c'", maybe_e2e);
+    offset++;
+    
+    if (maybe_e2e == '1') {
+        // Has E2ERatchetParams X448: version(2) + key1(68) + key2(68) + maybe_kem
+        if (offset + 2 > cm_plain_len) return -1;
+        
+        uint16_t e2e_version = (cm_plain[offset] << 8) | cm_plain[offset + 1];
+        ESP_LOGI(TAG, "      E2E Version: %d", e2e_version);
+        offset += 2;
+        
+        // Skip two X448 keys (68 bytes each)
+        offset += 68;  // key1
+        if (offset > cm_plain_len) return -1;
+        offset += 68;  // key2
+        if (offset > cm_plain_len) return -1;
+        
+        // Maybe KEM
+        if (offset < cm_plain_len) {
+            uint8_t maybe_kem = cm_plain[offset];
+            ESP_LOGI(TAG, "      Maybe KEM: '%c'", maybe_kem);
+            offset++;
+            
+            if (maybe_kem == '1') {
+                // Has KEM - search for EncRatchetMessage start
+                ESP_LOGI(TAG, "      ⚠️  KEM present, searching for encConnInfo...");
+                for (int i = offset; i < cm_plain_len - 4; i++) {
+                    if (cm_plain[i] == 0x7b && cm_plain[i+1] == 0x00 && cm_plain[i+2] == 0x02) {
+                        ESP_LOGI(TAG, "      ✅ Found EncRatchetMessage at offset %d", i);
+                        offset = i;
+                        break;
+                    }
+                }
+            }
+        }
+    } else if (maybe_e2e != ',') {
+        ESP_LOGE(TAG, "   ❌ Unknown Maybe: 0x%02x", maybe_e2e);
+        return -1;
+    }
+    
+    // ========== 4. encConnInfo is the rest (Tail) ==========
+    int enc_conn_info_len = cm_plain_len - offset;
+    const uint8_t *enc_conn_info = &cm_plain[offset];
+    
+    ESP_LOGI(TAG, "   [4] encConnInfo: %d bytes at offset %d", enc_conn_info_len, offset);
+    ESP_LOGI(TAG, "      First 16: %02x %02x %02x %02x %02x %02x %02x %02x...",
+             enc_conn_info[0], enc_conn_info[1], enc_conn_info[2], enc_conn_info[3],
+             enc_conn_info[4], enc_conn_info[5], enc_conn_info[6], enc_conn_info[7]);
+    
+    // ========== 5. Double Ratchet decrypt encConnInfo ==========
+    if (!ratchet_is_initialized()) {
+        ESP_LOGE(TAG, "   ❌ Ratchet not initialized!");
+        return -1;
+    }
+    
+    uint8_t *conn_info_plain = malloc(enc_conn_info_len);
+    if (!conn_info_plain) {
+        ESP_LOGE(TAG, "   ❌ malloc failed");
+        return -1;
+    }
+    
+    size_t conn_info_plain_len = 0;
+    
+    // Use the RECEIVER ratchet to decrypt (we're receiving from peer)
+    int rc_result = ratchet_decrypt_incoming(enc_conn_info, enc_conn_info_len,
+                                              conn_info_plain, &conn_info_plain_len);
+    
+    if (rc_result != 0) {
+        ESP_LOGE(TAG, "   ❌ Ratchet decrypt FAILED (code %d)", rc_result);
+        free(conn_info_plain);
+        return -1;
+    }
+    
+    ESP_LOGI(TAG, "   ✅ Ratchet decrypt SUCCESS! (%zu bytes)", conn_info_plain_len);
+    ESP_LOGI(TAG, "      First 32:");
+    printf("         ");
+    for (size_t i = 0; i < 32 && i < conn_info_plain_len; i++) {
+        printf("%02x ", conn_info_plain[i]);
+    }
+    printf("\n");
+    
+    // ========== 6. Parse AgentConnInfoReply ==========
+    uint8_t dh_public[32];
+    int parse_result = parse_conn_info_reply(conn_info_plain, conn_info_plain_len, dh_public);
+    
+    if (parse_result == 0) {
+        // ========== 7. Store Reply Queue E2E peer public key ==========
+        memcpy(reply_queue_e2e_peer_public, dh_public, 32);
+        reply_queue_e2e_peer_valid = true;
+        
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║  🎉 REPLY QUEUE E2E KEY EXTRACTED!                           ║");
+        ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
+        ESP_LOGI(TAG, "   🔑 reply_queue_e2e_peer_public: %02x%02x%02x%02x%02x%02x%02x%02x...",
+                 reply_queue_e2e_peer_public[0], reply_queue_e2e_peer_public[1],
+                 reply_queue_e2e_peer_public[2], reply_queue_e2e_peer_public[3],
+                 reply_queue_e2e_peer_public[4], reply_queue_e2e_peer_public[5],
+                 reply_queue_e2e_peer_public[6], reply_queue_e2e_peer_public[7]);
+    }
+    
+    free(conn_info_plain);
+    return parse_result;
 }
