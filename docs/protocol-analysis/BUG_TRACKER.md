@@ -10,139 +10,108 @@ This document provides detailed documentation of all bugs discovered during Simp
 
 | Bug # | Component | Session | Status |
 |-------|-----------|---------|--------|
-| 1 | E2E key length | 4 | FIXED |
-| 2 | prevMsgHash length | 4 | FIXED |
-| 3 | MsgHeader DH key | 4 | FIXED |
-| 4 | ehBody length | 4 | FIXED |
-| 5 | emHeader size | 4 | FIXED |
-| 6 | Payload AAD size | 4 | FIXED |
-| 7 | Root KDF output order | 4 | FIXED |
-| 8 | Chain KDF IV order | 4 | FIXED |
+| 1-8 | Wire format | 4 | FIXED |
 | 9 | wolfSSL X448 byte order | 5 | FIXED |
-| 10 | Port encoding | 6 | FIXED |
-| 11 | smpQueues count | 6 | FIXED |
-| 12 | queueMode Nothing | 6 | FIXED |
-| 13 | Payload AAD length prefix | 8 | FIXED |
-| 14 | chainKdf IV assignment | 8 | FIXED |
-| 15 | Reply Queue HSalsa20 | 9 | FIXED |
-| 16 | A_CRYPTO header AAD | 9 | FIXED |
-| **17** | **cmNonce instead of msgId** | **10C** | **FIXED** |
-| **18** | **Reply Queue Double Ratchet** | **11** | **OPEN** |
+| 10-12 | SMPQueueInfo encoding | 6 | FIXED |
+| 13-14 | Payload AAD, IV order | 8 | FIXED |
+| 15-16 | HSalsa20, A_CRYPTO | 9 | FIXED |
+| 17 | cmNonce instead of msgId | 10C | FIXED |
+| **18** | **Reply Queue E2E** | **12** | **OPEN** |
 
 ---
 
-## Bug #1-#16: See Previous Documentation
+## Bug #18: Reply Queue E2E Decryption (OPEN)
 
-Bugs #1-16 are documented in detail in earlier sessions. Summary:
-- #1-8: Wire format length prefix issues
-- #9: wolfSSL X448 byte order reversal
-- #10-12: SMPQueueInfo encoding
-- #13-14: Payload AAD and chainKdf IV order (Session 8 Breakthrough)
-- #15-16: HSalsa20 key derivation and A_CRYPTO header (Session 9)
-
----
-
-## Bug #17: cmNonce instead of msgId (FIXED)
-
-**Session:** 10C  
-**Component:** Per-Queue E2E Decryption  
-**Impact:** Critical - All Reply Queue messages fail decryption  
-**Status:** FIXED
-
-### The Problem
-Used `msgId` as nonce for per-queue E2E decryption, but the correct nonce is `cmNonce` from the ClientMsgEnvelope structure.
-
-### ClientMsgEnvelope Structure
-```
-Offset  Size  Content
-------  ----  -------
-[0-1]   2     length prefix
-[12-13] 2     version
-[14]    1     maybe tag
-[15]    1     maybe tag for e2ePubKey
-[16-59] 44    X25519 SPKI
-[60-83] 24    cmNonce <- CORRECT NONCE!
-[84+]   var   cmEncBody
-```
-
-### Incorrect Code
-```c
-// WRONG - used msgId as nonce
-memcpy(nonce, msg_id, msgIdLen);  // msgId from MSG header
-```
-
-### Correct Code
-```c
-// CORRECT - extract cmNonce from ClientMsgEnvelope
-int cm_nonce_offset = spki_offset + 44;  // [60-83]
-memcpy(cm_nonce, &server_plain[cm_nonce_offset], 24);
-
-// Then decrypt with cmNonce
-crypto_box_open_easy_afternm(plain, &data[cm_enc_body_offset], 
-                              enc_len, cm_nonce, dh_shared);
-```
-
-### Result After Fix
-```
-TEST4 SUCCESS! Per-queue E2E decrypt worked!
-   Decrypted 15904 bytes (ClientMessage)
-   PrivHeader tag: 'K' (PHConfirmation)
-
-App status: "connecting"
-```
-
----
-
-## Bug #18: Reply Queue Double Ratchet (OPEN)
-
-**Session:** 11  
-**Component:** Double Ratchet Receiver Side  
+**Session:** 12  
+**Component:** Reply Queue Per-Queue E2E Layer  
 **Impact:** Cannot decrypt Reply Queue messages from app  
-**Status:** OPEN
+**Status:** OPEN - Root cause identified, solution unclear
 
-### The Problem
-Reply Queue messages have `Maybe = ','` (Nothing), meaning no e2ePubKey layer.
-These messages go directly into Double Ratchet, requiring receiver-side implementation.
+### 18.1 The Discovery
 
-### Observation
+Haskell uses **TWO separate X25519 keypairs**:
+
+| Keypair | Purpose | Used in |
+|---------|---------|---------|
+| dhKey / privDhKey | Server-level DH (NEW command) | rcvDhSecret |
+| e2eDhKey / e2ePrivKey | E2E-level DH (Peer encryption) | SMPQueueAddress |
+
+### 18.2 Changes Implemented
+
+**smp_queue.h - Added E2E keys:**
+```c
+typedef struct {
+    uint8_t rcv_dh_public[32];    // Server DH
+    uint8_t rcv_dh_private[32];
+    
+    // E2E keys (separate from server DH!)
+    uint8_t e2e_public[32];       // NEW!
+    uint8_t e2e_private[32];      // NEW!
+    
+    uint8_t shared_secret[32];
+    // ...
+} our_queue_t;
 ```
-Maybe tag = ',' (Nothing)
+
+**smp_queue.c - Generate E2E keypair:**
+```c
+crypto_box_keypair(our_queue.rcv_dh_public, our_queue.rcv_dh_private);
+crypto_box_keypair(our_queue.e2e_public, our_queue.e2e_private);  // NEW!
 ```
 
-### Difference: Contact Queue vs Reply Queue
+**smp_queue.c - Send e2e_public in SMPQueueInfo:**
+```c
+// Changed from rcv_dh_public to e2e_public
+memcpy(&buf[p], our_queue.e2e_public, 32);
+```
 
-| Queue | Maybe Tag | Meaning |
-|-------|-----------|---------|
-| Contact Queue | '1' (Just) | Has e2ePubKey, per-queue E2E layer |
-| Reply Queue | ',' (Nothing) | No e2ePubKey, direct Double Ratchet |
+### 18.3 The Problem Found
 
-### Required Implementation
+Message structure analysis:
+```
+[14]    maybe_corrId = '1' (0x31) - Just (has corrId)
+[15]    maybe_e2e = ',' (0x2c) - Nothing! <- PROBLEM!
+```
 
-1. **Header Decryption** with `header_key_recv`
-2. **Message Decryption** with derived message key from chain KDF
-3. **Ratchet State Update** for next message
+**phE2ePubDhKey = Nothing** - App sends NO E2E public key!
 
-### Current Status
-Contact Queue decrypt works (TEST4 SUCCESS).
-Reply Queue decrypt pending - needs Double Ratchet receiver implementation.
+### 18.4 Why App Doesn't Send E2E Key
 
----
+From Haskell `newSndQueue`:
+```haskell
+newSndQueue userId connId (SMPQueueInfo ... dhPublicKey = rcvE2ePubDhKey) = do
+  (e2ePubKey, e2ePrivKey) <- generateKeyPair
+  e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey  -- Pre-computed!
+```
 
-## Session 11: Format Experiments (ALL REVERTED)
+The app:
+1. Receives our `e2e_public` from SMPQueueInfo
+2. Generates its own E2E keypair
+3. Pre-computes `e2eDhSecret = DH(our_pub, app_priv)`
+4. **Never sends its e2ePubKey to us!**
 
-Session 11 documented several **incorrect** format experiments that caused regression:
+### 18.5 The Dilemma
 
-| Experiment | Change | Result |
-|------------|--------|--------|
-| RATCHET_VERSION | 2 -> 3 | REGRESSION |
-| em_header size | 123 -> 124 | REGRESSION |
-| Maybe tag | '1' -> 0x01 | REGRESSION |
-| Version encoding | 00 02 -> 02 02 | REGRESSION |
-| DH order swap | Swapped | REGRESSION |
+| Side | Has | Needs |
+|------|-----|-------|
+| App | our_e2e_public, app_e2e_private | Can compute DH |
+| Us | our_e2e_private, ??? | Need app_e2e_public! |
 
-**All experiments were reverted via `git checkout -- main/`**
+### 18.6 Sub-Issues
 
-The only correct change was re-applying the cmNonce fix (Bug #17).
+| Sub-Issue | Description | Status |
+|-----------|-------------|--------|
+| #18a | Separate E2E Keypair implemented | DONE |
+| #18b | E2E public sent in SMPQueueInfo | DONE |
+| #18c | App sends phE2ePubDhKey = Nothing | DISCOVERED |
+| #18d | Where does app_e2e_public come from? | UNKNOWN |
+
+### 18.7 Hypotheses
+
+1. **Protocol Version:** Different E2E behavior in newer versions
+2. **Queue Mode:** QMMessaging vs QMContact might differ
+3. **X3DH Derived:** E2E key from X3DH key agreement
+4. **In AgentConfirmation:** Key might be in app's confirmation
 
 ---
 
@@ -157,7 +126,7 @@ The only correct change was re-applying the cmNonce fix (Bug #17).
 | Jan 27, 2026 | S8 | #13-#14 |
 | Jan 27, 2026 | S9 | #15-#16 |
 | Jan 28, 2026 | S10C | #17 |
-| **Jan 30, 2026** | **S11** | **#18** |
+| **Jan 30, 2026** | **S12** | **#18 (deep analysis)** |
 
 ---
 
@@ -168,13 +137,13 @@ The only correct change was re-applying the cmNonce fix (Bug #17).
 - 7x Length Prefix issues
 - 3x KDF/IV Order issues
 - 1x Byte Order issue (wolfSSL)
-- 1x Separator issue (Space vs Length)
+- 1x Separator issue
 - 1x Maybe encoding issue
 - 1x AAD construction issue
-- 1x NaCl crypto layer issue (HSalsa20)
+- 1x NaCl crypto layer issue
 - 1x Header encryption issue
 - 1x Nonce source issue (cmNonce)
-- 1x Double Ratchet receiver issue (OPEN)
+- 1x E2E keypair exchange issue (OPEN)
 ```
 
 ---
@@ -183,21 +152,13 @@ The only correct change was re-applying the cmNonce fix (Bug #17).
 
 1. **Length encoding varies by context** - always check Haskell source
 2. **Crypto libraries differ** - verify against reference implementations
-3. **Cascade effects are real** - one bug can cause multiple symptoms
-4. **A_MESSAGE != A_CRYPTO** - parsing error vs crypto error
-5. **Tail means no prefix** - last fields don't need length
-6. **Two pad() functions exist** - Lazy.hs (Int64) vs Crypto.hs (Word16)
-7. **Wire format != Crypto format** - length prefixes for serialization, not always for AAD
-8. **Haskell parser awareness** - `largeP` removes length prefix from parsed object
-9. **Python verification essential** - systematically verify all crypto operations
-10. **Community support helps** - SimpleX developers are responsive and helpful
-11. **NaCl crypto layers** - crypto_box includes HSalsa20, crypto_scalarmult does not
-12. **cmNonce != msgId** - Different nonces for different layers
-13. **If it works, don't touch it!** - Format experiments caused regression
-14. **Git is your friend** - Commit at working state, reset when needed
+3. **If it works, don't touch it!** - Session 11 regression
+4. **cmNonce != msgId** - Different nonces for different layers
+5. **Two keypairs exist** - Server DH vs E2E DH are separate!
+6. **Pre-computed secrets** - App may pre-compute and not send keys
 
 ---
 
-*Bug Tracker v5.0*  
-*Last updated: January 30, 2026 - Session 11*  
+*Bug Tracker v6.0*  
+*Last updated: January 30, 2026 - Session 12*  
 *Total bugs documented: 18 (17 fixed, 1 open)*

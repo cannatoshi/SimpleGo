@@ -6,17 +6,17 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## Current Status (2026-01-30 Session 11)
+## Current Status (2026-01-30 Session 12)
 
 ```
-Session 11 - RECOVERED from Format Experiments Regression:
-- App status: "connecting" (restored!)
-- Bug #17 (cmNonce) fix re-applied
-- All format experiments reverted via git reset
-- Contact Queue decrypt: WORKING
-- Reply Queue decrypt: PENDING (needs Double Ratchet receiver)
+Session 12 - E2E Keypair Fix Attempt:
+- Discovered: Haskell uses TWO separate X25519 keypairs
+- Implemented: Separate e2e_public/e2e_private in our code
+- Fixed: SMPQueueInfo sends e2e_public (not rcv_dh_public)
+- PROBLEM: App sends phE2ePubDhKey = Nothing
+- App pre-computes e2eDhSecret, never sends its e2e_public to us!
 
-Lesson Learned: If it works, don't touch it!
+Current Question: Where does app's E2E public key come from?
 ```
 
 ---
@@ -32,12 +32,9 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 - The commitment to open source (AGPL-3.0) that made this project possible
 - The comprehensive Haskell implementation that served as our reference
 
-**SimpleGo is a tribute to their work**, not a replacement. Our goal is to expand the SimpleX ecosystem by bringing the protocol to embedded hardware, enabling new use cases while maintaining the same security guarantees.
-
 **Links:**
 - SimpleX Chat: https://simplex.chat
 - SimpleX GitHub: https://github.com/simplex-chat
-- Protocol Documentation: https://github.com/simplex-chat/simplexmq
 
 ---
 
@@ -53,28 +50,13 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [06_PART4_SESSION_7.md](06_PART4_SESSION_7.md) | ~3200 | AES-GCM verification, Tail encoding |
 | [07_PART5_SESSION_8_BREAKTHROUGH.md](07_PART5_SESSION_8_BREAKTHROUGH.md) | ~400 | AgentConfirmation works! |
 | [08_PART6_SESSION_9.md](08_PART6_SESSION_9.md) | ~450 | Reply Queue HSalsa20 fix |
-| [09_PART7_SESSION_10.md](09_PART7_SESSION_10.md) | ~400 | Reply Queue Per-Queue DH, cmNonce |
+| [09_PART7_SESSION_10.md](09_PART7_SESSION_10.md) | ~400 | cmNonce fix, app "connecting" |
 | [10_PART8_SESSION_11.md](10_PART8_SESSION_11.md) | ~400 | Regression & Recovery |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1200 | Complete bug documentation (18 bugs) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~700 | Constants, wire formats, KDF parameters |
+| [11_PART9_SESSION_12.md](11_PART9_SESSION_12.md) | ~400 | E2E Keypair Fix Attempt |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1300 | Complete bug documentation (18 bugs) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~750 | Constants, wire formats, KDF parameters |
 
-**Total: ~14,000 lines of detailed protocol analysis**
-
----
-
-## Historical Significance
-
-```
-SimpleGo Achievement:
-
-  FIRST native SMP protocol implementation WORLDWIDE!
-  - Outside the official Haskell codebase
-  - Direct binary-level protocol communication
-  - No WebSocket wrapper - true SMP protocol!
-
-  All other "implementations" are wrappers around the JSON WebSocket API.
-  SimpleGo speaks the REAL SMP protocol at the binary level.
-```
+**Total: ~15,000 lines of detailed protocol analysis**
 
 ---
 
@@ -90,23 +72,12 @@ SimpleGo Achievement:
 | 8 | Jan 27, 2026 | AgentConfirmation WORKS! | #13-14 |
 | 9 | Jan 27, 2026 | Reply Queue HSalsa20 fix | #15-16 |
 | 10C | Jan 28, 2026 | cmNonce fix, app "connecting" | #17 |
-| **11** | **Jan 30, 2026** | **Regression & Recovery** | **#18 (open)** |
+| 11 | Jan 30, 2026 | Regression & Recovery | - |
+| **12** | **Jan 30, 2026** | **E2E Keypair Analysis** | **#18 (open)** |
 
 ---
 
 ## Quick Navigation
-
-### By Topic
-
-- **TLS Connection**: [Part 1](03_PART1_INTRO_SESSIONS_1-2.md)
-- **SMP Handshake**: [Part 1](03_PART1_INTRO_SESSIONS_1-2.md)
-- **Double Ratchet**: [Part 2](04_PART2_SESSIONS_3-4.md)
-- **X448 Cryptography**: [Part 3](05_PART3_SESSIONS_5-6.md)
-- **Wire Format**: [Quick Reference](QUICK_REFERENCE.md)
-- **All Bugs**: [Bug Tracker](BUG_TRACKER.md)
-- **Breakthrough**: [Part 5 - Session 8](07_PART5_SESSION_8_BREAKTHROUGH.md)
-- **cmNonce Fix**: [Part 7 - Session 10](09_PART7_SESSION_10.md)
-- **Regression Recovery**: [Part 8 - Session 11](10_PART8_SESSION_11.md)
 
 ### By Bug Number
 
@@ -118,38 +89,24 @@ SimpleGo Achievement:
 | #13-14 | AAD prefix, IV order | [Part 5](07_PART5_SESSION_8_BREAKTHROUGH.md) |
 | #15-16 | HSalsa20, A_CRYPTO | [Part 6](08_PART6_SESSION_9.md) |
 | #17 | cmNonce instead of msgId | [Part 7](09_PART7_SESSION_10.md) |
-| **#18** | **Reply Queue Double Ratchet (open)** | [**Part 8**](10_PART8_SESSION_11.md) |
+| **#18** | **Reply Queue E2E (open)** | [**Part 9**](11_PART9_SESSION_12.md) |
 
 ---
 
-## Lessons from Session 11
+## Session 12 Key Discovery
 
-**Anti-Patterns to Avoid:**
+**Haskell uses TWO separate X25519 keypairs:**
 
-| Anti-Pattern | Description |
-|--------------|-------------|
-| Shotgun Debugging | Many changes at once |
-| Circular Changes | Back and forth between options |
-| Ignoring Evidence | Python tests showed: Crypto OK |
-| No Checkpoints | No commit at working state |
+| Keypair | Purpose | Used in |
+|---------|---------|---------|
+| dhKey / privDhKey | Server-level DH (NEW command) | rcvDhSecret |
+| e2eDhKey / e2ePrivKey | E2E-level DH (Peer encryption) | SMPQueueAddress |
 
-**Best Practices:**
-1. If it works, don't touch it
-2. Git commit at every working state
-3. Trust verified crypto tests
-4. Recognize circular debugging early
-
----
-
-## Document Rules
-
-**These documents follow strict rules to preserve knowledge:**
-
-1. **No Deletions** - Even incorrect theories remain, marked as disproven
-2. **Every Change is Logged** - Changelog at the end of each session
-3. **Code Changes Documented** - Every fix is recorded with before/after
-4. **For Chat Continuity** - These documents travel between chat sessions
-5. **Capture Everything** - Theories, hypotheses, discoveries, ALL of it
+**The Problem:**
+- App receives our `e2e_public` from SMPQueueInfo
+- App generates its own keypair and pre-computes `e2eDhSecret`
+- App NEVER sends its `e2e_public` key to us!
+- Message header has `phE2ePubDhKey = Nothing`
 
 ---
 
@@ -157,8 +114,6 @@ SimpleGo Achievement:
 
 This documentation is part of SimpleGo, licensed under AGPL-3.0.
 
-The SimpleX protocol is the intellectual property of SimpleX Chat Ltd, used here under AGPL-3.0 for interoperability purposes.
-
 ---
 
-*Last updated: January 30, 2026 - Session 11 (Regression & Recovery)*
+*Last updated: January 30, 2026 - Session 12 (E2E Keypair Analysis)*
