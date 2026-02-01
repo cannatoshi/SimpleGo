@@ -2,25 +2,30 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-01 - Session 14 FINAL (DH SECRET VERIFIED!)**
+**Updated: 2026-02-01 - Session 15 FINAL (ROOT CAUSE FOUND!)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 14 - DH SECRET VERIFIED!
-================================
+SESSION 15 - ROOT CAUSE FOUND!
+==============================
 
-Python DH:  d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
-ESP32 DH:   d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
-Match: TRUE!
+THE PROBLEM:
+  maybe_e2e = ',' (Nothing) in Reply Queue HELLO
+  -> No e2ePubKey in message
+  -> Uses pre-computed e2eDhSecret
+  -> We need app.sndQueue.e2ePubKey
+  -> Key is in App's AgentConfirmation on Contact Queue
+  -> We don't receive that message!
 
-Bugs Fixed:
-- Wrong key (now: peer_e2e_pub from message [28-59])
-- Wrong DH function (now: crypto_scalarmult)
-
-Remaining: Decrypt still fails - offset issue?
+SOLUTION (Session 16):
+  1. Continue listening on Contact Queue after HELLO
+  2. Receive App's AgentConfirmation
+  3. Extract sndQueue.e2ePubKey
+  4. Compute e2eDhSecret
+  5. Decrypt Reply Queue messages
 ```
 
 ---
@@ -59,6 +64,33 @@ Remaining: Decrypt still fails - offset issue?
 | cmNonce | 24 | In ClientMsgEnvelope |
 | Poly1305 MAC | 16 | Authentication tag |
 | Payload AAD | **235** | NO prefix! |
+
+---
+
+## 3a. Maybe Encoding (Session 15 Discovery)
+
+### 3a.1 Maybe Tags
+
+```
+'0' (0x30) = Nothing (no value)
+'1' (0x31) = Just (value follows)
+',' (0x2C) = Nothing (alternative marker)
+```
+
+### 3a.2 Reply Queue HELLO Structure
+
+```
+[14] = '1' (0x31) = maybe_corrId = Just (corrId follows)
+[15] = ',' (0x2C) = maybe_e2e = Nothing (NO e2ePubKey!)
+```
+
+### 3a.3 When maybe_e2e = Nothing
+
+- Message has NO ephemeral e2ePubKey
+- Uses pre-computed e2eDhSecret
+- Secret was created during connection setup
+- We need `app.sndQueue.e2ePubKey` to calculate it
+- This key is in App's AgentConfirmation!
 
 ---
 
@@ -271,6 +303,49 @@ Question: Do offsets need +2 shift?
 
 ---
 
-*Quick Reference v8.0*  
-*Last updated: February 1, 2026 - Session 14 FINAL*  
-*DH Secret VERIFIED with Python!*
+## 9. Missing Key (Session 15 Root Cause)
+
+### 9.1 The Problem
+
+```
+App Side:
+  e2eDhSecret = DH(our_queue.e2e_public, app.sndQueue.e2ePrivKey)
+
+ESP32 Side (what we need):
+  dh_secret = DH(app.sndQueue.e2ePubKey, our_queue.e2e_private)
+                 ^^^^^^^^^^^^^^^^^^^^
+                 WE DON'T HAVE THIS KEY!
+```
+
+### 9.2 Where is the Key?
+
+The `app.sndQueue.e2ePubKey` is sent in:
+- **App's AgentConfirmation** (Type 'C')
+- On our **Contact Queue**
+- After we send HELLO
+
+### 9.3 Why We Don't Have It
+
+```
+✅ Step 1: INVITATION received
+✅ Step 2: AgentConfirmation sent -> OK
+✅ Step 3: HELLO sent -> OK
+❌ Step 4: App's AgentConfirmation NOT received!
+❌ Step 5: Cannot decrypt Reply Queue
+```
+
+### 9.4 Solution (Session 16)
+
+```
+1. After HELLO, continue listening on Contact Queue
+2. Receive App's AgentConfirmation
+3. Extract sndQueue.e2ePubKey
+4. Compute e2eDhSecret
+5. Decrypt Reply Queue messages
+```
+
+---
+
+*Quick Reference v9.0*  
+*Last updated: February 1, 2026 - Session 15 FINAL*  
+*Root Cause Found: Missing app.sndQueue.e2ePubKey!*

@@ -6,29 +6,27 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## Current Status (2026-02-01 Session 14 FINAL)
+## Current Status (2026-02-01 Session 15 FINAL)
 
 ```
-SESSION 14 - DH SECRET VERIFIED!
-================================
+SESSION 15 - ROOT CAUSE FOUND!
+==============================
 
-MAJOR ACHIEVEMENT:
-  Python DH:  d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
-  ESP32 DH:   d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
-  Match: TRUE!
+THE PROBLEM:
+  App's HELLO on Reply Queue has maybe_e2e = Nothing
+  -> Uses pre-computed e2eDhSecret
+  -> We need app.sndQueue.e2ePubKey to compute same secret
+  -> This key should be in App's AgentConfirmation
+  -> We don't receive this message on Contact Queue!
 
-What was fixed:
-- Bug 1: Wrong key used (peer_e2e_pub from message, not INVITATION)
-- Bug 2: Wrong DH function (crypto_scalarmult, not crypto_box_beforenm)
-- Handoff theory DISPROVEN (no 2nd message on Contact Queue)
-- Correct message flow documented from Haskell source
+SOLUTION (Session 16):
+  After sending HELLO, continue listening on Contact Queue
+  Receive App's AgentConfirmation
+  Extract sndQueue.e2ePubKey
+  Compute e2eDhSecret = DH(app.e2ePubKey, our.e2e_private)
+  Use this secret to decrypt Reply Queue messages
 
-What still fails:
-- Per-queue E2E decrypt (ret=-1)
-- Remaining problem: Offset issue?
-
-Bug #18: Reply Queue E2E - DH SECRET VERIFIED, decrypt still fails
-Next: Session 15 - Offset verification
+Bug #18: ROOT CAUSE IDENTIFIED - Fix in Session 16
 ```
 
 ---
@@ -66,11 +64,12 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [10_PART8_SESSION_11.md](10_PART8_SESSION_11.md) | ~400 | Regression & Recovery |
 | [11_PART9_SESSION_12.md](11_PART9_SESSION_12.md) | ~400 | E2E Keypair Fix Attempt |
 | [12_PART10_SESSION_13.md](12_PART10_SESSION_13.md) | ~700 | E2E Crypto Deep Analysis |
-| [13_PART11_SESSION_14.md](13_PART11_SESSION_14.md) | ~900 | **DH SECRET VERIFIED!** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~800 | Complete bug documentation (18 bugs) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~400 | Constants, wire formats, verified values |
+| [13_PART11_SESSION_14.md](13_PART11_SESSION_14.md) | ~900 | DH SECRET VERIFIED! |
+| [14_PART12_SESSION_15.md](14_PART12_SESSION_15.md) | ~650 | **ROOT CAUSE FOUND!** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~850 | Complete bug documentation (18 bugs) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~450 | Constants, wire formats, verified values |
 
-**Total: ~17,000+ lines of detailed protocol analysis**
+**Total: ~18,000+ lines of detailed protocol analysis**
 
 ---
 
@@ -89,7 +88,44 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | 11 | Jan 30, 2026 | Regression & Recovery | - |
 | 12 | Jan 30, 2026 | E2E Keypair Analysis | - |
 | 13 | Jan 30, 2026 | E2E Crypto Deep Analysis | - |
-| **14** | **Jan 31 - Feb 1** | **DH SECRET VERIFIED!** | **#18 (partial)** |
+| 14 | Jan 31 - Feb 1 | DH SECRET VERIFIED! | #18 (partial) |
+| **15** | **Feb 1** | **ROOT CAUSE FOUND!** | **#18 (root cause)** |
+
+---
+
+## Session 15 Key Achievements
+
+### 1. ROOT CAUSE Identified!
+
+```
+maybe_e2e = ',' (Nothing) in message header
+  -> No ephemeral e2ePubKey in message
+  -> Uses pre-computed e2eDhSecret
+  -> Need app.sndQueue.e2ePubKey to calculate it
+  -> Key is in App's AgentConfirmation
+  -> We don't receive that message!
+```
+
+### 2. Protocol Flow Analyzed
+
+```
+✅ Step 1: INVITATION received
+✅ Step 2: AgentConfirmation sent -> OK
+✅ Step 3: HELLO sent -> OK
+❌ Step 4: App's AgentConfirmation NOT received!
+❌ Step 5: Cannot decrypt Reply Queue (missing key)
+```
+
+### 3. All Available Keys Tested
+
+| Key Source | Result |
+|------------|--------|
+| URL dh= key | FAILED |
+| Message corrId | FAILED |
+| All offsets 48-80 | FAILED |
+| X25519 search | 0 found |
+
+**Conclusion:** The needed key is NOT in data we have.
 
 ---
 
@@ -145,7 +181,7 @@ NO second message on Contact Queue!
 | #13-14 | AAD prefix, IV order | [Part 5](07_PART5_SESSION_8_BREAKTHROUGH.md) |
 | #15-16 | HSalsa20, A_CRYPTO | [Part 6](08_PART6_SESSION_9.md) |
 | #17 | cmNonce instead of msgId | [Part 7](09_PART7_SESSION_10.md) |
-| **#18** | **Reply Queue E2E** | [**Part 11**](13_PART11_SESSION_14.md) |
+| **#18** | **Reply Queue E2E** | [**Part 12**](14_PART12_SESSION_15.md) |
 
 ---
 
@@ -155,4 +191,4 @@ This documentation is part of SimpleGo, licensed under AGPL-3.0.
 
 ---
 
-*Last updated: February 1, 2026 - Session 14 FINAL (DH Secret Verified!)*
+*Last updated: February 1, 2026 - Session 15 FINAL (Root Cause Found!)*

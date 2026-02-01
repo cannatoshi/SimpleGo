@@ -533,12 +533,12 @@ App status: "connecting"
 
 ---
 
-## Bug #18: Reply Queue E2E Decryption (IN PROGRESS)
+## Bug #18: Reply Queue E2E Decryption (ROOT CAUSE FOUND)
 
-**Sessions:** 12, 13, 14  
+**Sessions:** 12, 13, 14, 15  
 **Component:** Reply Queue Per-Queue E2E Layer  
 **Impact:** Cannot decrypt Reply Queue messages from app  
-**Status:** IN PROGRESS - DH SECRET VERIFIED! Decrypt still fails (offset issue?)
+**Status:** ROOT CAUSE FOUND - Missing app.sndQueue.e2ePubKey
 
 ### 18.1 Session 12 Discoveries
 
@@ -672,7 +672,67 @@ ESP32 DH:   d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
 Match: TRUE!
 ```
 
-### 18.4 All Crypto Tests (Session 13)
+### 18.5 Session 15 - ROOT CAUSE FOUND!
+
+#### 18.5.1 Critical Discovery: `maybe_e2e = ','` (Nothing)
+
+The Reply Queue HELLO message has:
+```
+[14] = '1' (0x31) = maybe_corrId = Just
+[15] = ',' (0x2C) = maybe_e2e = Nothing  <- CRITICAL!
+```
+
+When `maybe_e2e = Nothing`:
+- **NO ephemeral e2ePubKey** in the message
+- Message uses **pre-computed e2eDhSecret**
+- We need `app.sndQueue.e2ePubKey` to calculate same secret
+- This key is NOT in the message!
+
+#### 18.5.2 The Missing Key
+
+**App side calculates:**
+```
+e2eDhSecret = DH(our_queue.e2e_public, app.sndQueue.e2ePrivKey)
+```
+
+**ESP32 needs:**
+```
+dh_secret = DH(app.sndQueue.e2ePubKey, our_queue.e2e_private)
+            ^^^^^^^^^^^^^^^^^^^^
+            WE DON'T HAVE THIS KEY!
+```
+
+#### 18.5.3 Where is the Key?
+
+According to SimpleX protocol, `sndQueue.e2ePubKey` is sent in:
+- **App's AgentConfirmation** (Type 'C')
+- Arrives on our **Contact Queue**
+- As response to our connection request
+
+**PROBLEM:** We don't receive this message!
+
+#### 18.5.4 Protocol Flow Issue
+
+```
+✅ Step 1: INVITATION received on Contact Queue
+✅ Step 2: AgentConfirmation sent -> Server: "OK"
+✅ Step 3: HELLO sent -> Server: "OK"
+❌ Step 4: App's AgentConfirmation NOT received!
+❌ Step 5: App's HELLO received, cannot decrypt
+```
+
+#### 18.5.5 Tests Performed (All Failed)
+
+| Test | Key Source | DH Result | Decrypt |
+|------|------------|-----------|---------|
+| 1 | URL dh= key | 685e7514... | FAILED |
+| 2 | Message corrId | 3863509c... | FAILED |
+| 3 | Offsets 48-80 | Various | All FAILED |
+| 4 | X25519 search | 0 found | N/A |
+
+**Conclusion:** The needed key is NOT in the data we have.
+
+### 18.6 All Crypto Tests (Session 13)
 
 | Test | Method | MAC | Private Key | Result |
 |------|--------|-----|-------------|--------|
@@ -719,7 +779,7 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 3. App **first** message: `e2ePubKey = Just` (sendConfirmation)
 4. App **subsequent** messages: `e2ePubKey = Nothing` (sendAgentMessage)
 
-### 18.8 Sub-Issues Status (Updated Session 14)
+### 18.9 Sub-Issues Status (Updated Session 15)
 
 | Sub-Issue | Description | Status |
 |-----------|-------------|--------|
@@ -730,19 +790,45 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 | #18e | MAC position difference identified | DONE |
 | #18f | 5 crypto approaches tested (S13) | DONE - All fail |
 | #18g | SMPConfirmation contains e2ePubKey | FOUND |
-| **#18h** | **Handoff theory DISPROVEN** | **DONE (S14)** |
-| **#18i** | **Wrong key bug fixed** | **DONE (S14)** |
-| **#18j** | **Wrong DH function fixed** | **DONE (S14)** |
-| **#18k** | **DH SECRET VERIFIED with Python!** | **DONE (S14)** |
-| #18l | Offset verification needed | TODO (S15) |
-| #18m | Full decrypt test with complete ciphertext | TODO (S15) |
+| #18h | Handoff theory DISPROVEN (S14) | DONE |
+| #18i | Wrong key bug fixed (S14) | DONE |
+| #18j | Wrong DH function fixed (S14) | DONE |
+| #18k | DH SECRET VERIFIED with Python! (S14) | DONE |
+| **#18l** | **maybe_e2e = Nothing discovered (S15)** | **DONE** |
+| **#18m** | **Pre-computed secret required (S15)** | **DONE** |
+| **#18n** | **Missing App's AgentConfirmation (S15)** | **FOUND** |
+| **#18o** | **app.sndQueue.e2ePubKey identified (S15)** | **FOUND** |
+| **#18p** | **ROOT CAUSE IDENTIFIED (S15)** | **DONE** |
+| #18q | Receive 2nd Contact Queue message | TODO (S16) |
+| #18r | Extract e2ePubKey from Confirmation | TODO (S16) |
+| #18s | Compute e2eDhSecret | TODO (S16) |
+| #18t | Decrypt Reply Queue messages | TODO (S16) |
 
-### 18.9 Remaining Hypotheses (Session 15)
+### 18.10 Solution (Session 16)
 
-1. **H1:** Offset needs +2 shift (Length Prefix handling)
-2. **H2:** SPKI length byte [15] interpretation
-3. **H3:** libsodium parameter order issue
-4. **H4:** Need full ciphertext (16006 bytes) for Python test
+```
+1. After HELLO sent, continue listening on Contact Queue
+2. Receive App's AgentConfirmation (Type 'C')
+3. Extract sndQueue.e2ePubKey from Confirmation
+4. Compute: e2eDhSecret = DH(app.e2ePubKey, our.e2e_private)
+5. Store e2eDhSecret for Reply Queue decryption
+6. Decrypt incoming HELLO with pre-computed secret
+```
+
+### 18.11 Open Questions (Session 16)
+
+1. Why doesn't second message arrive on Contact Queue?
+   - Timing issue? (we stop listening too early)
+   - Wrong subscribe status?
+   - App waiting for something else?
+
+2. Where exactly is `sndQueue.e2ePubKey` in AgentConfirmation?
+   - SMPQueueInfo format?
+   - SPKI or raw key?
+
+3. Protocol sequence verification needed
+   - Check agent-protocol.md
+   - Analyze Haskell smpConfirmation function
 
 ### 18.9 Android vs Desktop Difference
 
@@ -768,7 +854,8 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 | Jan 27, 2026 | S9 | #15-#16 |
 | Jan 28, 2026 | S10C | #17 |
 | Jan 30, 2026 | S12-S13 | #18 (deep analysis) |
-| **Jan 31-Feb 1** | **S14** | **#18 DH SECRET VERIFIED!** |
+| Jan 31-Feb 1 | S14 | #18 DH SECRET VERIFIED! |
+| **Feb 1** | **S15** | **#18 ROOT CAUSE FOUND!** |
 
 ---
 
@@ -813,9 +900,13 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 19. **Verify theories against source code** - Handoff document was WRONG! (Session 14)
 20. **crypto_scalarmult vs crypto_box_beforenm** - Use raw DH, not derived key! (Session 14)
 21. **Python verification is proof** - DH Secret match proves crypto basis correct! (Session 14)
+22. **maybe_e2e = Nothing means pre-computed** - No key in message, use stored secret! (Session 15)
+23. **Two key types in protocol** - dh= for SMP, sndQueue.e2ePubKey for E2E (Session 15)
+24. **Missing message = missing key** - App's AgentConfirmation has the e2ePubKey! (Session 15)
+25. **Protocol flow analysis essential** - Must understand full message sequence! (Session 15)
 
 ---
 
-*Bug Tracker v9.0*  
-*Last updated: February 1, 2026 - Session 14 FINAL*  
-*Total bugs documented: 18 (17 fixed, 1 in progress - DH verified!)*
+*Bug Tracker v10.0*  
+*Last updated: February 1, 2026 - Session 15 FINAL*  
+*Total bugs documented: 18 (17 fixed, 1 root cause found - fix in S16)*
