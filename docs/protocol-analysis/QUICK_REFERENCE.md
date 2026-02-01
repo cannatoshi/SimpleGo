@@ -1,21 +1,26 @@
 # Quick Reference
 
-## Constants, Wire Formats, Crypto Differences
+## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-01-30 - Session 13 (E2E Crypto Deep Analysis)**
+**Updated: 2026-02-01 - Session 14 FINAL (DH SECRET VERIFIED!)**
 
 ---
 
 ## Current Status
 
 ```
-Session 13 - E2E Crypto Deep Analysis:
-- Fixed: Message parsing with correct offsets
-- Discovered: HSalsa20 difference (Haskell vs libsodium)
-- Discovered: MAC position [MAC][Cipher] vs [Cipher][MAC]
-- Tested: 5 crypto approaches - ALL FAILED
-- Found: SMPConfirmation contains e2ePubKey
-- Next: Parse SMPConfirmation for App's key
+SESSION 14 - DH SECRET VERIFIED!
+================================
+
+Python DH:  d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
+ESP32 DH:   d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
+Match: TRUE!
+
+Bugs Fixed:
+- Wrong key (now: peer_e2e_pub from message [28-59])
+- Wrong DH function (now: crypto_scalarmult)
+
+Remaining: Decrypt still fails - offset issue?
 ```
 
 ---
@@ -25,11 +30,10 @@ Session 13 - E2E Crypto Deep Analysis:
 1. [Version Numbers](#1-version-numbers)
 2. [Size Constants](#2-size-constants)
 3. [Message Structure (Verified)](#3-message-structure-verified)
-4. [HSalsa20 Difference](#4-hsalsa20-difference)
-5. [MAC Position Difference](#5-mac-position-difference)
-6. [Crypto Tests Summary](#6-crypto-tests-summary)
-7. [e2ePubKey Flow](#7-e2epubkey-flow)
-8. [Working Code State](#8-working-code-state)
+4. [Verified Test Data (Session 14)](#4-verified-test-data-session-14)
+5. [Crypto Functions](#5-crypto-functions)
+6. [Working Code State](#6-working-code-state)
+7. [Message Flow](#7-message-flow)
 
 ---
 
@@ -58,202 +62,121 @@ Session 13 - E2E Crypto Deep Analysis:
 
 ---
 
-## 3. Message Structure (Verified Session 13)
+## 3. Message Structure (Verified Session 14)
 
-### 3.1 ClientRcvMsgBody (after Server-decrypt)
-
-```
-=== Full Layout ===
-[0-1]    Length prefix (Word16 BE, e.g. 0x3e82 = 16002)
-[2-9]    msgTs (SystemTime = Int64 BE, 8 bytes)
-[10]     msgFlags (1 byte)
-[11]     Space ' ' (0x20)
-
-=== ClientMsgEnvelope starts at offset 12 ===
-[12-13]  phVersion (Word16 BE, e.g. 00 04 = v4)
-[14]     phE2ePubDhKey Maybe tag:
-         - '1' (0x31) = Just (key present!)
-         - '0' (0x30) = Nothing
-         - ',' (0x2c) = Nothing (alternative)
-```
-
-### 3.2 When Maybe = '1' (Just)
+### 3.1 Reply Queue After Server-Decrypt
 
 ```
-[15]     SPKI length = 44 (0x2c)
-[16-59]  X25519 SPKI (44 bytes)
-  [16-27]  SPKI header: 30 2a 30 05 06 03 2b 65 6e 03 21 00
-  [28-59]  Raw X25519 key (32 bytes) <- E2E PUBLIC KEY!
-[60-83]  cmNonce (24 bytes)
-[84+]    cmEncBody (encrypted data)
+Offset  Bytes                              Meaning
+------  -----                              -------
+[0-1]   3e 82                              Length prefix: 16002
+[2-9]   00 00 00 00 69 7e 97 10            Padding/Timestamp
+[10-13] 54 20 00 04                        PubHeader: Version, Flags
+[14]    31 ('1')                           Maybe tag = Just (key present!)
+[15]    2c (44)                            SPKI Length
+[16-27] 30 2a 30 05 06 03 2b 65 6e 03 21 00  X25519 SPKI Header
+[28-59] 91 40 e1 0e ...                    Peer's E2E public key (32 bytes)
+[60-83] b2 1f a2 bc ...                    cmNonce (24 bytes)
+[84-99] cc 3e ec 54 ...                    MAC (16 bytes)
+[100+]  5b f2 2e fa ...                    Ciphertext
 ```
 
-### 3.3 Log Verification
+### 3.2 Key Extraction
 
+```c
+// Peer's E2E public key at offset 28
+uint8_t peer_e2e_pub[32];
+memcpy(peer_e2e_pub, &server_plain[28], 32);
+
+// Nonce at offset 60
+uint8_t cm_nonce[24];
+memcpy(cm_nonce, &server_plain[60], 24);
+
+// MAC at offset 84
+const uint8_t *mac = &server_plain[84];
+
+// Ciphertext at offset 100
+const uint8_t *ciphertext = &server_plain[100];
 ```
-3e 82 00 00 00 00 69 7c e2 58 54 20 00 04 31 2c
-^len  ^----msgTs (8 bytes)---- ^flg^sp^ver ^1 ^44
-
-30 2a 30 05 06 03 2b 65 6e 03 21 00 42 60 ec a8
-^-------SPKI header (12 bytes)------^--raw key--
-```
-
-All offsets verified correct!
 
 ---
 
-## 4. HSalsa20 Difference (Critical!)
+## 4. Verified Test Data (Session 14)
 
-### 4.1 The Problem
+### 4.1 Keys (VERIFIED MATCH!)
 
-| Step | Haskell | libsodium |
-|------|---------|-----------|
-| 1 | DH(pub, priv) -> secret | DH(pub, priv) -> secret |
-| 2 | XSalsa20(secret, nonce) | **HSalsa20(secret)** -> key |
-| 3 | - | XSalsa20(key, nonce) |
+```python
+# Our E2E private key
+our_e2e_private = "83473153de033039edec9c5db7591cacfa42b6dd89a0618a00806732d01a96fa"
 
-**libsodium adds an EXTRA HSalsa20 step!**
+# Peer's E2E public key (from message header)
+peer_e2e_pub = "9140e10e9fdee92ebb801ae8694435b5e9f06c4e0077dfa98d39b0f1bf0c0300"
 
-### 4.2 Haskell Implementation
-
-```haskell
-cryptoBox secret nonce s = BA.convert tag <> c
-  where
-    (rs, c) = xSalsa20 secret nonce s  -- DH secret DIRECT!
-    tag = Poly1305.auth rs c
+# DH Secret (VERIFIED - Python matches ESP32!)
+dh_secret = "d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810"
 ```
 
-### 4.3 libsodium Implementation
+### 4.2 Nonce and MAC (VERIFIED)
+
+```python
+# cmNonce (24 bytes)
+cm_nonce = "b21fa2bc0dbb5cb02d674dedfd65b0e6ff0fcf793791fd3b"
+
+# MAC (16 bytes)
+mac = "cc3eec548b0440cf0222466a79a00c0c"
+
+# Ciphertext length
+ciphertext_len = 16006
+```
+
+---
+
+## 5. Crypto Functions
+
+### 5.1 DH Calculation (CORRECT)
 
 ```c
-// crypto_box_beforenm applies HSalsa20!
-crypto_box_beforenm(k, peer_pub, our_priv);  // k = HSalsa20(DH)
-crypto_box_open_easy_afternm(..., k);         // Then XSalsa20
-```
-
-### 4.4 Double HSalsa20 Problem
-
-**Haskell (Correct):**
-```
-1. subkey = HSalsa20(dh_secret, nonce[0:16])
-2. Salsa20(subkey, nonce[16:24])
-```
-
-**libsodium with _beforenm (Wrong):**
-```
-1. k = HSalsa20(dh_secret, ZERO)        <- Extra!
-2. subkey = HSalsa20(k, nonce[0:16])
-3. Salsa20(subkey, nonce[16:24])
-```
-
-### 4.5 Solution Attempt
-
-Use raw DH without HSalsa20:
-```c
+// Use crypto_scalarmult for raw DH (NOT crypto_box_beforenm!)
 uint8_t dh_secret[32];
-crypto_scalarmult(dh_secret, our_priv, peer_pub);  // Raw DH
-crypto_secretbox_open_easy(plain, cipher, len, nonce, dh_secret);
+crypto_scalarmult(dh_secret, our_queue.e2e_private, peer_e2e_pub);
 ```
 
-**Result:** Still failed - other issues present.
+**Why NOT crypto_box_beforenm?**
+- `crypto_box_beforenm` applies HSalsa20 key derivation
+- Haskell uses raw DH output directly
+- `crypto_scalarmult` gives raw DH output
 
----
-
-## 5. MAC Position Difference (Critical!)
-
-### 5.1 Haskell cbDecrypt
-
-```haskell
-sbDecryptNoPad_ secret nonce packet
-  where
-    (tag', c) = B.splitAt 16 packet  -- TAG FIRST!
-```
-
-### 5.2 Format Comparison
-
-| Format | Layout |
-|--------|--------|
-| **Haskell** | `[MAC 16 bytes][Ciphertext]` |
-| **libsodium** | `[Ciphertext][MAC 16 bytes]` |
-
-### 5.3 Reordering Code
+### 5.2 Decrypt (Current Implementation)
 
 ```c
-// Haskell: [MAC][Cipher] -> libsodium: [Cipher][MAC]
-uint8_t *reordered = malloc(enc_len);
-memcpy(reordered, &cipher[16], enc_len - 16);    // Cipher first
-memcpy(&reordered[enc_len - 16], cipher, 16);    // MAC last
-crypto_secretbox_open_easy(plain, reordered, enc_len, nonce, key);
+// Haskell format: [MAC 16][Ciphertext]
+const uint8_t *mac = &server_plain[84];
+const uint8_t *ciphertext = &server_plain[100];
+
+int ret = crypto_secretbox_open_detached(
+    plain,          // output
+    ciphertext,     // input (after MAC)
+    mac,            // MAC (first 16 bytes)
+    ciphertext_len, // only ciphertext length
+    cm_nonce,       // 24 bytes
+    dh_secret       // raw DH output
+);
 ```
 
-**Result:** Still failed - other issues present.
+### 5.3 Haskell vs libsodium
+
+| Aspect | Haskell | libsodium | Match? |
+|--------|---------|-----------|--------|
+| Algorithm | XSalsa20-Poly1305 | crypto_secretbox | YES |
+| Key | Raw DH (32 bytes) | Raw DH | YES |
+| DH Function | X25519.dh | crypto_scalarmult | YES |
+| Format | [MAC][Cipher] | detached | YES |
 
 ---
 
-## 6. Crypto Tests Summary (Session 13)
+## 6. Working Code State
 
-### 6.1 All Tests
-
-| # | Method | MAC | Key | Result |
-|---|--------|-----|-----|--------|
-| 1 | crypto_box_open_easy | Auto | e2e_private | FAILED |
-| 2 | crypto_box_open_easy | Auto | rcv_dh_private | FAILED |
-| 3 | crypto_secretbox_open_easy | Direct | e2e_private | FAILED |
-| 4 | crypto_secretbox_open_easy | Reordered | e2e_private | FAILED |
-| 5 | crypto_secretbox_open_detached | Separate | e2e_private | FAILED |
-
-### 6.2 Test Data (from logs)
-
-```
-e2ePubKey:     88159398... (from [28-59])
-our_e2e_priv:  f3944334... (verified)
-cmNonce:       59c05b9e... (24 bytes)
-DH secret:     dea3d892...
-MAC:           143b0d95... (16 bytes)
-Ciphertext:    16006 bytes
-```
-
----
-
-## 7. e2ePubKey Flow
-
-### 7.1 SMPConfirmation Contains Key!
-
-```haskell
-data SMPConfirmation = SMPConfirmation
-  { senderKey :: Maybe SndPublicAuthKey,
-    e2ePubKey :: C.PublicKeyX25519,      -- THE KEY!
-    connInfo :: ConnInfo,
-    smpReplyQueues :: [SMPQueueInfo],
-    smpClientVersion :: VersionSMPC
-  }
-```
-
-### 7.2 App's Key Generation
-
-```haskell
-newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
-  (e2ePubKey, e2ePrivKey) <- generateKeyPair
-  let sq = SndQueue
-        { e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,
-          e2ePubKey = Just e2ePubKey,
-        }
-```
-
-### 7.3 Key Transmission
-
-| Message # | e2ePubKey | Meaning |
-|-----------|-----------|---------|
-| First (Confirmation) | Just key | Key in header |
-| Subsequent | Nothing | Pre-computed secret |
-
-**Problem:** Reply Queue uses subsequent message format!
-
----
-
-## 8. Working Code State
-
-### 8.1 smp_ratchet.c (DO NOT CHANGE!)
+### 6.1 smp_ratchet.c (DO NOT CHANGE!)
 
 ```c
 #define RATCHET_VERSION         2
@@ -262,7 +185,7 @@ em_header[hp++] = 0x58;         // ehBody-len = 88 (1 BYTE!)
 output[p++] = 0x7B;             // emHeader len = 123
 ```
 
-### 8.2 smp_queue.h (Session 12)
+### 6.2 smp_queue.h
 
 ```c
 typedef struct {
@@ -277,45 +200,77 @@ typedef struct {
 } our_queue_t;
 ```
 
-### 8.3 Correct Parsing (Session 13)
+---
 
-```c
-// After server-decrypt, ClientMsgEnvelope at offset 12
-int offset = 14;
-uint8_t maybe_e2e = plain[offset];  // '1' = Just
+## 7. Message Flow (VERIFIED Session 14)
 
-if (maybe_e2e == '1') {
-    // SPKI at offset 16-59 (44 bytes)
-    // Raw key at offset 28-59 (32 bytes)
-    memcpy(peer_e2e_public, &plain[28], 32);
-    
-    // Nonce at offset 60-83 (24 bytes)
-    memcpy(cm_nonce, &plain[60], 24);
-    
-    // Encrypted body at offset 84+
-    int enc_len = total_len - 84;
-}
+### 7.1 Correct Flow (from Haskell Source)
+
+```
+Contact Queue: 1 message
+  - INVITATION (Type 'I')
+
+Reply Queue: 1 message
+  - HELLO (AgentMsgEnvelope)
+
+NO SECOND MESSAGE ON CONTACT QUEUE!
 ```
 
----
+### 7.2 Handoff Theory Was WRONG
 
-## 9. Open Questions
-
-1. **Is key at [28-59] really e2ePubKey or corrId?**
-2. **Do we need to parse SMPConfirmation first?**
-3. **When maybe_e2e = ',' - is it direct Double Ratchet?**
-4. **Why do Android and Desktop apps behave differently?**
-
----
-
-## 10. Next Steps
-
-1. Parse SMPConfirmation to extract App's e2ePubKey
-2. Try Double Ratchet receiver (skip per-queue E2E)
-3. Python verification with exact log values
-4. Analyze Android parsing failure
+| Handoff Document | Reality |
+|------------------|---------|
+| 2 MSGs on Contact Queue | FALSE |
+| PHConfirmation has key | FALSE |
+| HELLO on Reply Queue | TRUE |
 
 ---
 
-*Quick Reference v7.0*  
-*Last updated: January 30, 2026 - Session 13*
+## 8. Open Questions (Session 15)
+
+### 8.1 Offset Problem?
+
+```
+server_plain[0-1] = 3e 82 (Length Prefix)
+
+Question: Do offsets need +2 shift?
+- peer_e2e_pub: [28-59] or [30-61]?
+- cm_nonce: [60-83] or [62-85]?
+- MAC: [84-99] or [86-101]?
+```
+
+### 8.2 To Verify
+
+1. Add debug output for raw offsets
+2. Export full ciphertext (16006 bytes) for Python test
+3. Check libsodium parameter order
+
+---
+
+## 9. Important Source Locations
+
+### 9.1 Haskell
+
+| Function | File | Lines |
+|----------|------|-------|
+| agentCbEncrypt | Agent/Client.hs | 1925-1933 |
+| cryptoBox | Crypto.hs | 1295-1298 |
+| xSalsa20 | Crypto.hs | 1449-1456 |
+| sbDecryptNoPad_ | Crypto.hs | 1325-1333 |
+| e2eDhSecret | Agent.hs | 3379 |
+| ICDuplexSecure | Agent.hs | 1549-1551 |
+
+### 9.2 SimpleGo
+
+| Function | File |
+|----------|------|
+| E2E Decrypt | main.c:780-850 |
+| Queue Create | smp_queue.c:210 |
+| Queue Encode | smp_queue.c:455 |
+| Peer Connect | smp_peer.c:50 |
+
+---
+
+*Quick Reference v8.0*  
+*Last updated: February 1, 2026 - Session 14 FINAL*  
+*DH Secret VERIFIED with Python!*

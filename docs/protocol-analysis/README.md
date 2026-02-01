@@ -6,19 +6,29 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## Current Status (2026-01-30 Session 13)
+## Current Status (2026-02-01 Session 14 FINAL)
 
 ```
-Session 13 - E2E Crypto Deep Analysis:
-- Fixed: Message parsing with correct offsets
-- Discovered: HSalsa20 difference (Haskell vs libsodium)
-- Discovered: MAC position [MAC][Cipher] vs [Cipher][MAC]
-- Tested: 5 different crypto approaches - ALL FAILED
-- Found: SMPConfirmation contains e2ePubKey
-- Observed: Android vs Desktop apps behave differently
+SESSION 14 - DH SECRET VERIFIED!
+================================
 
-Bug #18: Reply Queue E2E - Still failing, root cause investigation continues
-Next: Parse SMPConfirmation to extract App's e2ePubKey
+MAJOR ACHIEVEMENT:
+  Python DH:  d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
+  ESP32 DH:   d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
+  Match: TRUE!
+
+What was fixed:
+- Bug 1: Wrong key used (peer_e2e_pub from message, not INVITATION)
+- Bug 2: Wrong DH function (crypto_scalarmult, not crypto_box_beforenm)
+- Handoff theory DISPROVEN (no 2nd message on Contact Queue)
+- Correct message flow documented from Haskell source
+
+What still fails:
+- Per-queue E2E decrypt (ret=-1)
+- Remaining problem: Offset issue?
+
+Bug #18: Reply Queue E2E - DH SECRET VERIFIED, decrypt still fails
+Next: Session 15 - Offset verification
 ```
 
 ---
@@ -56,10 +66,11 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [10_PART8_SESSION_11.md](10_PART8_SESSION_11.md) | ~400 | Regression & Recovery |
 | [11_PART9_SESSION_12.md](11_PART9_SESSION_12.md) | ~400 | E2E Keypair Fix Attempt |
 | [12_PART10_SESSION_13.md](12_PART10_SESSION_13.md) | ~700 | E2E Crypto Deep Analysis |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1500 | Complete bug documentation (18 bugs) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~900 | Constants, wire formats, crypto differences |
+| [13_PART11_SESSION_14.md](13_PART11_SESSION_14.md) | ~900 | **DH SECRET VERIFIED!** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~800 | Complete bug documentation (18 bugs) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~400 | Constants, wire formats, verified values |
 
-**Total: ~16,000 lines of detailed protocol analysis**
+**Total: ~17,000+ lines of detailed protocol analysis**
 
 ---
 
@@ -77,47 +88,48 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | 10C | Jan 28, 2026 | cmNonce fix, app "connecting" | #17 |
 | 11 | Jan 30, 2026 | Regression & Recovery | - |
 | 12 | Jan 30, 2026 | E2E Keypair Analysis | - |
-| **13** | **Jan 30, 2026** | **E2E Crypto Deep Analysis** | **#18 (open)** |
+| 13 | Jan 30, 2026 | E2E Crypto Deep Analysis | - |
+| **14** | **Jan 31 - Feb 1** | **DH SECRET VERIFIED!** | **#18 (partial)** |
 
 ---
 
-## Session 13 Key Discoveries
+## Session 14 Key Achievements
 
-### 1. HSalsa20 Difference
+### 1. DH Secret VERIFIED with Python!
 
-| Step | Haskell | libsodium |
-|------|---------|-----------|
-| 1 | DH(pub, priv) -> secret | DH(pub, priv) -> secret |
-| 2 | XSalsa20(secret, nonce, msg) | **HSalsa20(secret)** -> key |
-| 3 | - | XSalsa20(key, nonce, msg) |
+```python
+from nacl.bindings import crypto_scalarmult
 
-**libsodium has an EXTRA HSalsa20 step!**
+our_private = bytes.fromhex('83473153de033039...')
+peer_public = bytes.fromhex('9140e10e9fdee92e...')
 
-### 2. MAC Position Difference
-
-| Format | Layout |
-|--------|--------|
-| **Haskell** | `[MAC 16 bytes][Ciphertext]` |
-| **libsodium** | `[Ciphertext][MAC 16 bytes]` |
-
-### 3. Correct Message Structure
-
-```
-[12-13]  phVersion (00 04)
-[14]     Maybe tag: '1' = Just (key present!)
-[15]     SPKI length = 44 (0x2c)
-[16-59]  X25519 SPKI (44 bytes)
-[60-83]  cmNonce (24 bytes)
-[84+]    cmEncBody
+dh_secret = crypto_scalarmult(our_private, peer_public)
+# Result: d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
+# MATCHES ESP32!
 ```
 
-### 4. All 5 Crypto Tests Failed
+### 2. Bugs Fixed
 
-1. crypto_box_open_easy + e2e_private
-2. crypto_box_open_easy + rcv_dh_private  
-3. crypto_secretbox_open_easy (direct)
-4. crypto_secretbox_open_easy (MAC reordered)
-5. crypto_secretbox_open_detached (MAC separate)
+| Bug | Problem | Fix |
+|-----|---------|-----|
+| Wrong Key | Used SMP DH key from INVITATION | Extract e2ePubKey from message header [28-59] |
+| Wrong DH Function | crypto_box_beforenm (adds HSalsa20) | crypto_scalarmult (raw DH) |
+
+### 3. Handoff Theory DISPROVEN
+
+| Statement | Handoff Document | Reality (Source Code) |
+|-----------|------------------|----------------------|
+| 2 MSGs on Contact Queue | Claimed | FALSE |
+| HELLO on Reply Queue | Not mentioned | TRUE (confirmed) |
+| E2E Key in PHConfirmation | Claimed | FALSE |
+
+### 4. Correct Message Flow Documented
+
+```
+Contact Queue: 1 message (INVITATION)
+Reply Queue: 1 message (HELLO)
+NO second message on Contact Queue!
+```
 
 ---
 
@@ -133,7 +145,7 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | #13-14 | AAD prefix, IV order | [Part 5](07_PART5_SESSION_8_BREAKTHROUGH.md) |
 | #15-16 | HSalsa20, A_CRYPTO | [Part 6](08_PART6_SESSION_9.md) |
 | #17 | cmNonce instead of msgId | [Part 7](09_PART7_SESSION_10.md) |
-| **#18** | **Reply Queue E2E (open)** | [**Part 10**](12_PART10_SESSION_13.md) |
+| **#18** | **Reply Queue E2E** | [**Part 11**](13_PART11_SESSION_14.md) |
 
 ---
 
@@ -143,4 +155,4 @@ This documentation is part of SimpleGo, licensed under AGPL-3.0.
 
 ---
 
-*Last updated: January 30, 2026 - Session 13 (E2E Crypto Deep Analysis)*
+*Last updated: February 1, 2026 - Session 14 FINAL (DH Secret Verified!)*

@@ -533,12 +533,12 @@ App status: "connecting"
 
 ---
 
-## Bug #18: Reply Queue E2E Decryption (OPEN)
+## Bug #18: Reply Queue E2E Decryption (IN PROGRESS)
 
-**Sessions:** 12, 13  
+**Sessions:** 12, 13, 14  
 **Component:** Reply Queue Per-Queue E2E Layer  
 **Impact:** Cannot decrypt Reply Queue messages from app  
-**Status:** OPEN - Extensive analysis, multiple approaches tested
+**Status:** IN PROGRESS - DH SECRET VERIFIED! Decrypt still fails (offset issue?)
 
 ### 18.1 Session 12 Discoveries
 
@@ -614,7 +614,65 @@ crypto_box_open_easy_afternm(..., k);
 | **Haskell** | `[MAC 16 bytes][Ciphertext]` |
 | **libsodium** | `[Ciphertext][MAC 16 bytes]` |
 
-### 18.3 All Crypto Tests (Session 13)
+### 18.3 Session 14 Discoveries - DH SECRET VERIFIED!
+
+#### 18.3.1 Handoff Theory DISPROVEN
+
+| Statement | Handoff Document | Reality (Source Code) |
+|-----------|------------------|----------------------|
+| 2 MSGs on Contact Queue | Claimed | FALSE |
+| HELLO on Reply Queue | Not mentioned | TRUE (confirmed) |
+| E2E Key in PHConfirmation | Claimed | FALSE |
+| E2E Key in PubHeader | Not mentioned | TRUE (confirmed) |
+
+#### 18.3.2 Bug Fixed: Wrong Key Used
+
+**Before (WRONG):**
+```c
+// Used SMP DH key from INVITATION
+crypto_box_beforenm(e2e_dh_secret, pending_peer.dh_public, our_queue.e2e_private);
+```
+
+**After (CORRECT):**
+```c
+// Extract e2ePubKey from message header (Offset 28)
+uint8_t peer_e2e_pub[32];
+memcpy(peer_e2e_pub, &server_plain[28], 32);
+```
+
+#### 18.3.3 Bug Fixed: Wrong DH Function
+
+**Before (WRONG):**
+```c
+crypto_box_beforenm(e2e_dh_secret, peer_pub, our_priv);
+// ^^^ applies HSalsa20 key derivation!
+```
+
+**After (CORRECT):**
+```c
+crypto_scalarmult(dh_secret, our_queue.e2e_private, peer_e2e_pub);
+// ^^^ raw DH output - matches Haskell!
+```
+
+#### 18.3.4 DH Secret VERIFIED with Python!
+
+```python
+from nacl.bindings import crypto_scalarmult
+
+our_private = bytes.fromhex('83473153de033039edec9c5db7591cacfa42b6dd89a0618a00806732d01a96fa')
+peer_public = bytes.fromhex('9140e10e9fdee92ebb801ae8694435b5e9f06c4e0077dfa98d39b0f1bf0c0300')
+
+dh_secret = crypto_scalarmult(our_private, peer_public)
+```
+
+**Result:**
+```
+Python DH:  d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
+ESP32 DH:   d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
+Match: TRUE!
+```
+
+### 18.4 All Crypto Tests (Session 13)
 
 | Test | Method | MAC | Private Key | Result |
 |------|--------|-----|-------------|--------|
@@ -661,7 +719,7 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 3. App **first** message: `e2ePubKey = Just` (sendConfirmation)
 4. App **subsequent** messages: `e2ePubKey = Nothing` (sendAgentMessage)
 
-### 18.7 Sub-Issues Status
+### 18.8 Sub-Issues Status (Updated Session 14)
 
 | Sub-Issue | Description | Status |
 |-----------|-------------|--------|
@@ -670,17 +728,21 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 | #18c | Parsing fix (correct offsets) | DONE |
 | #18d | HSalsa20 difference identified | DONE |
 | #18e | MAC position difference identified | DONE |
-| #18f | 5 crypto approaches tested | DONE - All fail |
+| #18f | 5 crypto approaches tested (S13) | DONE - All fail |
 | #18g | SMPConfirmation contains e2ePubKey | FOUND |
-| #18h | Parse SMPConfirmation | TODO |
-| #18i | Find where App's key comes from | TODO |
+| **#18h** | **Handoff theory DISPROVEN** | **DONE (S14)** |
+| **#18i** | **Wrong key bug fixed** | **DONE (S14)** |
+| **#18j** | **Wrong DH function fixed** | **DONE (S14)** |
+| **#18k** | **DH SECRET VERIFIED with Python!** | **DONE (S14)** |
+| #18l | Offset verification needed | TODO (S15) |
+| #18m | Full decrypt test with complete ciphertext | TODO (S15) |
 
-### 18.8 Remaining Hypotheses
+### 18.9 Remaining Hypotheses (Session 15)
 
-1. **H1:** Key at [28-59] is corrId, not e2ePubKey
-2. **H2:** Need to parse SMPConfirmation first to get App's key
-3. **H3:** maybe_e2e = ',' means direct Double Ratchet
-4. **H4:** Subtle XSalsa20 implementation differences
+1. **H1:** Offset needs +2 shift (Length Prefix handling)
+2. **H2:** SPKI length byte [15] interpretation
+3. **H3:** libsodium parameter order issue
+4. **H4:** Need full ciphertext (16006 bytes) for Python test
 
 ### 18.9 Android vs Desktop Difference
 
@@ -706,6 +768,7 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 | Jan 27, 2026 | S9 | #15-#16 |
 | Jan 28, 2026 | S10C | #17 |
 | Jan 30, 2026 | S12-S13 | #18 (deep analysis) |
+| **Jan 31-Feb 1** | **S14** | **#18 DH SECRET VERIFIED!** |
 
 ---
 
@@ -747,9 +810,12 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 16. **HSalsa20 matters** - libsodium adds extra step vs Haskell
 17. **MAC position matters** - [MAC][Cipher] vs [Cipher][MAC]
 18. **Parse SMPConfirmation** - Contains App's e2ePubKey
+19. **Verify theories against source code** - Handoff document was WRONG! (Session 14)
+20. **crypto_scalarmult vs crypto_box_beforenm** - Use raw DH, not derived key! (Session 14)
+21. **Python verification is proof** - DH Secret match proves crypto basis correct! (Session 14)
 
 ---
 
-*Bug Tracker v8.0*  
-*Last updated: January 30, 2026 - Session 13*  
-*Total bugs documented: 18 (17 fixed, 1 open)*
+*Bug Tracker v9.0*  
+*Last updated: February 1, 2026 - Session 14 FINAL*  
+*Total bugs documented: 18 (17 fixed, 1 in progress - DH verified!)*
