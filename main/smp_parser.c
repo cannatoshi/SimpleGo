@@ -1,7 +1,7 @@
 /**
  * SimpleGo - smp_parser.c
  * Message parsing for Agent Protocol
- * v0.1.15-alpha - Full URI parsing with e2e= parameter and X448 keys
+ * v0.1.18-alpha - FIXED: Don't set reply_queue_e2e_peer_public from SMP DH key!
  */
 
 #include "smp_parser.h"
@@ -302,6 +302,26 @@ void parse_agent_message(contact_t *contact, const uint8_t *plain, int plain_len
                     
                     if (type == 'C') {
                         ESP_LOGI(TAG, "      🎉 CONFIRMATION received!");
+                        
+                        // ================================================================
+                        // FIX v0.1.18d: Parse Confirmation to extract Reply Queue E2E key!
+                        // The decrypted buffer starting at toff contains:
+                        //   [PrivHeader '_'][AgentVersion][Type 'C'][E2E params][encConnInfo]
+                        // parse_agent_confirmation() will:
+                        //   1. Parse E2E params (X448 keys for Double Ratchet)
+                        //   2. Decrypt encConnInfo with ratchet_decrypt_incoming()
+                        //   3. Parse AgentConnInfoReply to extract X25519 E2E key
+                        //   4. Store in reply_queue_e2e_peer_public
+                        // ================================================================
+                        ESP_LOGI(TAG, "");
+                        ESP_LOGI(TAG, "      🔑 Parsing Confirmation for Reply Queue E2E key...");
+                        int parse_result = parse_agent_confirmation(decrypted + toff, dec_len - toff);
+                        if (parse_result == 0) {
+                            ESP_LOGI(TAG, "      ✅ Reply Queue E2E key extracted successfully!");
+                        } else {
+                            ESP_LOGW(TAG, "      ⚠️ Could not extract Reply Queue E2E key (code %d)", parse_result);
+                            ESP_LOGW(TAG, "      (This is OK if peer hasn't sent AgentConnInfoReply yet)");
+                        }
                     }
                     else if (type == 'I') {
                         ESP_LOGI(TAG, "      🎉 INVITATION received!");
@@ -321,6 +341,69 @@ void parse_agent_message(contact_t *contact, const uint8_t *plain, int plain_len
                             int show_len = strlen(full_uri);
                             for (int i = 0; i < show_len; i += 120) {
                                 ESP_LOGI(TAG, "         %.120s", full_uri + i);
+                            }
+
+                            // Find where URI ends in original decrypted buffer
+                            // Search for "simplex:" in decrypted to find start
+                            int uri_start_in_dec = -1;
+                            for (int i = 0; i < dec_len - 10; i++) {
+                                if (decrypted[i] == 's' && decrypted[i+1] == 'i' && 
+                                    decrypted[i+2] == 'm' && decrypted[i+3] == 'p' &&
+                                    decrypted[i+4] == 'l' && decrypted[i+5] == 'e' &&
+                                    decrypted[i+6] == 'x' && decrypted[i+7] == ':') {
+                                    uri_start_in_dec = i;
+                                    break;
+                                }
+                            }
+                            
+                            if (uri_start_in_dec >= 0) {
+                                // Find where URI ends (first non-printable char)
+                                int uri_end_in_dec = uri_start_in_dec;
+                                while (uri_end_in_dec < dec_len && 
+                                       decrypted[uri_end_in_dec] >= 32 && 
+                                       decrypted[uri_end_in_dec] < 127) {
+                                    uri_end_in_dec++;
+}
+                                
+                                ESP_LOGI(TAG, "      📋 URI in decrypted: offset %d-%d", 
+                                         uri_start_in_dec, uri_end_in_dec);
+                                
+                                // DEBUG: Show bytes AFTER URI
+                                ESP_LOGI(TAG, "      📋 Bytes after URI (offset %d+):", uri_end_in_dec);
+                                printf("         ");
+                                for (int i = uri_end_in_dec; i < uri_end_in_dec + 80 && i < dec_len; i++) {
+                                    printf("%02x ", decrypted[i]);
+                                    if ((i - uri_end_in_dec + 1) % 16 == 0) printf("\n         ");
+                                }
+                                printf("\n");
+                                ESP_LOGI(TAG, "      📋 Remaining bytes after URI: %d", dec_len - uri_end_in_dec);
+
+                                // Search for ALL X25519 SPKI in entire message
+                                ESP_LOGI(TAG, "      🔍 Searching ALL X25519 SPKI in decrypted:");
+                                int found_count = 0;
+                                for (int i = 0; i < dec_len - 44; i++) {
+                                    if (decrypted[i] == 0x30 && decrypted[i+1] == 0x2a) {
+                                        found_count++;
+                                        uint8_t *key = &decrypted[i + 12];
+                                        ESP_LOGI(TAG, "         [%d] SPKI at offset %d: %02x%02x%02x%02x...", 
+                                                 found_count, i, key[0], key[1], key[2], key[3]);
+                                    }
+                                }
+                                ESP_LOGI(TAG, "      📊 Total X25519 keys found: %d", found_count);
+                                
+                                // Search for X25519 SPKI AFTER the URI - DON'T SET reply_queue_e2e_peer_public here!
+                                // The correct E2E key is extracted in main.c from the PubHeader SPKI
+                                for (int i = uri_end_in_dec; i < dec_len - 44; i++) {
+                                    if (decrypted[i] == 0x30 && decrypted[i+1] == 0x2a) {
+                                        ESP_LOGI(TAG, "      🔑 Found X25519 SPKI at offset %d!", i);
+                                        uint8_t *key = &decrypted[i + 12];
+                                        ESP_LOGI(TAG, "         Key: %02x%02x%02x%02x...", 
+                                                 key[0], key[1], key[2], key[3]);
+                                        // NOTE: NOT setting reply_queue_e2e_peer_public here!
+                                        // The correct key comes from PubHeader in Contact Queue message
+                                        break;
+                                    }
+                                }
                             }
                             
                             // Parse SMP server info
@@ -364,7 +447,7 @@ void parse_agent_message(contact_t *contact, const uint8_t *plain, int plain_len
                                     }
                                 }
                                 
-                                // Find dh= parameter (SMP level)
+                                // Find dh= parameter (SMP level) - this is for SERVER-LEVEL encryption only!
                                 char *dh = strstr(smp_start, "dh=");
                                 if (dh) {
                                     dh += 3;
@@ -382,7 +465,19 @@ void parse_agent_message(contact_t *contact, const uint8_t *plain, int plain_len
                                         if (spki_len >= 44) {
                                             memcpy(pending_peer.dh_public, spki + 12, 32);
                                             pending_peer.has_dh = 1;
-                                            ESP_LOGI(TAG, "      🔑 SMP DH Key: %02x%02x%02x%02x... ✅",
+                                            
+                                            // ======================================================
+                                            // BUG FIX v0.1.18: DO NOT set reply_queue_e2e_peer_public here!
+                                            // The dh= parameter is for SERVER-LEVEL queue encryption,
+                                            // NOT for E2E Layer 2 encryption!
+                                            // The correct E2E key comes from the PubHeader SPKI
+                                            // in the Contact Queue message, extracted in main.c
+                                            // ======================================================
+                                            // OLD BUGGY CODE (REMOVED):
+                                            // memcpy(reply_queue_e2e_peer_public, pending_peer.dh_public, 32);
+                                            // reply_queue_e2e_peer_valid = true;
+                                            
+                                            ESP_LOGI(TAG, "      🔑 SMP DH Key: %02x%02x%02x%02x... ✅ (server-level only)",
                                                      pending_peer.dh_public[0], pending_peer.dh_public[1],
                                                      pending_peer.dh_public[2], pending_peer.dh_public[3]);
                                         }

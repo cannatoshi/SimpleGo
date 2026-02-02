@@ -17,6 +17,7 @@ message(STATUS "========================================")
 set(CORE_SOURCES
     "main.c"
     "smp_contacts.c"
+    "simplex_crypto.c"
     "smp_crypto.c"
     "smp_globals.c"
     "smp_network.c"

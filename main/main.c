@@ -1,8 +1,12 @@
-﻿/**
+/**
  * SimpleGo - Native SimpleX SMP Client for ESP32
- * v0.1.17-alpha - AgentConfirmation with Reply Queue
+ * v0.1.18-alpha - FIXED: Reply Queue E2E Key extraction bug
  * github.com/cannatoshi/SimpleGo
  * Autor: cannatoshi
+ * 
+ * FIX v0.1.18: Removed incorrect E2E key extraction from Contact Queue PubHeader.
+ *              The correct E2E key is now extracted via parse_agent_confirmation()
+ *              from the AgentConnInfoReply after Double Ratchet decrypt.
  */
 
 #include <string.h>
@@ -38,6 +42,7 @@
 #include "smp_peer.h"
 #include "smp_x448.h"
 #include "smp_queue.h"
+#include "simplex_crypto.h"  // SimpleX custom XSalsa20-Poly1305
 
 // T-Deck Display Driver
 #include "tdeck_display.h"
@@ -114,7 +119,7 @@ static void smp_connect(void) {
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "+----------------------------------------+");
-    ESP_LOGI(TAG, "|  SimpleGo v0.1.17-alpha Connection!    |");
+    ESP_LOGI(TAG, "|  SimpleGo v0.1.18-alpha Connection!    |");
     ESP_LOGI(TAG, "+----------------------------------------+");
     ESP_LOGI(TAG, "");
 
@@ -222,10 +227,6 @@ static void smp_connect(void) {
             ESP_LOGE(TAG, "      Failed to create contact!");
             goto cleanup;
         }
-        // ADD DEBUG HERE: After Contact erstellen
-        ESP_LOGI(TAG, "DEBUG shared_secret check: %02x%02x%02x%02x", 
-                 our_queue.shared_secret[0], our_queue.shared_secret[1],
-                 our_queue.shared_secret[2], our_queue.shared_secret[3]);
     } else {
         ESP_LOGI(TAG, "      %d contact(s) loaded from NVS", contacts_db.num_contacts);
     }
@@ -235,10 +236,6 @@ static void smp_connect(void) {
     // ========== Step 5: Subscribe All Contacts ==========
     ESP_LOGI(TAG, "[5/5] Subscribing to queues...");
     subscribe_all_contacts(&ssl, block, session_id);
-    // ADD DEBUG HERE: After dem SUB senden
-    ESP_LOGI(TAG, "DEBUG shared_secret check: %02x%02x%02x%02x", 
-             our_queue.shared_secret[0], our_queue.shared_secret[1],
-             our_queue.shared_secret[2], our_queue.shared_secret[3]);
     
     // Print connection info
     print_invitation_links(ca_hash, SMP_HOST, SMP_PORT);
@@ -294,6 +291,7 @@ static void smp_connect(void) {
         
         int contact_idx = find_contact_by_recipient_id(entity_id, entLen);
         contact_t *contact = (contact_idx >= 0) ? &contacts_db.contacts[contact_idx] : NULL;
+        
         // Check if this is our Reply Queue
         bool is_reply_queue = (our_queue.rcv_id_len > 0 && 
                                entLen == our_queue.rcv_id_len &&
@@ -317,7 +315,6 @@ static void smp_connect(void) {
             p += 4;
             
             uint8_t msgIdLen = resp[p++];
-            ESP_LOGI(TAG, "   DEBUG: msgIdLen = %d", msgIdLen);  // ADD THIS!
             uint8_t msg_id[24];
             memset(msg_id, 0, 24);
             if (msgIdLen > 24) msgIdLen = 24;
@@ -326,20 +323,15 @@ static void smp_connect(void) {
             
             int enc_len = content_len - p;
             
-            // ADD THIS DEBUG:
-            ESP_LOGI(TAG, "   DEBUG: content_len=%d, p=%d, enc_len=%d", content_len, p, enc_len);
-            ESP_LOGI(TAG, "   DEBUG: bytes at p-4 to p+20:");
-            printf("      ");
-            for (int i = -4; i < 20 && (p+i) >= 0 && (p+i) < content_len; i++) {
-                if (i == 0) printf("| ");  // Mark where p starts
-                printf("%02x ", resp[p + i]);
-            }
-            printf("\n");
-            
             if (contact) {
                 ESP_LOGI(TAG, "");
                 ESP_LOGI(TAG, "+----------------------------------------------------------+");
                 ESP_LOGI(TAG, "|   MESSAGE RECEIVED for [%s]!", contact->name);
+                ESP_LOGI(TAG, "+----------------------------------------------------------+");
+            } else if (is_reply_queue) {
+                ESP_LOGI(TAG, "");
+                ESP_LOGI(TAG, "+----------------------------------------------------------+");
+                ESP_LOGI(TAG, "|   MESSAGE on REPLY QUEUE!                                |");
                 ESP_LOGI(TAG, "+----------------------------------------------------------+");
             } else {
                 ESP_LOGI(TAG, "");
@@ -348,549 +340,331 @@ static void smp_connect(void) {
             ESP_LOGI(TAG, "   MsgId: %02x%02x%02x%02x...", msg_id[0], msg_id[1], msg_id[2], msg_id[3]);
             ESP_LOGI(TAG, "   Encrypted: %d bytes", enc_len);
 
-            // ADD THIS DEBUG LINE:
-            ESP_LOGI(TAG, "   Raw bytes at p: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
-                     resp[p], resp[p+1], resp[p+2], resp[p+3], 
-                     resp[p+4], resp[p+5], resp[p+6], resp[p+7],
-                     resp[p+8], resp[p+9], resp[p+10], resp[p+11],
-                     resp[p+12], resp[p+13], resp[p+14], resp[p+15]);
-
-            // ADD DEBUG HERE: Beim Message-Empfang (vor dem Decrypt)
-            ESP_LOGI(TAG, "DEBUG shared_secret check: %02x%02x%02x%02x", 
-                     our_queue.shared_secret[0], our_queue.shared_secret[1],
-                     our_queue.shared_secret[2], our_queue.shared_secret[3]);
-
-            // === REPLY QUEUE DECRYPTION ===
+            // ============================================================================
+            // REPLY QUEUE E2E DECRYPTION (v0.1.18 - Cleaned)
+            // ============================================================================
             if (is_reply_queue && our_queue.valid && enc_len > crypto_box_MACBYTES) {
                 ESP_LOGI(TAG, "");
-                ESP_LOGI(TAG, "   🔓 Decrypting REPLY QUEUE message...");
+                ESP_LOGI(TAG, "   Decrypting REPLY QUEUE message...");
                 
-                // Prepare nonce (24 bytes)
+                // Layer 1: Server-level decrypt (mit msg_id als Nonce)
                 uint8_t server_nonce[24];
                 memset(server_nonce, 0, 24);
                 memcpy(server_nonce, msg_id, msgIdLen);
                 
                 uint8_t *server_plain = malloc(enc_len);
-                if (server_plain) {
-                    // Layer 1: Server-level decrypt
-                    if (crypto_box_open_easy_afternm(server_plain, &resp[p], enc_len, 
-                                                      server_nonce, our_queue.shared_secret) == 0) {
-                        int plain_len = enc_len - crypto_box_MACBYTES;
-                        ESP_LOGI(TAG, "      ✅ Server-level decrypt SUCCESS! (%d bytes)", plain_len);
-                        // === DETAILED DEBUG ===
-                        ESP_LOGI(TAG, "      📊 First 64 bytes after server-decrypt:");
+                if (!server_plain) {
+                    ESP_LOGE(TAG, "      malloc failed!");
+                    continue;
+                }
+                
+                if (crypto_box_open_easy_afternm(server_plain, &resp[p], enc_len, 
+                                                  server_nonce, our_queue.shared_secret) != 0) {
+                    ESP_LOGE(TAG, "      Server-level decrypt FAILED!");
+                    free(server_plain);
+                    continue;
+                }
+                
+                int plain_len = enc_len - crypto_box_MACBYTES;
+                ESP_LOGI(TAG, "      Server-level decrypt SUCCESS! (%d bytes)", plain_len);
+                
+                // Debug: First 64 bytes
+                ESP_LOGI(TAG, "      First 64 bytes:");
+                printf("         ");
+                for (int i = 0; i < 64 && i < plain_len; i++) {
+                    printf("%02x ", server_plain[i]);
+                    if ((i + 1) % 16 == 0) printf("\n         ");
+                }
+                printf("\n");
+                
+                // === LAYER 2: Per-Queue E2E Decrypt ===
+                // ================================================================
+                // Reply Queue Message Structure (after server-level decrypt):
+                // [0-1]   Length prefix (Word16 BE) - e.g., 0x3E82 = 16002
+                // [2-5]   MsgFlags (4 bytes) - usually 00 00 00 00
+                // [6-13]  Timestamp (8 bytes)
+                // [14]    maybe_corrId ('1' = has SPKI, ',' = no SPKI)
+                // [15]    maybe_e2e ('1' = fresh key, ',' = use corrId as E2E key)
+                // [16-59] corrId SPKI (44 bytes) if maybe_corrId == '1'
+                // [60-83] cmNonce (24 bytes)
+                // [84+]   cmEncBody (E2E encrypted payload)
+                // ================================================================
+                
+                // FIX v0.1.18d: Reply Queue ALWAYS has fixed structure!
+                // maybe_corrId/maybe_e2e are ALWAYS at index 14/15
+                // SPKI (if present) is ALWAYS at index 16
+                
+                if (plain_len < 84) {
+                    ESP_LOGE(TAG, "      Message too short for E2E structure!");
+                    free(server_plain);
+                    continue;
+                }
+                
+                // Log first 64 bytes in hex for debugging
+                ESP_LOGI(TAG, "      Reply Queue structure:");
+                printf("         ");
+                for (int i = 0; i < 64 && i < plain_len; i++) {
+                    printf("%02x ", server_plain[i]);
+                    if ((i + 1) % 16 == 0) printf("\n         ");
+                }
+                printf("\n");
+                
+                int offset = 14;  // FIXED position for Reply Queue
+                uint8_t maybe_corrId = server_plain[offset];
+                uint8_t maybe_e2e = server_plain[offset + 1];
+                
+                ESP_LOGI(TAG, "      [%d] maybe_corrId = '%c' (0x%02x)", offset, 
+                         (maybe_corrId >= 0x20 && maybe_corrId < 0x7F) ? maybe_corrId : '?', maybe_corrId);
+                ESP_LOGI(TAG, "      [%d] maybe_e2e = '%c' (0x%02x)", offset + 1,
+                         (maybe_e2e >= 0x20 && maybe_e2e < 0x7F) ? maybe_e2e : '?', maybe_e2e);
+                offset += 2;  // Now at 16 (SPKI position)
+                
+                const uint8_t x25519_spki_header[] = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 
+                                                       0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00};
+                
+                uint8_t sender_pub[32];
+                bool have_sender_key = false;
+                
+                // ================================================================
+                // v0.1.18d: E2E Key Extraction for Reply Queue
+                // 
+                // When maybe_corrId = '1': There's a 44-byte SPKI at offset 16
+                // When maybe_e2e = ',': The corrId SPKI IS the E2E ephemeral key!
+                // When maybe_e2e = '1': There's ANOTHER SPKI after corrId
+                //
+                // For Reply Queue first message: typically corrId='1', e2e=','
+                // meaning: corrId SPKI serves as BOTH correlation AND E2E key!
+                // ================================================================
+                
+                if (maybe_corrId == '1') {
+                    // Check SPKI at offset 16
+                    if (offset + 44 <= plain_len &&
+                        memcmp(&server_plain[offset], x25519_spki_header, 12) == 0) {
+                        
+                        // Extract the 32-byte raw key (after 12-byte SPKI header)
+                        memcpy(sender_pub, &server_plain[offset + 12], 32);
+                        
+                        ESP_LOGI(TAG, "      ✅ Found corrId SPKI at offset %d", offset);
+                        ESP_LOGI(TAG, "      Raw key: %02x%02x%02x%02x %02x%02x%02x%02x...",
+                                 sender_pub[0], sender_pub[1], sender_pub[2], sender_pub[3],
+                                 sender_pub[4], sender_pub[5], sender_pub[6], sender_pub[7]);
+                        
+                        if (maybe_e2e == ',') {
+                            // corrId IS the E2E key!
+                            ESP_LOGI(TAG, "      maybe_e2e=',' → Using corrId as E2E ephemeral key!");
+                            have_sender_key = true;
+                        } else {
+                            ESP_LOGI(TAG, "      maybe_e2e='%c' → corrId is NOT E2E key, looking for separate key", maybe_e2e);
+                        }
+                        
+                        offset += 44;  // Move past corrId SPKI
+                    } else {
+                        ESP_LOGE(TAG, "      ❌ maybe_corrId='1' but no valid SPKI at offset %d!", offset);
+                        ESP_LOGI(TAG, "      Found bytes: %02x %02x %02x %02x...",
+                                 server_plain[offset], server_plain[offset+1], 
+                                 server_plain[offset+2], server_plain[offset+3]);
+                    }
+                } else if (maybe_corrId == ',') {
+                    ESP_LOGI(TAG, "      No corrId present (maybe_corrId=',')");
+                } else {
+                    ESP_LOGW(TAG, "      Unexpected maybe_corrId: 0x%02x", maybe_corrId);
+                }
+                
+                // Check for additional E2E key (maybe_e2e = '1')
+                if (!have_sender_key && maybe_e2e == '1') {
+                    if (offset + 44 <= plain_len &&
+                        memcmp(&server_plain[offset], x25519_spki_header, 12) == 0) {
+                        
+                        memcpy(sender_pub, &server_plain[offset + 12], 32);
+                        have_sender_key = true;
+                        
+                        ESP_LOGI(TAG, "      ✅ Found fresh E2E SPKI at offset %d!", offset);
+                        ESP_LOGI(TAG, "      Raw key: %02x%02x%02x%02x...",
+                                 sender_pub[0], sender_pub[1], sender_pub[2], sender_pub[3]);
+                        
+                        offset += 44;
+                    } else {
+                        ESP_LOGE(TAG, "      ❌ maybe_e2e='1' but no valid SPKI at offset %d!", offset);
+                    }
+                }
+                
+                if (!have_sender_key) {
+                    ESP_LOGE(TAG, "");
+                    ESP_LOGE(TAG, "      ╔════════════════════════════════════════════════════╗");
+                    ESP_LOGE(TAG, "      ║  ❌ FAILED TO EXTRACT E2E KEY!                     ║");
+                    ESP_LOGE(TAG, "      ╚════════════════════════════════════════════════════╝");
+                    ESP_LOGE(TAG, "      maybe_corrId='%c', maybe_e2e='%c'", maybe_corrId, maybe_e2e);
+                    free(server_plain);
+                    continue;
+                }
+                
+                // Now offset points to cmNonce (24 bytes)
+                if (plain_len < offset + 24 + 16) {
+                    ESP_LOGE(TAG, "      Message too short for E2E decrypt");
+                    free(server_plain);
+                    continue;
+                }
+                
+                uint8_t cm_nonce[24];
+                memcpy(cm_nonce, &server_plain[offset], 24);
+                ESP_LOGI(TAG, "      cmNonce (at offset %d): %02x%02x%02x%02x...",
+                         offset, cm_nonce[0], cm_nonce[1], cm_nonce[2], cm_nonce[3]);
+                offset += 24;
+                
+                const uint8_t *e2e_encrypted = &server_plain[offset];
+                size_t e2e_encrypted_len = plain_len - offset;
+                
+                ESP_LOGI(TAG, "      E2E encrypted at offset %d, len: %zu", offset, e2e_encrypted_len);
+                
+                uint8_t *e2e_plain = malloc(e2e_encrypted_len);
+                if (e2e_plain) {
+                    // ================================================================
+                    // CRITICAL DEBUG: Log which E2E key we're using for DECRYPTION!
+                    // This MUST match what queue_create() generated!
+                    // ================================================================
+                    ESP_LOGW(TAG, "");
+                    ESP_LOGW(TAG, "      ╔═══════════════════════════════════════════════════════╗");
+                    ESP_LOGW(TAG, "      ║  🔑 DECRYPT: USING E2E KEY                           ║");
+                    ESP_LOGW(TAG, "      ╚═══════════════════════════════════════════════════════╝");
+                    ESP_LOGW(TAG, "      DECRYPT e2e_public:  %02x%02x%02x%02x %02x%02x%02x%02x...",
+                             our_queue.e2e_public[0], our_queue.e2e_public[1],
+                             our_queue.e2e_public[2], our_queue.e2e_public[3],
+                             our_queue.e2e_public[4], our_queue.e2e_public[5],
+                             our_queue.e2e_public[6], our_queue.e2e_public[7]);
+                    ESP_LOGW(TAG, "      DECRYPT e2e_private: %02x%02x%02x%02x %02x%02x%02x%02x...",
+                             our_queue.e2e_private[0], our_queue.e2e_private[1],
+                             our_queue.e2e_private[2], our_queue.e2e_private[3],
+                             our_queue.e2e_private[4], our_queue.e2e_private[5],
+                             our_queue.e2e_private[6], our_queue.e2e_private[7]);
+                    ESP_LOGW(TAG, "");
+                    
+                    // Compute DH secret
+                    uint8_t dh_secret[32];
+                    if (crypto_scalarmult(dh_secret, our_queue.e2e_private, sender_pub) != 0) {
+                        ESP_LOGE(TAG, "      ❌ DH computation failed!");
+                        free(e2e_plain);
+                        free(server_plain);
+                        continue;
+                    }
+                    
+                    ESP_LOGI(TAG, "      DH secret: %02x%02x%02x%02x...",
+                             dh_secret[0], dh_secret[1], dh_secret[2], dh_secret[3]);
+                    
+                    // Full debug dump
+                    printf("\n      📋 FULL CRYPTO DEBUG:\n");
+                    printf("      sender_pub (32): ");
+                    for(int i=0; i<32; i++) printf("%02x", sender_pub[i]);
+                    printf("\n");
+                    printf("      our_e2e_priv (32): ");
+                    for(int i=0; i<32; i++) printf("%02x", our_queue.e2e_private[i]);
+                    printf("\n");
+                    printf("      dh_secret (32): ");
+                    for(int i=0; i<32; i++) printf("%02x", dh_secret[i]);
+                    printf("\n");
+                    printf("      cm_nonce (24): ");
+                    for(int i=0; i<24; i++) printf("%02x", cm_nonce[i]);
+                    printf("\n");
+                    printf("      e2e_cipher first 48: ");
+                    for(int i=0; i<48 && i<(int)e2e_encrypted_len; i++) printf("%02x", e2e_encrypted[i]);
+                    printf("\n\n");
+                    
+                    // Decrypt with SimpleX custom XSalsa20 (DEBUG VERSION)
+                    int decrypt_ret = simplex_secretbox_open_debug(
+                        e2e_plain,
+                        e2e_encrypted,
+                        e2e_encrypted_len,
+                        cm_nonce,
+                        dh_secret,
+                        "REPLY_E2E"
+                    );
+                    
+                    sodium_memzero(dh_secret, 32);
+                    
+                    if (decrypt_ret != 0) {
+                        // Try with contact's rcv_dh_secret as fallback
+                        // (in case peer couldn't decrypt our e2e_public from broken ratchet)
+                        // Get the first active contact since reply queue is for connections
+                        contact_t *fallback_contact = NULL;
+                        if (contacts_db.num_contacts > 0) {
+                            fallback_contact = &contacts_db.contacts[0];
+                        }
+                        
+                        if (fallback_contact && fallback_contact->have_srv_dh) {
+                            ESP_LOGW(TAG, "");
+                            ESP_LOGW(TAG, "      🔄 E2E with queue key failed, trying contact DH key...");
+                            ESP_LOGW(TAG, "      Contact: %s", fallback_contact->name);
+                            
+                            uint8_t alt_dh_secret[32];
+                            if (crypto_scalarmult(alt_dh_secret, fallback_contact->rcv_dh_secret, sender_pub) == 0) {
+                                ESP_LOGI(TAG, "      Alt DH secret: %02x%02x%02x%02x...",
+                                         alt_dh_secret[0], alt_dh_secret[1], alt_dh_secret[2], alt_dh_secret[3]);
+                                
+                                decrypt_ret = simplex_secretbox_open_debug(
+                                    e2e_plain,
+                                    e2e_encrypted,
+                                    e2e_encrypted_len,
+                                    cm_nonce,
+                                    alt_dh_secret,
+                                    "REPLY_ALT"
+                                );
+                                
+                                sodium_memzero(alt_dh_secret, 32);
+                                
+                                if (decrypt_ret == 0) {
+                                    ESP_LOGW(TAG, "      ✅ SUCCESS with contact DH key!");
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (decrypt_ret == 0) {
+                        int e2e_plain_len = e2e_encrypted_len - 16;
+                        ESP_LOGI(TAG, "");
+                        ESP_LOGI(TAG, "      +----------------------------------------------+");
+                        ESP_LOGI(TAG, "      |  🎉 E2E LAYER 2 DECRYPT SUCCESS!            |");
+                        ESP_LOGI(TAG, "      +----------------------------------------------+");
+                        ESP_LOGI(TAG, "      Decrypted %d bytes!", e2e_plain_len);
+                        ESP_LOGI(TAG, "      First 64 bytes:");
                         printf("         ");
-                        for (int i = 0; i < 64 && i < plain_len; i++) {
-                            printf("%02x ", server_plain[i]);
+                        for (int i = 0; i < 64 && i < e2e_plain_len; i++) {
+                            printf("%02x ", e2e_plain[i]);
                             if ((i + 1) % 16 == 0) printf("\n         ");
                         }
                         printf("\n");
                         
-                        // Parse the structure
-                        ESP_LOGI(TAG, "      📋 Structure analysis:");
-                        uint16_t len_prefix = (server_plain[0] << 8) | server_plain[1];
-                        ESP_LOGI(TAG, "         [0-1] Length prefix: %d (0x%04x)", len_prefix, len_prefix);
-                        ESP_LOGI(TAG, "         [2-5] Unknown: %02x %02x %02x %02x", 
-                                 server_plain[2], server_plain[3], server_plain[4], server_plain[5]);
-                        ESP_LOGI(TAG, "         [6-9] Unknown: %02x %02x %02x %02x (timestamp?)",
-                                 server_plain[6], server_plain[7], server_plain[8], server_plain[9]);
-                        ESP_LOGI(TAG, "         [10-13]: %02x %02x %02x %02x",
-                                 server_plain[10], server_plain[11], server_plain[12], server_plain[13]);
+                        // Parse PrivHeader
+                        char priv_header = e2e_plain[0];
+                        ESP_LOGI(TAG, "      PrivHeader: '%c' (0x%02x)", priv_header, priv_header);
                         
-                        // Check for version marker at different offsets
-                        for (int i = 0; i < 20; i++) {
-                            if (server_plain[i] == 0x30 && server_plain[i+1] == 0x2a) {
-                                ESP_LOGI(TAG, "         🔑 X25519 SPKI at offset %d", i);
-                            }
-                            if (server_plain[i] == 0x00 && server_plain[i+1] == 0x07) {
-                                ESP_LOGI(TAG, "         📦 Agent version 7 marker at offset %d", i);
-                            }
+                        if (priv_header == '_') {
+                            ESP_LOGI(TAG, "      PHEmpty - AgentMsgEnvelope follows at offset 1");
+                        } else if (priv_header == 'K') {
+                            ESP_LOGI(TAG, "      PHConfirmation - sender auth key present");
                         }
-                        // === END DETAILED DEBUG ===
                         
-// ========== TEST 4: CORRECT - Handle ClientMsgEnvelope structure ==========
-ESP_LOGI(TAG, "      TEST4: Analyzing ClientMsgEnvelope structure...");
-
-// ClientMsgEnvelope structure (after server-level decrypt):
-// [0-1]   Length prefix (BE)
-// [2-9]   Padding/timestamp (8 bytes)  
-// [10-11] Version/flags
-// [12-13] More flags
-// [14]    maybe_corrId tag ('1' = Just, ',' = Nothing)
-// [15]    maybe_e2e tag ('1' = Just with SPKI+nonce, ',' = Nothing)
-// 
-// If maybe_corrId == '1': next 44 bytes = corrId SPKI
-// If maybe_e2e == '1': next 44 bytes = e2ePubKey SPKI, then 24 bytes nonce, then cmEncBody
-// If maybe_e2e == ',': EncRatchetMessage follows directly!
-
-int offset = 14;  // Start at maybe tags
-
-uint8_t maybe_corrId = server_plain[offset];
-uint8_t maybe_e2e = server_plain[offset + 1];
-
-ESP_LOGI(TAG, "         maybe_corrId = '%c' (0x%02x) - %s", 
-         maybe_corrId, maybe_corrId,
-         maybe_corrId == '1' ? "Just (has corrId SPKI)" : "Nothing");
-ESP_LOGI(TAG, "         maybe_e2e = '%c' (0x%02x) - %s",
-         maybe_e2e, maybe_e2e,
-         maybe_e2e == '1' ? "Just (has e2ePubKey)" : "Nothing - DIRECT TO RATCHET!");
-
-// === BRUTE FORCE: Try all possible EncRatchetMessage offsets ===
-ESP_LOGI(TAG, "      🔬 BRUTE FORCE: Testing offsets 56-150 for valid decrypt...");
-for (int test_off = 56; test_off < 150 && test_off < plain_len - 140; test_off++) {
-    // Skip if first byte after length would give invalid version
-    uint8_t first = server_plain[test_off];
-    
-    // Could be length prefix 0x7b OR start of emHeader directly
-    const uint8_t *test_data;
-    int data_offset;
-    
-    if (first == 0x7b) {
-        // Standard format with length prefix
-        test_data = &server_plain[test_off + 1];
-        data_offset = test_off + 1;
-    } else {
-        // Try without length prefix
-        test_data = &server_plain[test_off];
-        data_offset = test_off;
-    }
-    
-    // Check if looks like valid emHeader (version should be 2 or 3)
-    uint16_t version = (test_data[0] << 8) | test_data[1];
-    if (version >= 1 && version <= 5) {
-        ESP_LOGI(TAG, "         ✓ Offset %d: possible v%d header! first=0x%02x", 
-                 test_off, version, first);
-        ESP_LOGI(TAG, "           Bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
-                 server_plain[test_off], server_plain[test_off+1],
-                 server_plain[test_off+2], server_plain[test_off+3],
-                 server_plain[test_off+4], server_plain[test_off+5],
-                 server_plain[test_off+6], server_plain[test_off+7]);
-    }
-}
-
-// === TEST: Try E2E DH decrypt with peer's e2e key from message ===
-ESP_LOGI(TAG, "      🔬 TEST: Trying DH decrypt with E2E keys...");
-
-// Peer's E2E public key is at offset 16 (SPKI) -> raw key at offset 28
-uint8_t peer_e2e_pub[32];
-// Use peer's DH key from INVITATION (not from message!)
-ESP_LOGI(TAG, "         Saved peer DH: %02x%02x%02x%02x...",
-         pending_peer.dh_public[0], pending_peer.dh_public[1], pending_peer.dh_public[2], pending_peer.dh_public[3]);
-
-// Compute E2E DH secret: peer_e2e_pub * our_queue.e2e_private
-uint8_t e2e_dh_secret[32];
-crypto_box_beforenm(e2e_dh_secret, pending_peer.dh_public, our_queue.e2e_private);
-ESP_LOGI(TAG, "         E2E DH secret: %02x%02x%02x%02x...",
-         e2e_dh_secret[0], e2e_dh_secret[1], e2e_dh_secret[2], e2e_dh_secret[3]);
-
-// Nonce at offset 60-83
-uint8_t rq_nonce[24];
-memcpy(rq_nonce, &server_plain[60], 24);
-ESP_LOGI(TAG, "         Nonce: %02x %02x %02x %02x...",
-         rq_nonce[0], rq_nonce[1], rq_nonce[2], rq_nonce[3]);
-
-// Encrypted data starts at offset 84
-const uint8_t *rq_enc = &server_plain[84];
-size_t rq_enc_len = plain_len - 84 - 16;  // minus MAC
-ESP_LOGI(TAG, "         Encrypted len: %zu", rq_enc_len);
-
-// Decrypt with E2E DH secret
-uint8_t *rq_plain = malloc(rq_enc_len);
-if (rq_plain) {
-    int rq_ret = crypto_box_open_afternm(rq_plain, rq_enc, rq_enc_len, rq_nonce,
-                                          e2e_dh_secret);
-    if (rq_ret == 0) {
-        ESP_LOGI(TAG, "      🎉 E2E DECRYPT SUCCESS!");
-        ESP_LOGI(TAG, "         First 20 bytes: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
-                 rq_plain[0], rq_plain[1], rq_plain[2], rq_plain[3],
-                 rq_plain[4], rq_plain[5], rq_plain[6], rq_plain[7],
-                 rq_plain[8], rq_plain[9]);
-        // Check for 0x7b 00 02 (EncRatchetMessage v2)
-        if (rq_plain[0] == 0x7b && rq_plain[1] == 0x00 && rq_plain[2] == 0x02) {
-            ESP_LOGI(TAG, "      🎯 FOUND EncRatchetMessage v2 header!");
-        }
-    } else {
-        ESP_LOGE(TAG, "      ❌ E2E decrypt failed (ret=%d)", rq_ret);
-    }
-    free(rq_plain);
-}
-
-// Also check if there's AgentMsgEnvelope header (00 07 XX) before EncRatchetMessage
-ESP_LOGI(TAG, "      🔎 Searching for AgentMsgEnvelope (00 07) before EncRatchetMessage...");
-for (int i = 56; i < 150 && i < plain_len - 5; i++) {
-    if (server_plain[i] == 0x00 && server_plain[i+1] == 0x07) {
-        ESP_LOGI(TAG, "         ✓ Found '00 07' at offset %d, next bytes: %02x %02x %02x",
-                 i, server_plain[i+2], server_plain[i+3], server_plain[i+4]);
-        // If followed by 7b, that's our EncRatchetMessage!
-        if (server_plain[i+3] == 0x7b || server_plain[i+2] == 0x7b) {
-            ESP_LOGI(TAG, "         🎯 EncRatchetMessage likely at offset %d!", 
-                     server_plain[i+2] == 0x7b ? i+2 : i+3);
-        }
-    }
-}
-
-offset += 2;  // Skip both maybe tags -> offset = 16
-
-// Skip corrId SPKI if present
-if (maybe_corrId == '1') {
-    ESP_LOGI(TAG, "         Skipping corrId SPKI (44 bytes) at offset %d", offset);
-    offset += 44;  // -> offset = 60
-}
-
-ESP_LOGI(TAG, "      📊 FULL HEX DUMP bytes 0-200:");
-for (int row = 0; row < 200; row += 16) {
-    printf("         %04d: ", row);
-    for (int col = 0; col < 16 && (row + col) < plain_len; col++) {
-        printf("%02x ", server_plain[row + col]);
-    }
-    printf(" | ");
-    for (int col = 0; col < 16 && (row + col) < plain_len; col++) {
-        uint8_t c = server_plain[row + col];
-        printf("%c", (c >= 0x20 && c < 0x7f) ? c : '.');
-    }
-    printf("\n");
-}
-
-// Auch: Suche nach Agent Version marker "00 07" (Agent v7)
-ESP_LOGI(TAG, "      🔎 Searching for Agent v7 marker (00 07)...");
-for (int i = 60; i < 250 && i < plain_len - 2; i++) {
-    if (server_plain[i] == 0x00 && server_plain[i+1] == 0x07) {
-        ESP_LOGI(TAG, "         ✓ Found '00 07' at offset %d", i);
-        ESP_LOGI(TAG, "           Context: %02x %02x [%02x %02x] %02x %02x %02x %02x",
-                 server_plain[i-2], server_plain[i-1],
-                 server_plain[i], server_plain[i+1],
-                 server_plain[i+2], server_plain[i+3],
-                 server_plain[i+4], server_plain[i+5]);
-    }
-}
-
-// Suche nach v3 EncRatchetMessage (0x00 0x7B für Large encoding mit len=123)
-ESP_LOGI(TAG, "      🔎 Searching for v3 markers...");
-for (int i = 60; i < plain_len - 5; i++) {
-    // v3 might use 00 03 as version after length
-    if (server_plain[i] < 0x20 && server_plain[i+1] < 0x90) {
-        uint16_t len = (server_plain[i] << 8) | server_plain[i+1];
-        if (len >= 120 && len <= 130) {
-            if (server_plain[i+2] == 0x00 && server_plain[i+3] == 0x03) {
-                ESP_LOGI(TAG, "         ✓ Possible v3 at offset %d! len=%d", i, len);
-            }
-        }
-    }
-}
-
-// CRITICAL DEBUG: Find where 0x7b actually is!
-ESP_LOGI(TAG, "      🔎 Searching for EncRatchetMessage start (0x7b)...");
-int found_7b = -1;
-for (int search = 14; search < plain_len - 140; search++) {
-    if (server_plain[search] == 0x7B) {
-        // Check if this looks like v2 EncRatchetMessage
-        // Next byte should be version high (0x00), then version low (0x02)
-        if (server_plain[search + 1] == 0x00 && server_plain[search + 2] == 0x02) {
-            ESP_LOGI(TAG, "         ✓ Found v2 EncRatchetMessage at offset %d!", search);
-            ESP_LOGI(TAG, "           Bytes: %02x %02x %02x %02x %02x %02x %02x %02x",
-                     server_plain[search], server_plain[search+1], 
-                     server_plain[search+2], server_plain[search+3],
-                     server_plain[search+4], server_plain[search+5],
-                     server_plain[search+6], server_plain[search+7]);
-            found_7b = search;
-            break;
-        } else {
-            ESP_LOGI(TAG, "         ? 0x7b at offset %d but not v2 header (next: %02x %02x)",
-                     search, server_plain[search+1], server_plain[search+2]);
-        }
-    }
-}
-
-// Search for Large encoding: 00 7b 00 02 (2-byte prefix for length 123)
-ESP_LOGI(TAG, "      🔎 Searching for Large encoding (00 7b 00 02)...");
-for (int i = 60; i < plain_len - 4; i++) {
-    if (server_plain[i] == 0x00 && server_plain[i+1] == 0x7b &&
-        server_plain[i+2] == 0x00 && server_plain[i+3] == 0x02) {
-        ESP_LOGI(TAG, "         ✓ Found Large encoding v2 at offset %d!", i);
-        ESP_LOGI(TAG, "           Context: %02x %02x %02x %02x %02x %02x",
-                 server_plain[i], server_plain[i+1], server_plain[i+2],
-                 server_plain[i+3], server_plain[i+4], server_plain[i+5]);
-    }
-}
-
-// Also try EVERY offset from 58-80 to see which gives valid header decrypt
-ESP_LOGI(TAG, "      🔎 Brute-force trying offsets 58-80...");
-for (int test_offset = 58; test_offset <= 80; test_offset++) {
-    uint8_t first = server_plain[test_offset];
-    uint8_t second = server_plain[test_offset + 1];
-    // Check for 1-byte prefix (0x7b) or reasonable 2-byte prefix
-    if (first == 0x7b || (first == 0x00 && second == 0x7b)) {
-        ESP_LOGI(TAG, "         ✓ Potential EncRatchetMessage at offset %d: %02x %02x %02x %02x",
-                 test_offset, server_plain[test_offset], server_plain[test_offset+1],
-                 server_plain[test_offset+2], server_plain[test_offset+3]);
-    }
-}
-
-// Also search for Large encoding (2-byte length where first byte < 0x20)
-if (found_7b < 0) {
-    ESP_LOGI(TAG, "      🔎 Searching for Large encoding EncRatchetMessage...");
-    for (int search = 14; search < plain_len - 140; search++) {
-        if (server_plain[search] < 0x20) {
-            uint16_t len = (server_plain[search] << 8) | server_plain[search + 1];
-            // Check if reasonable length (100-200 for emHeader)
-            if (len >= 100 && len <= 200) {
-                // Check version after length
-                if (server_plain[search + 2] == 0x00 && 
-                    (server_plain[search + 3] == 0x02 || server_plain[search + 3] == 0x03)) {
-                    ESP_LOGI(TAG, "         ✓ Found Large encoding at offset %d! emHeader len=%d, version=%d",
-                             search, len, server_plain[search + 3]);
-                    found_7b = search;
-                    break;
-                }
-            }
-        }
-    }
-}
-
-if (found_7b < 0) {
-    ESP_LOGE(TAG, "      ❌ Could not find EncRatchetMessage start!");
-    ESP_LOGI(TAG, "         Dumping bytes 60-120:");
-    printf("            ");
-    for (int i = 60; i < 120 && i < plain_len; i++) {
-        printf("%02x ", server_plain[i]);
-        if ((i - 59) % 16 == 0) printf("\n            ");
-    }
-    printf("\n");
-}
-
-
-if (maybe_e2e == '1') {
-    // === CASE 1: Has per-queue E2E layer (Contact Queue style) ===
-    ESP_LOGI(TAG, "         📦 Per-queue E2E layer present");
-    
-    int spki_offset = offset;
-    int cm_nonce_offset = spki_offset + 44;
-    int cm_enc_body_offset = cm_nonce_offset + 24;
-    
-    if (plain_len > cm_enc_body_offset + 16) {
-        uint8_t cm_nonce[24];
-        memcpy(cm_nonce, &server_plain[cm_nonce_offset], 24);
-        ESP_LOGI(TAG, "         cmNonce: %02x %02x %02x %02x...",
-                 cm_nonce[0], cm_nonce[1], cm_nonce[2], cm_nonce[3]);
-
-        uint8_t peer_e2e_pub[32];
-        memcpy(peer_e2e_pub, &server_plain[spki_offset + 12], 32);
-        ESP_LOGI(TAG, "         peer_e2ePub: %02x %02x %02x %02x...",
-                 peer_e2e_pub[0], peer_e2e_pub[1], peer_e2e_pub[2], peer_e2e_pub[3]);
-
-        uint8_t e2e_dh_secret[32];
-        crypto_box_beforenm(e2e_dh_secret, peer_e2e_pub, our_queue.rcv_dh_private);
-
-        int cm_body_len = plain_len - cm_enc_body_offset;
-        uint8_t *cm_plain = malloc(cm_body_len);
-        if (cm_plain) {
-            if (crypto_box_open_easy_afternm(cm_plain, &server_plain[cm_enc_body_offset], cm_body_len,
-                                              cm_nonce, e2e_dh_secret) == 0) {
-                int cm_plain_len = cm_body_len - crypto_box_MACBYTES;
-                ESP_LOGI(TAG, "         ✅ Per-queue E2E decrypt SUCCESS! (%d bytes)", cm_plain_len);
-                
-                // Show first bytes of ClientMessage
-                ESP_LOGI(TAG, "         First 32 bytes of ClientMessage:");
-                printf("            ");
-                for (int i = 0; i < 32 && i < cm_plain_len; i++) printf("%02x ", cm_plain[i]);
-                printf("\n");
-                
-                // Parse AgentConfirmation and extract Reply Queue E2E key
-                if (cm_plain_len > 4 && ratchet_is_initialized()) {
-                    if (parse_agent_confirmation(cm_plain, cm_plain_len) == 0) {
-                        ESP_LOGI(TAG, "         ✅ Reply Queue E2E key extracted!");
+                        // Check for EncRatchetMessage (0x7b prefix)
+                        int msg_offset = 1;
+                        if (e2e_plain[msg_offset] == 0x7b) {
+                            ESP_LOGI(TAG, "      Found EncRatchetMessage at offset %d!", msg_offset);
+                            ESP_LOGI(TAG, "      (Double Ratchet decrypt would go here)");
+                        }
+                        
                     } else {
-                        ESP_LOGW(TAG, "         ⚠️ Could not extract Reply Queue E2E key");
+                        ESP_LOGE(TAG, "      ❌ E2E DECRYPT FAILED (ret=%d)", decrypt_ret);
+                        ESP_LOGI(TAG, "      Our e2e_public: %02x%02x%02x%02x...",
+                                 our_queue.e2e_public[0], our_queue.e2e_public[1],
+                                 our_queue.e2e_public[2], our_queue.e2e_public[3]);
                     }
-                } else if (!ratchet_is_initialized()) {
-                    ESP_LOGW(TAG, "         ⚠️ Ratchet not initialized, cannot parse AgentConfirmation");
+                    free(e2e_plain);
                 }
-            } else {
-                ESP_LOGE(TAG, "         ❌ Per-queue E2E decrypt FAILED");
-            }
-            free(cm_plain);
-        }
-    }
-    
-} else if (maybe_e2e == ',') {
-    // === KORRIGIERTE INTERPRETATION ===
-    // [14] = '1' = phE2ePubDhKey = Just
-    // [15] = 0x2c = 44 = SPKI Länge  
-    // [16-59] = X25519 SPKI (44 bytes)
-    // [60-83] = cmNonce (24 bytes)
-    // [84+] = cmEncBody
-    
-    ESP_LOGI(TAG, "      🔧 KORRIGIERTE INTERPRETATION:");
-    ESP_LOGI(TAG, "         [14] = 0x%02x - prüfe ob '1' (Just) oder '0' (Nothing)", server_plain[14]);
-    
-    if (server_plain[14] == '1') {
-        uint8_t spki_len = server_plain[15];
-        ESP_LOGI(TAG, "         [15] = %d = SPKI Länge", spki_len);
-        
-        if (spki_len == 44) {
-            // ⭐ DETAILLIERTE OFFSET-ANALYSE
-            ESP_LOGI(TAG, "         📊 OFFSET ANALYSIS:");
-            ESP_LOGI(TAG, "            [14] Maybe tag: 0x%02x ('%c')", server_plain[14], server_plain[14]);
-            ESP_LOGI(TAG, "            [15] SPKI len:  0x%02x (%d)", server_plain[15], server_plain[15]);
-            
-            // SPKI Header sollte sein: 30 2a 30 05 06 03 2b 65 6e 03 21 00
-            ESP_LOGI(TAG, "            [16-27] SPKI header:");
-            printf("               ");
-            for (int i = 16; i < 28; i++) printf("%02x ", server_plain[i]);
-            printf("\n");
-            
-            // Raw key bei [28-59]
-            ESP_LOGI(TAG, "            [28-59] Raw X25519 key:");
-            printf("               ");
-            for (int i = 28; i < 60; i++) printf("%02x ", server_plain[i]);
-            printf("\n");
-            
-            // Nonce bei [60-83]
-            ESP_LOGI(TAG, "            [60-83] cmNonce:");
-            printf("               ");
-            for (int i = 60; i < 84; i++) printf("%02x ", server_plain[i]);
-            printf("\n");
-            
-            // Erste bytes von cmEncBody
-            ESP_LOGI(TAG, "            [84-99] cmEncBody start:");
-            printf("               ");
-            for (int i = 84; i < 100 && i < plain_len; i++) printf("%02x ", server_plain[i]);
-            printf("\n");
-
-            // ⭐ VERIFIZIERE KEYPAIR
-            uint8_t derived_pub[32];
-            crypto_scalarmult_base(derived_pub, our_queue.e2e_private);
-            
-            ESP_LOGI(TAG, "         🔍 KEYPAIR CHECK:");
-            ESP_LOGI(TAG, "            our_queue.e2e_public:  %02x%02x%02x%02x...",
-                    our_queue.e2e_public[0], our_queue.e2e_public[1],
-                    our_queue.e2e_public[2], our_queue.e2e_public[3]);
-            ESP_LOGI(TAG, "            derived from private:  %02x%02x%02x%02x...",
-                    derived_pub[0], derived_pub[1], derived_pub[2], derived_pub[3]);
-            
-            if (memcmp(derived_pub, our_queue.e2e_public, 32) != 0) {
-                ESP_LOGE(TAG, "         ❌ E2E KEYPAIR MISMATCH! Keys were overwritten!");
-            } else {
-                ESP_LOGI(TAG, "         ✅ E2E keypair verified - matches!");
-            }
-            
-            // ⭐ FIX Session 14 v3: crypto_secretbox_open_detached
-            // Haskell: [MAC 16 bytes][Ciphertext]
-            // libsodium detached: MAC und Ciphertext separat
-            
-            // 1. Peer public key aus Nachricht [28-59]
-            uint8_t e2e_peer_public[32];
-            memcpy(e2e_peer_public, &server_plain[28], 32);
-            ESP_LOGI(TAG, "         e2ePubKey: %02x%02x%02x%02x...",
-                     e2e_peer_public[0], e2e_peer_public[1],
-                     e2e_peer_public[2], e2e_peer_public[3]);
-            
-            // 2. Nonce aus [60-83]
-            uint8_t cm_nonce[24];
-            memcpy(cm_nonce, &server_plain[60], 24);
-            ESP_LOGI(TAG, "         cmNonce: %02x%02x%02x%02x...",
-                     cm_nonce[0], cm_nonce[1], cm_nonce[2], cm_nonce[3]);
-            
-            // 3. cmEncBody bei [84+]
-            int cm_enc_offset = 84;
-            int cm_enc_len = plain_len - cm_enc_offset;
-            ESP_LOGI(TAG, "         cmEncBody offset: %d, len: %d", cm_enc_offset, cm_enc_len);
-            
-            // 4. Raw DH (OHNE HSalsa20!)
-            uint8_t dh_secret[32];
-            crypto_scalarmult(dh_secret, our_queue.e2e_private, e2e_peer_public);
-            ESP_LOGI(TAG, "         DH secret: %02x%02x%02x%02x...",
-                     dh_secret[0], dh_secret[1], dh_secret[2], dh_secret[3]);
-            
-            // 5. Haskell format: [MAC 16][Ciphertext]
-            const uint8_t *mac = &server_plain[cm_enc_offset];          // erste 16 bytes = MAC
-            const uint8_t *ciphertext = &server_plain[cm_enc_offset + 16];  // rest = ciphertext
-            int ciphertext_len = cm_enc_len - 16;
-            
-            ESP_LOGI(TAG, "         MAC: %02x%02x%02x%02x...",
-                     mac[0], mac[1], mac[2], mac[3]);
-            ESP_LOGI(TAG, "         Ciphertext len: %d", ciphertext_len);
-            ESP_LOGI(TAG, "         Trying crypto_secretbox_open_detached...");
-            
-            // 6. Decrypt mit crypto_secretbox_open_detached
-            uint8_t *cm_plain = malloc(ciphertext_len);
-            if (cm_plain) {
-                int ret = crypto_secretbox_open_detached(
-                    cm_plain,       // output
-                    ciphertext,     // ciphertext (NACH dem MAC)
-                    mac,            // MAC (erste 16 bytes)
-                    ciphertext_len, // nur ciphertext länge
-                    cm_nonce,
-                    dh_secret
-                );
                 
-                if (ret == 0) {
-                    ESP_LOGI(TAG, "      ╔══════════════════════════════════════════════╗");
-                    ESP_LOGI(TAG, "      ║  ✅ PER-QUEUE E2E DECRYPT SUCCESS!          ║");
-                    ESP_LOGI(TAG, "      ╚══════════════════════════════════════════════╝");
-                    ESP_LOGI(TAG, "         Decrypted: %d bytes", ciphertext_len);
-                    printf("         First 32: ");
-                    for (int i = 0; i < 32 && i < ciphertext_len; i++) printf("%02x ", cm_plain[i]);
-                    printf("\n");
-                    
-                    // Parse PrivHeader + AgentMsgEnvelope...
-                    if (ciphertext_len > 0) {
-                        char priv_header_tag = cm_plain[0];
-                        ESP_LOGI(TAG, "         PrivHeader: '%c' (0x%02x)", priv_header_tag, priv_header_tag);
-                        
-                        int agent_msg_offset = 1;
-                        if (priv_header_tag == 'K') {
-                            uint8_t sender_key_len = cm_plain[1];
-                            agent_msg_offset = 2 + sender_key_len;
-                            ESP_LOGI(TAG, "         SenderKey len: %d", sender_key_len);
-                        }
-                        
-                        if (agent_msg_offset < ciphertext_len - 4) {
-                            uint8_t *agent_msg = &cm_plain[agent_msg_offset];
-                            
-                            ESP_LOGI(TAG, "         AgentMsg first bytes: %02x %02x %02x %02x",
-                                     agent_msg[0], agent_msg[1], agent_msg[2], agent_msg[3]);
-                            
-                            uint16_t agent_version = (agent_msg[0] << 8) | agent_msg[1];
-                            char msg_type = agent_msg[2];
-                            
-                            ESP_LOGI(TAG, "         Agent Version: %d, Type: '%c'", agent_version, msg_type);
-                            
-                            if (msg_type == 'C') {
-                                ESP_LOGI(TAG, "         📬 AgentConfirmation received!");
-                            } else if (msg_type == 'M') {
-                                ESP_LOGI(TAG, "         📨 AgentMsgEnvelope received!");
-                            }
-                        }
-                    }
-                    
-                } else {
-                    ESP_LOGE(TAG, "      ❌ Per-queue E2E decrypt FAILED (ret=%d)", ret);
-                }
-                free(cm_plain);
+                free(server_plain);
             }
-        } else {
-            ESP_LOGE(TAG, "         ❌ Unexpected SPKI length: %d (expected 44)", spki_len);
-        }
-    } else if (server_plain[14] == '0') {
-        ESP_LOGI(TAG, "         phE2ePubDhKey = Nothing (pre-computed secret)");
-        ESP_LOGE(TAG, "         ❌ Pre-computed secret not yet implemented!");
-    } else {
-        ESP_LOGE(TAG, "         ❌ Unknown Maybe tag: 0x%02x", server_plain[14]);
-    }
-}
+            // ============================================================================
+            // END REPLY QUEUE DECRYPTION
+            // ============================================================================
 
-// === END TEST4 ===
-
-                    } else {
-                        ESP_LOGE(TAG, "      ❌ Server-level decrypt FAILED!");
-                    }
-                    free(server_plain);
-                }
-            }
-            // === END REPLY QUEUE DECRYPTION ===
-
-            // Decrypt
+            // Contact Queue Decryption (existing code)
             if (contact && contact->have_srv_dh && enc_len > crypto_box_MACBYTES) {
                 uint8_t *plain = malloc(enc_len);
                 if (plain) {
@@ -898,45 +672,38 @@ if (maybe_e2e == '1') {
                     if (decrypt_smp_message(contact, &resp[p], enc_len, msg_id, msgIdLen, plain, &plain_len)) {
                         ESP_LOGI(TAG, "   SMP-Level Decryption OK! (%d bytes)", plain_len);
                         
-                        // === DEBUG: HEX-DUMP of the decrypted Agent message ===
-                        ESP_LOGI(TAG, "");
-                        ESP_LOGI(TAG, "   RAW AGENT MESSAGE (first 60 bytes):");
-                        printf("   ");
-                        for (int i = 0; i < plain_len && i < 60; i++) {
-                            printf("%02x ", plain[i]);
-                        }
-                        printf("\n");
-                        ESP_LOGI(TAG, "   === END DEBUG ===");
-                        ESP_LOGI(TAG, "");
-                        // === CONTACT QUEUE: Extract e2ePubKey for Reply Queue ===
-                        if (contact && plain_len > 60) {
-                            int offset = 14;
-                            uint8_t maybe_corrId = plain[offset];
-                            uint8_t maybe_e2e = plain[offset + 1];
-                            offset += 2;
+                        // ================================================================
+                        // FIX v0.1.18: DO NOT extract E2E key from PubHeader here!
+                        // The PubHeader SPKI is an EPHEMERAL key for THIS message only.
+                        // The correct Reply Queue E2E key is extracted via 
+                        // parse_agent_confirmation() from the AgentConnInfoReply.
+                        // ================================================================
+                        
+                        // DEBUG: Show message structure (but don't extract wrong key!)
+                        if (plain_len > 60) {
+                            ESP_LOGI(TAG, "   DEBUG Contact Queue [10-17]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                                     plain[10], plain[11], plain[12], plain[13], 
+                                     plain[14], plain[15], plain[16], plain[17]);
                             
-                            if (maybe_corrId == '1') offset += 44;
+                            // Look for X25519 SPKI header for debug purposes only
+                            const uint8_t x25519_spki[] = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 
+                                                           0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00};
                             
-                            if (maybe_e2e == '1' && !reply_queue_e2e_peer_valid) {
-                                if (offset + 44 <= plain_len && 
-                                    plain[offset] == 0x30 && plain[offset+1] == 0x2a) {
-                                    
-                                    ESP_LOGI(TAG, "   🔑 Found e2ePubKey in PubHeader at offset %d!", offset);
-                                    memcpy(reply_queue_e2e_peer_public, &plain[offset + 12], 32);
-                                    reply_queue_e2e_peer_valid = true;
-                                    
-                                    ESP_LOGI(TAG, "   ╔═══════════════════════════════════════════════════════╗");
-                                    ESP_LOGI(TAG, "   ║  🎉 REPLY QUEUE E2E KEY EXTRACTED!                    ║");
-                                    ESP_LOGI(TAG, "   ╚═══════════════════════════════════════════════════════╝");
-                                    ESP_LOGI(TAG, "      Key: %02x%02x%02x%02x%02x%02x%02x%02x...",
-                                            reply_queue_e2e_peer_public[0], reply_queue_e2e_peer_public[1],
-                                            reply_queue_e2e_peer_public[2], reply_queue_e2e_peer_public[3],
-                                            reply_queue_e2e_peer_public[4], reply_queue_e2e_peer_public[5],
-                                            reply_queue_e2e_peer_public[6], reply_queue_e2e_peer_public[7]);
-                                }
+                            if (memcmp(&plain[14], x25519_spki, 12) == 0) {
+                                // DEBUG ONLY - log but DON'T set reply_queue_e2e_peer_public!
+                                ESP_LOGI(TAG, "   DEBUG: Found PubHeader SPKI at offset 14 (ephemeral, NOT Reply Queue E2E!)");
+                                ESP_LOGI(TAG, "          Key: %02x%02x%02x%02x%02x%02x%02x%02x...",
+                                        plain[26], plain[27], plain[28], plain[29],
+                                        plain[30], plain[31], plain[32], plain[33]);
+                                // OLD BUGGY CODE (REMOVED):
+                                // memcpy(reply_queue_e2e_peer_public, &plain[26], 32);
+                                // reply_queue_e2e_peer_valid = true;
                             }
                         }
-                        // Parse agent message
+                        
+                        // Parse agent message (this triggers peer connection!)
+                        // parse_agent_message() will call parse_agent_confirmation()
+                        // which extracts the CORRECT Reply Queue E2E key
                         parse_agent_message(contact, plain, plain_len);
                         
                         // Send ACK
@@ -985,8 +752,8 @@ if (maybe_e2e == '1') {
                     }
                     free(plain);
                 }
-            } else {
-                ESP_LOGW(TAG, "      Cannot decrypt - no contact keys and ratchet not initialized");
+            } else if (!is_reply_queue) {
+                ESP_LOGW(TAG, "      Cannot decrypt - no contact keys");
             }
             ESP_LOGI(TAG, "");
         }
@@ -1021,7 +788,7 @@ cleanup:
 
 void app_main(void) {
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "SimpleGo v0.1.17-alpha starting...");
+    ESP_LOGI(TAG, "SimpleGo v0.1.18-alpha starting...");
     
     // Initialize libsodium
     if (sodium_init() < 0) {
@@ -1102,10 +869,6 @@ void app_main(void) {
                  our_queue.snd_id[0], our_queue.snd_id[1],
                  our_queue.snd_id[2], our_queue.snd_id[3],
                  our_queue.snd_id_len);
-        // ADD DEBUG HERE: After queue_create() return in main.c
-        ESP_LOGI(TAG, "DEBUG shared_secret check: %02x%02x%02x%02x", 
-                 our_queue.shared_secret[0], our_queue.shared_secret[1],
-                 our_queue.shared_secret[2], our_queue.shared_secret[3]);
     }
     
     // Close queue connection - main connection will be separate

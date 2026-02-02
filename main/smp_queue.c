@@ -2,6 +2,7 @@
  * SimpleGo - smp_queue.c
  * SMP Queue Management (NEW, SUB, ACK commands)
  * v0.1.15-alpha - FIXED: NEW command now properly signed!
+ * + DEBUG: E2E key tracking to find key mismatch bug
  */
 
 #include "smp_queue.h"
@@ -207,9 +208,26 @@ bool queue_create(const char *host, int port) {
 
     // E2E keypair (separate from server DH!)
     crypto_box_keypair(our_queue.e2e_public, our_queue.e2e_private);
-    ESP_LOGI(TAG, "    E2E public: %02x%02x%02x%02x...",
-         our_queue.e2e_public[0], our_queue.e2e_public[1],
-         our_queue.e2e_public[2], our_queue.e2e_public[3]);
+    
+    // ================================================================
+    // CRITICAL DEBUG: Log the E2E keys we generated!
+    // These MUST match what we use for decryption later!
+    // ================================================================
+    ESP_LOGW(TAG, "");
+    ESP_LOGW(TAG, "   ╔═══════════════════════════════════════════════════════╗");
+    ESP_LOGW(TAG, "   ║  🔑 E2E KEYPAIR GENERATED (SAVE THESE!)              ║");
+    ESP_LOGW(TAG, "   ╚═══════════════════════════════════════════════════════╝");
+    ESP_LOGW(TAG, "   E2E PUBLIC:  %02x%02x%02x%02x %02x%02x%02x%02x...",
+             our_queue.e2e_public[0], our_queue.e2e_public[1],
+             our_queue.e2e_public[2], our_queue.e2e_public[3],
+             our_queue.e2e_public[4], our_queue.e2e_public[5],
+             our_queue.e2e_public[6], our_queue.e2e_public[7]);
+    ESP_LOGW(TAG, "   E2E PRIVATE: %02x%02x%02x%02x %02x%02x%02x%02x...",
+             our_queue.e2e_private[0], our_queue.e2e_private[1],
+             our_queue.e2e_private[2], our_queue.e2e_private[3],
+             our_queue.e2e_private[4], our_queue.e2e_private[5],
+             our_queue.e2e_private[6], our_queue.e2e_private[7]);
+    ESP_LOGW(TAG, "");
     
     ESP_LOGI(TAG, "   Auth public: %02x%02x%02x%02x...",
              our_queue.rcv_auth_public[0], our_queue.rcv_auth_public[1],
@@ -459,7 +477,6 @@ bool queue_create(const char *host, int port) {
             return false;
         }
 
-        // ADD THIS:
         ESP_LOGI(TAG, "   shared_secret at creation: %02x%02x%02x%02x...",
                  our_queue.shared_secret[0], our_queue.shared_secret[1],
                  our_queue.shared_secret[2], our_queue.shared_secret[3]);
@@ -555,11 +572,26 @@ int queue_encode_info(uint8_t *buf, int max_len) {
     p += 12;
     memcpy(&buf[p], our_queue.e2e_public, 32);
     p += 32;
-
-    // queueMode = Nothing (Maybe encoding)
-    // Für clientVersion >= shortLinksSMPClientVersion wird queueMode optional geparst
-    // Nothing = kein extra byte ODER 0x00
-    // Prüfe was shortLinksSMPClientVersion ist...
+    
+    // ================================================================
+    // CRITICAL DEBUG: Log which E2E key we're SENDING to peer!
+    // This MUST match what queue_create() generated!
+    // ================================================================
+    ESP_LOGW(TAG, "");
+    ESP_LOGW(TAG, "   ╔═══════════════════════════════════════════════════════╗");
+    ESP_LOGW(TAG, "   ║  🔑 queue_encode_info: SENDING E2E KEY TO PEER       ║");
+    ESP_LOGW(TAG, "   ╚═══════════════════════════════════════════════════════╝");
+    ESP_LOGW(TAG, "   SENDING e2e_public:  %02x%02x%02x%02x %02x%02x%02x%02x...",
+             our_queue.e2e_public[0], our_queue.e2e_public[1],
+             our_queue.e2e_public[2], our_queue.e2e_public[3],
+             our_queue.e2e_public[4], our_queue.e2e_public[5],
+             our_queue.e2e_public[6], our_queue.e2e_public[7]);
+    ESP_LOGW(TAG, "   MATCHING e2e_private: %02x%02x%02x%02x %02x%02x%02x%02x...",
+             our_queue.e2e_private[0], our_queue.e2e_private[1],
+             our_queue.e2e_private[2], our_queue.e2e_private[3],
+             our_queue.e2e_private[4], our_queue.e2e_private[5],
+             our_queue.e2e_private[6], our_queue.e2e_private[7]);
+    ESP_LOGW(TAG, "");
 
     ESP_LOGI(TAG, "   Encoded SMPQueueInfo: %d bytes", p);
     return p;
