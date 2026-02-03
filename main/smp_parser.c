@@ -302,26 +302,6 @@ void parse_agent_message(contact_t *contact, const uint8_t *plain, int plain_len
                     
                     if (type == 'C') {
                         ESP_LOGI(TAG, "      🎉 CONFIRMATION received!");
-                        
-                        // ================================================================
-                        // FIX v0.1.18d: Parse Confirmation to extract Reply Queue E2E key!
-                        // The decrypted buffer starting at toff contains:
-                        //   [PrivHeader '_'][AgentVersion][Type 'C'][E2E params][encConnInfo]
-                        // parse_agent_confirmation() will:
-                        //   1. Parse E2E params (X448 keys for Double Ratchet)
-                        //   2. Decrypt encConnInfo with ratchet_decrypt_incoming()
-                        //   3. Parse AgentConnInfoReply to extract X25519 E2E key
-                        //   4. Store in reply_queue_e2e_peer_public
-                        // ================================================================
-                        ESP_LOGI(TAG, "");
-                        ESP_LOGI(TAG, "      🔑 Parsing Confirmation for Reply Queue E2E key...");
-                        int parse_result = parse_agent_confirmation(decrypted + toff, dec_len - toff);
-                        if (parse_result == 0) {
-                            ESP_LOGI(TAG, "      ✅ Reply Queue E2E key extracted successfully!");
-                        } else {
-                            ESP_LOGW(TAG, "      ⚠️ Could not extract Reply Queue E2E key (code %d)", parse_result);
-                            ESP_LOGW(TAG, "      (This is OK if peer hasn't sent AgentConnInfoReply yet)");
-                        }
                     }
                     else if (type == 'I') {
                         ESP_LOGI(TAG, "      🎉 INVITATION received!");
@@ -740,8 +720,8 @@ int parse_agent_confirmation(const uint8_t *cm_plain, int cm_plain_len) {
     size_t conn_info_plain_len = 0;
     
     // Use the RECEIVER ratchet to decrypt (we're receiving from peer)
-    int rc_result = ratchet_decrypt_incoming(enc_conn_info, enc_conn_info_len,
-                                              conn_info_plain, &conn_info_plain_len);
+    int rc_result = ratchet_decrypt(enc_conn_info, enc_conn_info_len,
+                                    conn_info_plain, &conn_info_plain_len);
     
     if (rc_result != 0) {
         ESP_LOGE(TAG, "   ❌ Ratchet decrypt FAILED (code %d)", rc_result);

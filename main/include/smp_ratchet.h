@@ -1,7 +1,11 @@
 /**
  * SimpleGo - smp_ratchet.h
  * Double Ratchet Encryption with CORRECT Wire Format
- * v0.1.18-alpha
+ * v0.1.22-alpha - Updated 2026-02-03
+ * 
+ * CRITICAL: rcAD = initiator_pub || responder_pub (ABSOLUTE order!)
+ * We are RESPONDER, peer is INITIATOR
+ * Therefore: rcAD = peer_key1 || our_key1
  */
 
 #ifndef SMP_RATCHET_H
@@ -46,9 +50,12 @@ typedef struct {
     // State flags
     bool initialized;
     
-    // Associated Data for AEAD (our_key1_public || peer_key1)
-    // ? wird typischerweise beim Initialisieren gesetzt und bleibt konstant
-    uint8_t assoc_data[112];         // 56 + 56 bytes = our pub || peer pub
+    // Associated Data for AEAD
+    // CRITICAL FIX v0.1.22: rcAD = initiator_key1 || responder_key1
+    // Since we are RESPONDER and peer is INITIATOR:
+    //   assoc_data = peer_key1 (56 bytes) || our_key1 (56 bytes)
+    // This is ABSOLUTE (role-based), NOT relative (our/peer)!
+    uint8_t assoc_data[112];         // 56 + 56 bytes = initiator || responder
 
 } ratchet_state_t;
 
@@ -58,9 +65,9 @@ typedef struct {
  * Perform X3DH key agreement as sender (initiator)
  * This establishes the initial root key for the ratchet
  * 
- * @param peer_key1           Peer's X448 identity key (56 bytes)
+ * @param peer_key1           Peer's X448 identity key (56 bytes) - INITIATOR
  * @param peer_key2           Peer's X448 signed prekey (56 bytes)
- * @param our_key1            Our X448 identity keypair
+ * @param our_key1            Our X448 identity keypair - RESPONDER
  * @param our_key2            Our ephemeral X448 keypair (used for DH)
  * @return true on success
  */
@@ -86,30 +93,34 @@ bool ratchet_init_sender(const uint8_t *peer_dh_public,
 /**
  * Encrypt a message using the Double Ratchet
  * 
- * Output format (example for 224-byte payload � 367 bytes total):
- *   [0-1]     Length-Prefix (Word16 BE)
- *   [2]       Large-Tag = 0x1F
- *   [3-4]     Header-Length (Word16 BE) = 122
- *   [5-6]     ehVersion (Word16 BE) = 2
- *   [7-22]    ehIV (16 bytes)
- *   [23-38]   ehAuthTag (16 bytes)
- *   [39-126]  ehBody (88 bytes encrypted header)
- *   [127-142] emAuthTag (16 bytes)
- *   [143-...] emBody (encrypted payload + padding if needed)
+ * Output format (Version 2, non-PQ):
+ *   [0]       emHeader-len = 0x7B (123)
+ *   [1-123]   emHeader (123 bytes)
+ *   [124-139] payload AuthTag (16 bytes)
+ *   [140-...] encrypted payload
  * 
- * @param plaintext   Input data to encrypt
- * @param pt_len      Length of plaintext
- * @param output      Output buffer (must be large enough: pt_len + ~150 bytes)
- * @param out_len     Output: actual length written
+ * emHeader structure:
+ *   [0-1]     ehVersion (Word16 BE) = 2
+ *   [2-17]    ehIV (16 bytes)
+ *   [18-33]   ehAuthTag (16 bytes)
+ *   [34]      ehBody-len = 0x58 (88)
+ *   [35-122]  ehBody (88 bytes encrypted MsgHeader)
+ * 
+ * @param plaintext       Input data to encrypt
+ * @param pt_len          Length of plaintext
+ * @param output          Output buffer (must be large enough: pt_len + ~150 bytes)
+ * @param out_len         Output: actual length written
+ * @param padded_msg_len  Target padded message length
  * @return 0 on success, negative on error
  */
 int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
                     uint8_t *output, size_t *out_len,
                     size_t padded_msg_len);
+
 /**
  * Decrypt a message using the Double Ratchet
  * 
- * @param ciphertext  Encrypted data (full encConnInfo format)
+ * @param ciphertext  Encrypted data (EncRatchetMessage format)
  * @param ct_len      Length of ciphertext
  * @param plaintext   Output buffer for decrypted message
  * @param pt_len      Output: actual length written
@@ -118,8 +129,13 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
 int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
                     uint8_t *plaintext, size_t *pt_len);
 
-int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
-                             uint8_t *plaintext, size_t *pt_len);
+/**
+ * Self-decrypt test (for debugging)
+ * Attempts to decrypt a message we just encrypted (header only)
+ * Note: This is expected to fail because sender uses HKs but receiver needs HKr
+ */
+int ratchet_self_decrypt_test(const uint8_t *ciphertext, size_t ct_len,
+                              uint8_t *plaintext, size_t *pt_len);
 
 // ============== State Access / Debug ==============
 

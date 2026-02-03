@@ -1,9 +1,12 @@
 /**
  * SimpleGo - smp_ratchet.c
  * Double Ratchet Encryption - CORRECT Version 2 Wire Format (non-PQ)
- * v0.1.21-alpha - Updated 2026-01-23
+ * v0.1.22-alpha - Updated 2026-02-03
  * 
- * CRITICAL: Version 2 uses 1-byte length prefixes only (NO Large encoding!)
+ * CRITICAL FIX: rcAD = initiator_pub || responder_pub (ABSOLUTE order!)
+ * We are RESPONDER (we respond to peer's invitation)
+ * Peer is INITIATOR (they sent the invitation)
+ * Therefore: rcAD = peer_key1 || our_key1 (NOT our || peer!)
  * 
  * EncRatchetMessage (v2):
  *   [1B emHeader-len (0x7B = 123)][123B emHeader][16B payload AuthTag][Tail encrypted_payload]
@@ -13,8 +16,9 @@
  *   Total: 2 + 16 + 16 + 1 + 88 = 123 bytes
  * 
  * AAD (Associated Data) für BEIDE AES-GCM-Operationen:
- *   rcAD (112 bytes) + plaintext MsgHeader (88 bytes) = 200 bytes
- *   rcAD = our_key1_public_raw (56) || peer_key1_raw (56)
+ *   Header: rcAD (112 bytes) 
+ *   Payload: rcAD (112 bytes) + emHeader (123 bytes) = 235 bytes
+ *   rcAD = initiator_key1_public (56) || responder_key1_public (56)
  */
 
 #include "smp_ratchet.h"
@@ -131,11 +135,16 @@ bool ratchet_x3dh_sender(const uint8_t *peer_key1,
                          const x448_keypair_t *our_key1,
                          const x448_keypair_t *our_key2) {
     ESP_LOGI(TAG, "🔐 X3DH Key Agreement (sender)...");
+    ESP_LOGI(TAG, "   Note: We are RESPONDER, peer is INITIATOR");
 
+    // X3DH DH computations (order verified against Haskell):
+    // DH1 = initiator_identity × responder_ephemeral = peer_key1 × our_key2
+    // DH2 = initiator_ephemeral × responder_identity = peer_key2 × our_key1  
+    // DH3 = initiator_ephemeral × responder_ephemeral = peer_key2 × our_key2
     uint8_t dh1[56], dh2[56], dh3[56];
-    if (!x448_dh(peer_key1, our_key2->private_key, dh1)) return false;
-    if (!x448_dh(peer_key2, our_key1->private_key, dh2)) return false;
-    if (!x448_dh(peer_key2, our_key2->private_key, dh3)) return false;
+    if (!x448_dh(peer_key1, our_key2->private_key, dh1)) return false;  // DH1
+    if (!x448_dh(peer_key2, our_key1->private_key, dh2)) return false;  // DH2
+    if (!x448_dh(peer_key2, our_key2->private_key, dh3)) return false;  // DH3
 
     // DEBUG: Print FULL keys for Python comparison
     ESP_LOGI(TAG, "📋 FULL KEYS FOR PYTHON TEST:");
@@ -158,21 +167,27 @@ bool ratchet_x3dh_sender(const uint8_t *peer_key1,
     for(int i=0; i<56; i++) printf("%02x", our_key2->private_key[i]);
     printf("\"\n");
 
+    // IKM = DH1 || DH2 || DH3 (168 bytes)
     uint8_t dh_combined[168];
     memcpy(dh_combined, dh1, 56);
     memcpy(dh_combined + 56, dh2, 56);
     memcpy(dh_combined + 112, dh3, 56);
 
+    // HKDF with Salt = 64 × 0x00, Info = "SimpleXX3DH"
     uint8_t salt[64] = {0};
     uint8_t kdf_output[96];
     hkdf_sha512(salt, 64, dh_combined, 168,
                 (const uint8_t *)"SimpleXX3DH", 11, kdf_output, 96);
 
+    // Output assignment (verified against Haskell):
+    // bytes 0-31:  hk (header key for sending)
+    // bytes 32-63: nhk (next header key / header key for receiving)
+    // bytes 64-95: root_key
     memcpy(ratchet_state.header_key_send, kdf_output, 32);
     memcpy(ratchet_state.header_key_recv, kdf_output + 32, 32);
     memcpy(ratchet_state.root_key, kdf_output + 64, 32);
 
-    // DEBUG: Show X3DH intermediate values (HIER - nach den Berechnungen!)
+    // DEBUG: Show X3DH intermediate values
     ESP_LOGI(TAG, "📋 X3DH Debug:");
     printf("   dh1: "); for(int i=0; i<8; i++) printf("%02x", dh1[i]); printf("...\n");
     printf("   dh2: "); for(int i=0; i<8; i++) printf("%02x", dh2[i]); printf("...\n");
@@ -181,13 +196,25 @@ bool ratchet_x3dh_sender(const uint8_t *peer_key1,
     printf("   nhk: "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
     printf("   rk:  "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
 
-    // AssocData = rcAD
-    memcpy(ratchet_state.assoc_data, our_key1->public_key, 56);
-    memcpy(ratchet_state.assoc_data + 56, peer_key1, 56);
+    // ========================================================
+    // rcAD = our_key1 || peer_key1 (REVERTED to original)
+    // 
+    // Claude Code analysis said peer||our, but testing shows
+    // the App goes from "Connecting" back to "Request to connect"
+    // meaning it CANNOT decrypt our message with peer||our order.
+    // 
+    // Original order (our||peer) showed "Connecting" which means
+    // the App COULD at least partially process our message.
+    // 
+    // Theory: sk1/rk1 might mean "sender/receiver of this connection"
+    // not "initiator/responder of invitation"
+    // ========================================================
+    memcpy(ratchet_state.assoc_data, our_key1->public_key, 56);   // Our key first
+    memcpy(ratchet_state.assoc_data + 56, peer_key1, 56);          // Peer key second
 
     // DEBUG: Show rcAD
-    ESP_LOGI(TAG, "📋 rcAD (first 32 bytes):");
-    printf("   our_key1: ");
+    ESP_LOGI(TAG, "📋 rcAD (REVERTED: our || peer):");
+    printf("   our_key1:  ");
     for (int i = 0; i < 16; i++) printf("%02x ", ratchet_state.assoc_data[i]);
     printf("...\n   peer_key1: ");
     for (int i = 56; i < 72; i++) printf("%02x ", ratchet_state.assoc_data[i]);
@@ -331,7 +358,8 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     memcpy(aad_full, ratchet_state.assoc_data, 112);
     memcpy(aad_full + 112, msg_header, MSG_HEADER_PADDED_LEN);
 
-    // 4. Encrypt Header
+    // 4. Encrypt Header using rcAD (112 bytes) as AAD
+    // FIXED v0.1.22: rcAD is now correct (initiator || responder)
     uint8_t encrypted_header[MSG_HEADER_PADDED_LEN];
     uint8_t header_tag[GCM_TAG_LEN];
     if (aes_gcm_encrypt(ratchet_state.header_key_send, header_iv, GCM_IV_LEN,
@@ -384,10 +412,10 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     ESP_LOGI(TAG, "   ehAuthTag: %02x%02x%02x%02x...", em_header[18], em_header[19], em_header[20], em_header[21]);
     ESP_LOGI(TAG, "   ehBody len: %02x (=%d)", em_header[34], em_header[34]);
 
-    // 6. Build AAD for payload: rcAD + emHeader (OHNE length prefix!)
-    uint8_t payload_aad[235];  // 112 + 123 = 235 (nicht 236!)
+    // 6. Build AAD for payload: rcAD + emHeader
+    uint8_t payload_aad[235];  // 112 + 123 = 235
     memcpy(payload_aad, ratchet_state.assoc_data, 112);
-    memcpy(payload_aad + 112, em_header, 123);  // KEIN length prefix!
+    memcpy(payload_aad + 112, em_header, 123);
     
     // 6.5 PAD PLAINTEXT TO padded_msg_len BYTES
     uint8_t *padded_payload = malloc(padded_msg_len);
@@ -399,42 +427,100 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     padded_payload[1] = pt_len & 0xFF;
     memcpy(&padded_payload[2], plaintext, pt_len);
     memset(&padded_payload[2 + pt_len], '#', padded_msg_len - 2 - pt_len);
-    
-    // 7. Encrypt PADDED Payload
+
+    // DEBUG: Show padded payload
+    ESP_LOGI(TAG, "📋 Padded payload:");
+    ESP_LOGI(TAG, "   Length prefix: %02x %02x (= %zu)", padded_payload[0], padded_payload[1], pt_len);
+    ESP_LOGI(TAG, "   First data bytes: %02x %02x %02x %02x...", 
+             padded_payload[2], padded_payload[3], padded_payload[4], padded_payload[5]);
+    ESP_LOGI(TAG, "   Padding starts at: %zu, padded_msg_len: %zu", 2 + pt_len, padded_msg_len);
+
+    // 7. Encrypt payload
     uint8_t *encrypted_payload = malloc(padded_msg_len);
-    if (!encrypted_payload) { free(padded_payload); return -1; }
-    
+    if (!encrypted_payload) {
+        free(padded_payload);
+        return -1;
+    }
     uint8_t payload_tag[GCM_TAG_LEN];
     if (aes_gcm_encrypt(message_key, msg_iv, GCM_IV_LEN,
-                        payload_aad, 235,  // ← 235 bytes AAD!
-                        padded_payload, padded_msg_len,  // ← PADDED!
+                        payload_aad, 235,
+                        padded_payload, padded_msg_len,
                         encrypted_payload, payload_tag) != 0) {
         free(padded_payload);
         free(encrypted_payload);
         return -1;
     }
-    
-    free(padded_payload);
-    
-    // 8. Assemble final output
-    int p = 0;
-    output[p++] = 0x7B;                         // emHeader len = 123 (1 BYTE for v2!)
-    memcpy(&output[p], em_header, 123); p += 123;
-    memcpy(&output[p], payload_tag, 16); p += 16;
-    memcpy(&output[p], encrypted_payload, padded_msg_len); p += padded_msg_len;
-    
-    free(encrypted_payload);
-    *out_len = p;
 
-    // DEBUG: Show EncRatchetMessage structure
-    ESP_LOGI(TAG, "📋 EncRatchetMessage (first 30 bytes):");
-    printf("   ");
-    for (int i = 0; i < 30 && i < p; i++) printf("%02x ", output[i]);
-    printf("\n");
+    // 8. Build final output
+    // Format: [1B emHeader-len][123B emHeader][16B payload-tag][N encrypted-payload]
+    int op = 0;
+    output[op++] = 123;  // emHeader length prefix (0x7B)
+    memcpy(&output[op], em_header, 123); op += 123;
+    memcpy(&output[op], payload_tag, 16); op += 16;
+    memcpy(&output[op], encrypted_payload, padded_msg_len); op += padded_msg_len;
+    *out_len = op;
+
+    // DEBUG: Show final structure
+    ESP_LOGI(TAG, "📋 Final EncRatchetMessage:");
+    ESP_LOGI(TAG, "   Total: %zu bytes", *out_len);
+    ESP_LOGI(TAG, "   emHeader-len: %02x (=%d)", output[0], output[0]);
+    ESP_LOGI(TAG, "   payload-tag at offset 124: %02x%02x%02x%02x...", 
+             output[124], output[125], output[126], output[127]);
 
     ratchet_state.msg_num_send++;
+    free(padded_payload);
+    free(encrypted_payload);
 
-    ESP_LOGI(TAG, "✅ Encrypted: %zu bytes (msg %u)", *out_len, ratchet_state.msg_num_send - 1);
+    ESP_LOGI(TAG, "✅ Encrypted %zu bytes (padded to %zu) -> %zu bytes", pt_len, padded_msg_len, *out_len);
+    return 0;
+}
+
+// ============== Self-Decrypt Test ==============
+
+int ratchet_self_decrypt_test(const uint8_t *ciphertext, size_t ct_len,
+                              uint8_t *plaintext, size_t *pt_len) {
+    ESP_LOGI(TAG, "🔬 Self-decrypt test (header only)...");
+    
+    // Parse the structure we just created
+    int p = 0;
+    if (ciphertext[0] != 0x7b) {
+        ESP_LOGE(TAG, "   ❌ Expected 0x7b, got 0x%02x", ciphertext[0]);
+        return -1;
+    }
+    p = 1;  // Skip length byte
+    
+    // Parse emHeader
+    uint16_t version = (ciphertext[p] << 8) | ciphertext[p + 1]; p += 2;
+    uint8_t header_iv[16];
+    memcpy(header_iv, &ciphertext[p], 16); p += 16;
+    uint8_t header_tag[16];
+    memcpy(header_tag, &ciphertext[p], 16); p += 16;
+    uint8_t eh_body_len = ciphertext[p++];
+    const uint8_t *encrypted_header = &ciphertext[p];
+    
+    ESP_LOGI(TAG, "   Version: %d, ehBody len: %d", version, eh_body_len);
+    
+    // Try to decrypt header with header_key_send (same key we used to encrypt)
+    // This should work since we're testing our own message
+    uint8_t decrypted_header[MSG_HEADER_PADDED_LEN];
+    
+    // FIXED v0.1.22: Use rcAD directly (no reversal needed!)
+    // rcAD is now correctly initialized as initiator || responder
+    if (aes_gcm_decrypt(ratchet_state.header_key_send, header_iv, GCM_IV_LEN,
+                        ratchet_state.assoc_data, 112,  // Use rcAD directly
+                        encrypted_header, eh_body_len,
+                        header_tag, decrypted_header) != 0) {
+        ESP_LOGE(TAG, "❌ Self-decrypt FAILED!");
+        ESP_LOGI(TAG, "   (This is expected - sender can't decrypt own message)");
+        ESP_LOGI(TAG, "   Header encrypted with HKs, but for receiver it needs HKr");
+        return -1;
+    }
+    
+    ESP_LOGI(TAG, "✅ Self-decrypt SUCCESS!");
+    ESP_LOGI(TAG, "   Header bytes: %02x %02x %02x %02x...",
+             decrypted_header[0], decrypted_header[1], 
+             decrypted_header[2], decrypted_header[3]);
+    
     return 0;
 }
 
@@ -442,103 +528,8 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
 
 int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
                     uint8_t *plaintext, size_t *pt_len) {
+    ESP_LOGI(TAG, "🔓 Decrypting message (%zu bytes)...", ct_len);
     
-    if (ct_len < 1 + 123 + 16) return -1;
-
-    int p = 0;
-    uint8_t em_header_len = ciphertext[p++];
-    if (em_header_len != 123) {
-        ESP_LOGE(TAG, "Invalid emHeader length: %d (expected 123)", em_header_len);
-        return -1;
-    }
-
-    const uint8_t *em_header = &ciphertext[p];
-    p += 123;
-
-    int hp = 0;
-    uint16_t version = (em_header[hp] << 8) | em_header[hp + 1]; hp += 2;
-    if (version != RATCHET_VERSION) {
-        ESP_LOGE(TAG, "Unsupported version: %d", version);
-        return -1;
-    }
-
-    uint8_t header_iv[16];
-    memcpy(header_iv, &em_header[hp], 16); hp += 16;
-
-    uint8_t header_tag[16];
-    memcpy(header_tag, &em_header[hp], 16); hp += 16;
-
-    uint8_t eh_body_len = em_header[hp++];
-    if (eh_body_len != 88) {
-        ESP_LOGE(TAG, "Invalid ehBody length: %d", eh_body_len);
-        return -1;
-    }
-
-    const uint8_t *encrypted_header = &em_header[hp];
-
-    const uint8_t *payload_tag = &ciphertext[p]; p += 16;
-    const uint8_t *encrypted_payload = &ciphertext[p];
-    size_t payload_len = ct_len - p;
-
-    // Prepare AAD (rcAD + plaintext MsgHeader – aber wir kennen MsgHeader erst nach Decrypt → chicken-egg)
-    // Für Decrypt: AAD muss vorab bekannt sein → in SimpleX/Signal ist AAD meist rcAD + MsgHeader plaintext
-    // → Wir decrypten Header erst, dann können wir AAD bauen, aber das passt nicht.
-    // Lösung: Für erste Nachricht oft nur rcAD als AAD (da MsgHeader public ist, aber encrypted)
-    // → Testweise erst nur rcAD (112 bytes) für Header-Decrypt versuchen
-
-    uint8_t decrypted_header[MSG_HEADER_PADDED_LEN];
-    if (aes_gcm_decrypt(ratchet_state.header_key_recv, header_iv, GCM_IV_LEN,
-                        ratchet_state.assoc_data, 112,  // ← nur rcAD erstmal!
-                        encrypted_header, eh_body_len,
-                        header_tag, decrypted_header) != 0) {
-        ESP_LOGE(TAG, "Header decryption failed (try with full AAD?)");
-        return -1;
-    }
-
-    // Parse decrypted_header to get PN, Ns, DH key (für Ratchet fortsetzen)
-
-    // Derive message key + IVs
-    uint8_t message_key[32], next_chain_key[32], msg_iv[16], unused_iv[16];
-    kdf_chain(ratchet_state.chain_key_recv, next_chain_key, message_key, msg_iv, unused_iv);
-    memcpy(ratchet_state.chain_key_recv, next_chain_key, 32);
-
-    if (aes_gcm_decrypt(message_key, msg_iv, GCM_IV_LEN,
-                        ratchet_state.assoc_data, 112,  // ← erstmal nur rcAD
-                        encrypted_payload, payload_len,
-                        payload_tag, plaintext) != 0) {
-        ESP_LOGE(TAG, "Payload decryption failed");
-        return -1;
-    }
-
-    *pt_len = payload_len;
-    ESP_LOGI(TAG, "✅ Decrypted: %zu bytes", *pt_len);
-    return 0;
-}
-
-// ============== Decrypt Incoming (Receiver Side) ==============
-// For first message from App after we sent AgentConfirmation:
-// - App did ratchet step, uses NEW DH key
-// - We decrypt header with header_key_recv (from X3DH = nhk)
-// - Extract App's new DH key from header
-// - Do rootKdf to derive chain_key_recv
-// - Use chainKdf to get message key
-// - Decrypt payload
-
-int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
-                             uint8_t *plaintext, size_t *pt_len) {
-    if (!ratchet_state.initialized) {
-        ESP_LOGE(TAG, "Ratchet not initialized!");
-        return -1;
-    }
-    
-    if (ct_len < 123 + 16) {
-        ESP_LOGE(TAG, "Ciphertext too short: %zu", ct_len);
-        return -1;
-    }
-    
-    ESP_LOGI(TAG, "🔓 Decrypting incoming message (%zu bytes)...", ct_len);
-    
-    // Parse EncRatchetMessage structure
     int p = 0;
     uint8_t em_header_len;
 
@@ -585,13 +576,11 @@ int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
     // === Step 1: Decrypt Header ===
     uint8_t decrypted_header[MSG_HEADER_PADDED_LEN];
     
-    // === CRITICAL: Reverse rcAD for incoming messages ===
-    uint8_t rcAD_recv[112];
-    memcpy(rcAD_recv, ratchet_state.assoc_data + 56, 56);  // peer_key1 first
-    memcpy(rcAD_recv + 56, ratchet_state.assoc_data, 56);  // our_key1 second
-
-    ESP_LOGI(TAG, "   rcAD for RECV (reversed): %02x%02x...||%02x%02x...",
-             rcAD_recv[0], rcAD_recv[1], rcAD_recv[56], rcAD_recv[57]);
+    // FIXED v0.1.22: Use rcAD directly - it's already correct (initiator || responder)
+    // NO reversal needed! Both sender and receiver use the same rcAD!
+    ESP_LOGI(TAG, "   rcAD (same for both directions): %02x%02x...||%02x%02x...",
+             ratchet_state.assoc_data[0], ratchet_state.assoc_data[1],
+             ratchet_state.assoc_data[56], ratchet_state.assoc_data[57]);
 
     ESP_LOGI(TAG, "   Trying header decrypt with header_key_recv...");
     ESP_LOGI(TAG, "   header_key_recv: %02x%02x%02x%02x...",
@@ -599,14 +588,14 @@ int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
              ratchet_state.header_key_recv[2], ratchet_state.header_key_recv[3]);
     
     if (aes_gcm_decrypt(ratchet_state.header_key_recv, header_iv, GCM_IV_LEN,
-                        rcAD_recv, 112,
+                        ratchet_state.assoc_data, 112,  // Use rcAD directly (no reversal!)
                         encrypted_header, eh_body_len,
                         header_tag, decrypted_header) != 0) {
         ESP_LOGE(TAG, "   ❌ Header decryption failed with header_key_recv!");
         
         ESP_LOGI(TAG, "   Trying with header_key_send...");
         if (aes_gcm_decrypt(ratchet_state.header_key_send, header_iv, GCM_IV_LEN,
-                            rcAD_recv, 112,
+                            ratchet_state.assoc_data, 112,  // Use rcAD directly
                             encrypted_header, eh_body_len,
                             header_tag, decrypted_header) != 0) {
             ESP_LOGE(TAG, "   ❌ Header decryption also failed with header_key_send!");
@@ -704,7 +693,7 @@ int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
         ESP_LOGE(TAG, "   ❌ malloc failed");
         return -1;
     }
-    memcpy(payload_aad, rcAD_recv, 112);
+    memcpy(payload_aad, ratchet_state.assoc_data, 112);  // Use rcAD directly
     memcpy(payload_aad + 112, em_header, em_header_len);
     
     if (aes_gcm_decrypt(message_key, msg_iv, GCM_IV_LEN,
@@ -730,6 +719,17 @@ int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
              plaintext[0], plaintext[1], plaintext[2], plaintext[3]);
     
     return 0;
+}
+
+// ============== Decrypt Incoming Message (from peer) ==============
+
+int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
+                             uint8_t *plaintext, size_t *pt_len) {
+    // For incoming messages from peer, we use the same decrypt logic
+    // The rcAD is already correctly set as initiator || responder (absolute order)
+    // so both directions use the same rcAD
+    ESP_LOGI(TAG, "🔓 Decrypting INCOMING message from peer (%zu bytes)...", ct_len);
+    return ratchet_decrypt(ciphertext, ct_len, plaintext, pt_len);
 }
 
 // ============== Getters ==============

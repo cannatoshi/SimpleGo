@@ -1,12 +1,8 @@
 /**
  * SimpleGo - Native SimpleX SMP Client for ESP32
- * v0.1.18-alpha - FIXED: Reply Queue E2E Key extraction bug
+ * v0.1.17-alpha - AgentConfirmation with Reply Queue
  * github.com/cannatoshi/SimpleGo
  * Autor: cannatoshi
- * 
- * FIX v0.1.18: Removed incorrect E2E key extraction from Contact Queue PubHeader.
- *              The correct E2E key is now extracted via parse_agent_confirmation()
- *              from the AgentConnInfoReply after Double Ratchet decrypt.
  */
 
 #include <string.h>
@@ -119,7 +115,7 @@ static void smp_connect(void) {
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "+----------------------------------------+");
-    ESP_LOGI(TAG, "|  SimpleGo v0.1.18-alpha Connection!    |");
+    ESP_LOGI(TAG, "|  SimpleGo v0.1.17-alpha Connection!    |");
     ESP_LOGI(TAG, "+----------------------------------------+");
     ESP_LOGI(TAG, "");
 
@@ -341,7 +337,7 @@ static void smp_connect(void) {
             ESP_LOGI(TAG, "   Encrypted: %d bytes", enc_len);
 
             // ============================================================================
-            // REPLY QUEUE E2E DECRYPTION (v0.1.18 - Cleaned)
+            // REPLY QUEUE E2E DECRYPTION (Session 16 - Cleaned)
             // ============================================================================
             if (is_reply_queue && our_queue.valid && enc_len > crypto_box_MACBYTES) {
                 ESP_LOGI(TAG, "");
@@ -379,45 +375,26 @@ static void smp_connect(void) {
                 
                 // === LAYER 2: Per-Queue E2E Decrypt ===
                 // ================================================================
-                // Reply Queue Message Structure (after server-level decrypt):
-                // [0-1]   Length prefix (Word16 BE) - e.g., 0x3E82 = 16002
-                // [2-5]   MsgFlags (4 bytes) - usually 00 00 00 00
-                // [6-13]  Timestamp (8 bytes)
-                // [14]    maybe_corrId ('1' = has SPKI, ',' = no SPKI)
-                // [15]    maybe_e2e ('1' = fresh key, ',' = use corrId as E2E key)
-                // [16-59] corrId SPKI (44 bytes) if maybe_corrId == '1'
-                // [60-83] cmNonce (24 bytes)
-                // [84+]   cmEncBody (E2E encrypted payload)
+                // CORRECTED Wire Format (from Mausi/Claude Code analysis):
+                // 
+                // After Server-level decrypt, the structure is:
+                // [0-1]   = Length prefix (skip for unpad, but we already have plain_len)
+                // ...
+                // [14]    = Maybe corrId tag ('1' = Just, key follows!)
+                // 
+                // If [14] = '1':
+                //   [15]    = Key length (0x2C = 44 for X.509 DER SPKI)
+                //   [16-59] = X.509 DER X25519 Key (44 bytes: 12 header + 32 raw)
+                //   [60-83] = cmNonce (24 bytes)
+                //   [84+]   = cmEncBody
+                //
+                // The [15] byte (0x2C = 44) is NOT "no key" - it's the KEY LENGTH!
                 // ================================================================
                 
-                // FIX v0.1.18d: Reply Queue ALWAYS has fixed structure!
-                // maybe_corrId/maybe_e2e are ALWAYS at index 14/15
-                // SPKI (if present) is ALWAYS at index 16
-                
-                if (plain_len < 84) {
-                    ESP_LOGE(TAG, "      Message too short for E2E structure!");
-                    free(server_plain);
-                    continue;
-                }
-                
-                // Log first 64 bytes in hex for debugging
-                ESP_LOGI(TAG, "      Reply Queue structure:");
-                printf("         ");
-                for (int i = 0; i < 64 && i < plain_len; i++) {
-                    printf("%02x ", server_plain[i]);
-                    if ((i + 1) % 16 == 0) printf("\n         ");
-                }
-                printf("\n");
-                
-                int offset = 14;  // FIXED position for Reply Queue
+                int offset = 14;
                 uint8_t maybe_corrId = server_plain[offset];
-                uint8_t maybe_e2e = server_plain[offset + 1];
-                
-                ESP_LOGI(TAG, "      [%d] maybe_corrId = '%c' (0x%02x)", offset, 
-                         (maybe_corrId >= 0x20 && maybe_corrId < 0x7F) ? maybe_corrId : '?', maybe_corrId);
-                ESP_LOGI(TAG, "      [%d] maybe_e2e = '%c' (0x%02x)", offset + 1,
-                         (maybe_e2e >= 0x20 && maybe_e2e < 0x7F) ? maybe_e2e : '?', maybe_e2e);
-                offset += 2;  // Now at 16 (SPKI position)
+                ESP_LOGI(TAG, "      [%d] maybe_corrId = '%c' (0x%02x)", offset, maybe_corrId, maybe_corrId);
+                offset++;  // Now at 15
                 
                 const uint8_t x25519_spki_header[] = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 
                                                        0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00};
@@ -425,81 +402,55 @@ static void smp_connect(void) {
                 uint8_t sender_pub[32];
                 bool have_sender_key = false;
                 
-                // ================================================================
-                // v0.1.18d: E2E Key Extraction for Reply Queue
-                // 
-                // When maybe_corrId = '1': There's a 44-byte SPKI at offset 16
-                // When maybe_e2e = ',': The corrId SPKI IS the E2E ephemeral key!
-                // When maybe_e2e = '1': There's ANOTHER SPKI after corrId
-                //
-                // For Reply Queue first message: typically corrId='1', e2e=','
-                // meaning: corrId SPKI serves as BOTH correlation AND E2E key!
-                // ================================================================
-                
                 if (maybe_corrId == '1') {
-                    // Check SPKI at offset 16
-                    if (offset + 44 <= plain_len &&
-                        memcmp(&server_plain[offset], x25519_spki_header, 12) == 0) {
-                        
-                        // Extract the 32-byte raw key (after 12-byte SPKI header)
-                        memcpy(sender_pub, &server_plain[offset + 12], 32);
-                        
-                        ESP_LOGI(TAG, "      ✅ Found corrId SPKI at offset %d", offset);
-                        ESP_LOGI(TAG, "      Raw key: %02x%02x%02x%02x %02x%02x%02x%02x...",
-                                 sender_pub[0], sender_pub[1], sender_pub[2], sender_pub[3],
-                                 sender_pub[4], sender_pub[5], sender_pub[6], sender_pub[7]);
-                        
-                        if (maybe_e2e == ',') {
-                            // corrId IS the E2E key!
-                            ESP_LOGI(TAG, "      maybe_e2e=',' → Using corrId as E2E ephemeral key!");
+                    // Key follows! Next byte is key length
+                    uint8_t key_len = server_plain[offset];
+                    ESP_LOGI(TAG, "      [%d] key_len = %d (0x%02x)", offset, key_len, key_len);
+                    offset++;  // Now at 16 (start of SPKI key)
+                    
+                    if (key_len == 44 && offset + 44 <= plain_len) {
+                        // Verify SPKI header at offset 16
+                        if (memcmp(&server_plain[offset], x25519_spki_header, 12) == 0) {
+                            // Extract raw key (after 12-byte SPKI header)
+                            memcpy(sender_pub, &server_plain[offset + 12], 32);
                             have_sender_key = true;
+                            
+                            ESP_LOGI(TAG, "      ✅ Found X25519 SPKI at offset %d", offset);
+                            ESP_LOGI(TAG, "      sender_pub: %02x%02x%02x%02x%02x%02x%02x%02x...",
+                                     sender_pub[0], sender_pub[1], sender_pub[2], sender_pub[3],
+                                     sender_pub[4], sender_pub[5], sender_pub[6], sender_pub[7]);
                         } else {
-                            ESP_LOGI(TAG, "      maybe_e2e='%c' → corrId is NOT E2E key, looking for separate key", maybe_e2e);
+                            ESP_LOGE(TAG, "      ❌ SPKI header mismatch at offset %d", offset);
+                            ESP_LOGI(TAG, "      Expected: 30 2a 30 05 06 03 2b 65 6e 03 21 00");
+                            ESP_LOGI(TAG, "      Got:      %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                                     server_plain[offset+0], server_plain[offset+1], server_plain[offset+2],
+                                     server_plain[offset+3], server_plain[offset+4], server_plain[offset+5],
+                                     server_plain[offset+6], server_plain[offset+7], server_plain[offset+8],
+                                     server_plain[offset+9], server_plain[offset+10], server_plain[offset+11]);
                         }
-                        
-                        offset += 44;  // Move past corrId SPKI
+                        offset += 44;  // Move past SPKI key, now at nonce
                     } else {
-                        ESP_LOGE(TAG, "      ❌ maybe_corrId='1' but no valid SPKI at offset %d!", offset);
-                        ESP_LOGI(TAG, "      Found bytes: %02x %02x %02x %02x...",
-                                 server_plain[offset], server_plain[offset+1], 
-                                 server_plain[offset+2], server_plain[offset+3]);
+                        ESP_LOGE(TAG, "      ❌ Invalid key_len=%d or buffer too short", key_len);
                     }
                 } else if (maybe_corrId == ',') {
-                    ESP_LOGI(TAG, "      No corrId present (maybe_corrId=',')");
-                } else {
-                    ESP_LOGW(TAG, "      Unexpected maybe_corrId: 0x%02x", maybe_corrId);
-                }
-                
-                // Check for additional E2E key (maybe_e2e = '1')
-                if (!have_sender_key && maybe_e2e == '1') {
-                    if (offset + 44 <= plain_len &&
-                        memcmp(&server_plain[offset], x25519_spki_header, 12) == 0) {
-                        
-                        memcpy(sender_pub, &server_plain[offset + 12], 32);
+                    // No corrId key - try using pre-shared key
+                    ESP_LOGI(TAG, "      No corrId key, checking for pre-shared...");
+                    if (reply_queue_e2e_peer_valid) {
+                        memcpy(sender_pub, reply_queue_e2e_peer_public, 32);
                         have_sender_key = true;
-                        
-                        ESP_LOGI(TAG, "      ✅ Found fresh E2E SPKI at offset %d!", offset);
-                        ESP_LOGI(TAG, "      Raw key: %02x%02x%02x%02x...",
+                        ESP_LOGI(TAG, "      ✅ Using pre-shared key: %02x%02x%02x%02x...",
                                  sender_pub[0], sender_pub[1], sender_pub[2], sender_pub[3]);
-                        
-                        offset += 44;
-                    } else {
-                        ESP_LOGE(TAG, "      ❌ maybe_e2e='1' but no valid SPKI at offset %d!", offset);
                     }
                 }
                 
                 if (!have_sender_key) {
-                    ESP_LOGE(TAG, "");
-                    ESP_LOGE(TAG, "      ╔════════════════════════════════════════════════════╗");
-                    ESP_LOGE(TAG, "      ║  ❌ FAILED TO EXTRACT E2E KEY!                     ║");
-                    ESP_LOGE(TAG, "      ╚════════════════════════════════════════════════════╝");
-                    ESP_LOGE(TAG, "      maybe_corrId='%c', maybe_e2e='%c'", maybe_corrId, maybe_e2e);
+                    ESP_LOGE(TAG, "      ❌ No sender key available!");
                     free(server_plain);
                     continue;
                 }
                 
                 // Now offset points to cmNonce (24 bytes)
-                if (plain_len < offset + 24 + 16) {
+                if (plain_len < (size_t)offset + 24 + 16) {
                     ESP_LOGE(TAG, "      Message too short for E2E decrypt");
                     free(server_plain);
                     continue;
@@ -568,54 +519,53 @@ static void smp_connect(void) {
                     for(int i=0; i<48 && i<(int)e2e_encrypted_len; i++) printf("%02x", e2e_encrypted[i]);
                     printf("\n\n");
                     
-                    // Decrypt with SimpleX custom XSalsa20 (DEBUG VERSION)
-                    int decrypt_ret = simplex_secretbox_open_debug(
+                    // ================================================================
+                    // FIX v0.1.22: Try STANDARD crypto functions instead of custom!
+                    // According to Haskell analysis: e2eDhSecret is simple X25519 DH
+                    // used directly with NaCl crypto_box, NO custom XSalsa20 needed!
+                    // ================================================================
+                    
+                    int decrypt_ret = -1;
+                    
+                    // Method 1: crypto_box_open_easy (full NaCl box)
+                    // This does: DH internally + HSalsa20 + XSalsa20-Poly1305
+                    ESP_LOGI(TAG, "      Trying Method 1: crypto_box_open_easy...");
+                    decrypt_ret = crypto_box_open_easy(
                         e2e_plain,
                         e2e_encrypted,
                         e2e_encrypted_len,
                         cm_nonce,
-                        dh_secret,
-                        "REPLY_E2E"
+                        sender_pub,
+                        our_queue.e2e_private
                     );
                     
-                    sodium_memzero(dh_secret, 32);
+                    if (decrypt_ret != 0) {
+                        // Method 2: crypto_secretbox_open_easy with DH secret
+                        // This does: HSalsa20(dh_secret, nonce[0:16]) + XSalsa20-Poly1305
+                        ESP_LOGI(TAG, "      Method 1 failed, trying Method 2: crypto_secretbox_open_easy...");
+                        decrypt_ret = crypto_secretbox_open_easy(
+                            e2e_plain,
+                            e2e_encrypted,
+                            e2e_encrypted_len,
+                            cm_nonce,
+                            dh_secret
+                        );
+                    }
                     
                     if (decrypt_ret != 0) {
-                        // Try with contact's rcv_dh_secret as fallback
-                        // (in case peer couldn't decrypt our e2e_public from broken ratchet)
-                        // Get the first active contact since reply queue is for connections
-                        contact_t *fallback_contact = NULL;
-                        if (contacts_db.num_contacts > 0) {
-                            fallback_contact = &contacts_db.contacts[0];
-                        }
-                        
-                        if (fallback_contact && fallback_contact->have_srv_dh) {
-                            ESP_LOGW(TAG, "");
-                            ESP_LOGW(TAG, "      🔄 E2E with queue key failed, trying contact DH key...");
-                            ESP_LOGW(TAG, "      Contact: %s", fallback_contact->name);
-                            
-                            uint8_t alt_dh_secret[32];
-                            if (crypto_scalarmult(alt_dh_secret, fallback_contact->rcv_dh_secret, sender_pub) == 0) {
-                                ESP_LOGI(TAG, "      Alt DH secret: %02x%02x%02x%02x...",
-                                         alt_dh_secret[0], alt_dh_secret[1], alt_dh_secret[2], alt_dh_secret[3]);
-                                
-                                decrypt_ret = simplex_secretbox_open_debug(
-                                    e2e_plain,
-                                    e2e_encrypted,
-                                    e2e_encrypted_len,
-                                    cm_nonce,
-                                    alt_dh_secret,
-                                    "REPLY_ALT"
-                                );
-                                
-                                sodium_memzero(alt_dh_secret, 32);
-                                
-                                if (decrypt_ret == 0) {
-                                    ESP_LOGW(TAG, "      ✅ SUCCESS with contact DH key!");
-                                }
-                            }
-                        }
+                        // Method 3: Original custom simplex_secretbox_open_debug
+                        ESP_LOGI(TAG, "      Method 2 failed, trying Method 3: simplex_secretbox_open_debug...");
+                        decrypt_ret = simplex_secretbox_open_debug(
+                            e2e_plain,
+                            e2e_encrypted,
+                            e2e_encrypted_len,
+                            cm_nonce,
+                            dh_secret,
+                            "REPLY_E2E"
+                        );
                     }
+                    
+                    sodium_memzero(dh_secret, 32);
                     
                     if (decrypt_ret == 0) {
                         int e2e_plain_len = e2e_encrypted_len - 16;
@@ -672,38 +622,52 @@ static void smp_connect(void) {
                     if (decrypt_smp_message(contact, &resp[p], enc_len, msg_id, msgIdLen, plain, &plain_len)) {
                         ESP_LOGI(TAG, "   SMP-Level Decryption OK! (%d bytes)", plain_len);
                         
-                        // ================================================================
-                        // FIX v0.1.18: DO NOT extract E2E key from PubHeader here!
-                        // The PubHeader SPKI is an EPHEMERAL key for THIS message only.
-                        // The correct Reply Queue E2E key is extracted via 
-                        // parse_agent_confirmation() from the AgentConnInfoReply.
-                        // ================================================================
-                        
-                        // DEBUG: Show message structure (but don't extract wrong key!)
-                        if (plain_len > 60) {
+                        // === CONTACT QUEUE: Extract e2ePubKey for Reply Queue ===
+                        // MUST run BEFORE parse_agent_message() which triggers peer handshake!
+                        // During handshake the plain buffer might get corrupted.
+                        if (contact && plain_len > 60) {
+                            // Debug: show bytes around offset 12-15
                             ESP_LOGI(TAG, "   DEBUG Contact Queue [10-17]: %02x %02x %02x %02x %02x %02x %02x %02x",
                                      plain[10], plain[11], plain[12], plain[13], 
                                      plain[14], plain[15], plain[16], plain[17]);
                             
-                            // Look for X25519 SPKI header for debug purposes only
+                            // Look for X25519 SPKI header (30 2a 30 05 06 03 2b 65 6e 03 21 00)
+                            // Based on raw dump: SPKI starts at offset 14
                             const uint8_t x25519_spki[] = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 
                                                            0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00};
                             
+                            // Check at offset 14 (confirmed from hex dump)
                             if (memcmp(&plain[14], x25519_spki, 12) == 0) {
-                                // DEBUG ONLY - log but DON'T set reply_queue_e2e_peer_public!
-                                ESP_LOGI(TAG, "   DEBUG: Found PubHeader SPKI at offset 14 (ephemeral, NOT Reply Queue E2E!)");
-                                ESP_LOGI(TAG, "          Key: %02x%02x%02x%02x%02x%02x%02x%02x...",
-                                        plain[26], plain[27], plain[28], plain[29],
-                                        plain[30], plain[31], plain[32], plain[33]);
-                                // OLD BUGGY CODE (REMOVED):
-                                // memcpy(reply_queue_e2e_peer_public, &plain[26], 32);
-                                // reply_queue_e2e_peer_valid = true;
+                                // Raw key is at offset 14 + 12 = 26
+                                memcpy(reply_queue_e2e_peer_public, &plain[26], 32);
+                                reply_queue_e2e_peer_valid = true;
+                                
+                                ESP_LOGI(TAG, "   +-------------------------------------------------------+");
+                                ESP_LOGI(TAG, "   |  ✅ E2E KEY EXTRACTED FROM CONTACT QUEUE!            |");
+                                ESP_LOGI(TAG, "   +-------------------------------------------------------+");
+                                ESP_LOGI(TAG, "      Key: %02x%02x%02x%02x%02x%02x%02x%02x...",
+                                        reply_queue_e2e_peer_public[0], reply_queue_e2e_peer_public[1],
+                                        reply_queue_e2e_peer_public[2], reply_queue_e2e_peer_public[3],
+                                        reply_queue_e2e_peer_public[4], reply_queue_e2e_peer_public[5],
+                                        reply_queue_e2e_peer_public[6], reply_queue_e2e_peer_public[7]);
+                            } else {
+                                ESP_LOGW(TAG, "   SPKI not at offset 14, searching...");
+                                // Search for SPKI in first 100 bytes
+                                for (int i = 0; i < 100 && i < plain_len - 44; i++) {
+                                    if (memcmp(&plain[i], x25519_spki, 12) == 0) {
+                                        ESP_LOGI(TAG, "   Found SPKI at offset %d!", i);
+                                        memcpy(reply_queue_e2e_peer_public, &plain[i + 12], 32);
+                                        reply_queue_e2e_peer_valid = true;
+                                        ESP_LOGI(TAG, "   Key: %02x%02x%02x%02x...",
+                                                reply_queue_e2e_peer_public[0], reply_queue_e2e_peer_public[1],
+                                                reply_queue_e2e_peer_public[2], reply_queue_e2e_peer_public[3]);
+                                        break;
+                                    }
+                                }
                             }
                         }
                         
                         // Parse agent message (this triggers peer connection!)
-                        // parse_agent_message() will call parse_agent_confirmation()
-                        // which extracts the CORRECT Reply Queue E2E key
                         parse_agent_message(contact, plain, plain_len);
                         
                         // Send ACK
@@ -788,7 +752,7 @@ cleanup:
 
 void app_main(void) {
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "SimpleGo v0.1.18-alpha starting...");
+    ESP_LOGI(TAG, "SimpleGo v0.1.17-alpha starting...");
     
     // Initialize libsodium
     if (sodium_init() < 0) {
