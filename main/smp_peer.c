@@ -358,14 +358,21 @@ bool send_agent_confirmation(contact_t *contact) {
     }
     free(test_decrypt);
     
-    // DEBUG: Show encConnInfo after successful encrypt
-    ESP_LOGI(TAG, "📋 encConnInfo FULL (first 64 bytes):");
-    printf("   ");
-    for (int i = 0; i < 64 && i < (int)enc_conn_info_len; i++) {
-        printf("%02x ", enc_conn_info[i]);
-        if ((i+1) % 32 == 0) printf("\n   ");
-    }
-    printf("\n");
+    // DEBUG: Show encConnInfo wire format (first 160 bytes)
+    ESP_LOGI(TAG, "📋 encConnInfo COMPLETE Wire-Format:");
+    ESP_LOGI(TAG, "   Bytes 0-31:");
+    printf("   "); for (int i = 0; i < 32 && i < (int)enc_conn_info_len; i++) printf("%02x ", enc_conn_info[i]); printf("\n");
+    ESP_LOGI(TAG, "   Bytes 32-63:");
+    printf("   "); for (int i = 32; i < 64 && i < (int)enc_conn_info_len; i++) printf("%02x ", enc_conn_info[i]); printf("\n");
+    ESP_LOGI(TAG, "   Bytes 64-95:");
+    printf("   "); for (int i = 64; i < 96 && i < (int)enc_conn_info_len; i++) printf("%02x ", enc_conn_info[i]); printf("\n");
+    ESP_LOGI(TAG, "   Bytes 96-127:");
+    printf("   "); for (int i = 96; i < 128 && i < (int)enc_conn_info_len; i++) printf("%02x ", enc_conn_info[i]); printf("\n");
+    ESP_LOGI(TAG, "   Bytes 128-159:");
+    printf("   "); for (int i = 128; i < 160 && i < (int)enc_conn_info_len; i++) printf("%02x ", enc_conn_info[i]); printf("\n");
+    
+    ESP_LOGI(TAG, "   Expected layout:");
+    ESP_LOGI(TAG, "   [0]=0x7B (123), [1-123]=emHeader, [124-139]=PayloadTag, [140+]=Body");
     
     ESP_LOGI(TAG, "   🔒 encConnInfo encrypted: %d bytes", (int)enc_conn_info_len);
 

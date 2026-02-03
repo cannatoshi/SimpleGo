@@ -375,26 +375,30 @@ static void smp_connect(void) {
                 
                 // === LAYER 2: Per-Queue E2E Decrypt ===
                 // ================================================================
-                // CORRECTED Wire Format (from Mausi/Claude Code analysis):
+                // FINAL CORRECT Wire Format:
                 // 
-                // After Server-level decrypt, the structure is:
-                // [0-1]   = Length prefix (skip for unpad, but we already have plain_len)
-                // ...
-                // [14]    = Maybe corrId tag ('1' = Just, key follows!)
-                // 
-                // If [14] = '1':
-                //   [15]    = Key length (0x2C = 44 for X.509 DER SPKI)
-                //   [16-59] = X.509 DER X25519 Key (44 bytes: 12 header + 32 raw)
-                //   [60-83] = cmNonce (24 bytes)
-                //   [84+]   = cmEncBody
+                // [14]    = maybe_corrId tag ('1' = Just)
+                // [15]    = maybe_e2e tag (',' = 0x2C = Nothing = corrId IS the E2E key!)
+                // [16-59] = SPKI (44 bytes) = BOTH corrId AND E2E key!
+                // [60-83] = cmNonce (24 bytes)
+                // [84+]   = cmEncBody
                 //
-                // The [15] byte (0x2C = 44) is NOT "no key" - it's the KEY LENGTH!
+                // CRITICAL: When maybe_e2e = ',' (0x2C), the corrId SPKI doubles as E2E key!
+                // The 0x2C byte is NOT a length - it's the "Nothing" tag for maybe_e2e!
                 // ================================================================
                 
                 int offset = 14;
+                
+                // [14] = maybe_corrId
                 uint8_t maybe_corrId = server_plain[offset];
                 ESP_LOGI(TAG, "      [%d] maybe_corrId = '%c' (0x%02x)", offset, maybe_corrId, maybe_corrId);
                 offset++;  // Now at 15
+                
+                // [15] = maybe_e2e (NOT corrId_len!)
+                uint8_t maybe_e2e = server_plain[offset];
+                ESP_LOGI(TAG, "      [%d] maybe_e2e = '%c' (0x%02x)", offset, 
+                         (maybe_e2e >= 0x20 && maybe_e2e < 0x7f) ? maybe_e2e : '?', maybe_e2e);
+                offset++;  // Now at 16
                 
                 const uint8_t x25519_spki_header[] = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 
                                                        0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00};
@@ -402,45 +406,63 @@ static void smp_connect(void) {
                 uint8_t sender_pub[32];
                 bool have_sender_key = false;
                 
-                if (maybe_corrId == '1') {
-                    // Key follows! Next byte is key length
-                    uint8_t key_len = server_plain[offset];
-                    ESP_LOGI(TAG, "      [%d] key_len = %d (0x%02x)", offset, key_len, key_len);
-                    offset++;  // Now at 16 (start of SPKI key)
+                if (maybe_corrId == '1' && maybe_e2e == ',') {
+                    // maybe_e2e = ',' (0x2C) means: corrId SPKI IS the E2E key!
+                    ESP_LOGI(TAG, "      maybe_e2e = ',' -> corrId SPKI doubles as E2E key!");
                     
-                    if (key_len == 44 && offset + 44 <= plain_len) {
-                        // Verify SPKI header at offset 16
-                        if (memcmp(&server_plain[offset], x25519_spki_header, 12) == 0) {
-                            // Extract raw key (after 12-byte SPKI header)
-                            memcpy(sender_pub, &server_plain[offset + 12], 32);
-                            have_sender_key = true;
-                            
-                            ESP_LOGI(TAG, "      ✅ Found X25519 SPKI at offset %d", offset);
-                            ESP_LOGI(TAG, "      sender_pub: %02x%02x%02x%02x%02x%02x%02x%02x...",
-                                     sender_pub[0], sender_pub[1], sender_pub[2], sender_pub[3],
-                                     sender_pub[4], sender_pub[5], sender_pub[6], sender_pub[7]);
-                        } else {
-                            ESP_LOGE(TAG, "      ❌ SPKI header mismatch at offset %d", offset);
-                            ESP_LOGI(TAG, "      Expected: 30 2a 30 05 06 03 2b 65 6e 03 21 00");
-                            ESP_LOGI(TAG, "      Got:      %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
-                                     server_plain[offset+0], server_plain[offset+1], server_plain[offset+2],
-                                     server_plain[offset+3], server_plain[offset+4], server_plain[offset+5],
-                                     server_plain[offset+6], server_plain[offset+7], server_plain[offset+8],
-                                     server_plain[offset+9], server_plain[offset+10], server_plain[offset+11]);
-                        }
-                        offset += 44;  // Move past SPKI key, now at nonce
+                    // Verify SPKI header at offset 16
+                    if (memcmp(&server_plain[offset], x25519_spki_header, 12) == 0) {
+                        // Extract raw key (after 12-byte SPKI header)
+                        memcpy(sender_pub, &server_plain[offset + 12], 32);
+                        have_sender_key = true;
+                        
+                        ESP_LOGI(TAG, "      ✅ Found E2E Key (from corrId SPKI) at offset %d!", offset);
+                        ESP_LOGI(TAG, "      sender_pub: %02x%02x%02x%02x%02x%02x%02x%02x...",
+                                 sender_pub[0], sender_pub[1], sender_pub[2], sender_pub[3],
+                                 sender_pub[4], sender_pub[5], sender_pub[6], sender_pub[7]);
+                        
+                        // Save for future messages
+                        memcpy(reply_queue_e2e_peer_public, sender_pub, 32);
+                        reply_queue_e2e_peer_valid = true;
                     } else {
-                        ESP_LOGE(TAG, "      ❌ Invalid key_len=%d or buffer too short", key_len);
+                        ESP_LOGE(TAG, "      ❌ SPKI header mismatch at offset %d", offset);
                     }
+                    offset += 44;  // Skip past SPKI, now at cmNonce (offset 60)
+                    
+                } else if (maybe_corrId == '1' && maybe_e2e == '1') {
+                    // maybe_e2e = '1' means: separate E2E key follows after corrId
+                    ESP_LOGI(TAG, "      maybe_e2e = '1' -> separate E2E key after corrId");
+                    
+                    // Skip corrId SPKI first
+                    uint8_t corrId_len = 44;  // Standard SPKI length
+                    offset += corrId_len;  // Now past corrId
+                    
+                    // Now read e2e key length and key
+                    uint8_t e2e_len = server_plain[offset];
+                    offset++;
+                    
+                    if (e2e_len == 44 && memcmp(&server_plain[offset], x25519_spki_header, 12) == 0) {
+                        memcpy(sender_pub, &server_plain[offset + 12], 32);
+                        have_sender_key = true;
+                        ESP_LOGI(TAG, "      ✅ Found separate E2E Key at offset %d!", offset);
+                    }
+                    offset += 44;  // Skip E2E SPKI
+                    
                 } else if (maybe_corrId == ',') {
-                    // No corrId key - try using pre-shared key
-                    ESP_LOGI(TAG, "      No corrId key, checking for pre-shared...");
+                    // No corrId - use pre-shared key
+                    ESP_LOGI(TAG, "      maybe_corrId = ',' -> using PRE-SHARED key!");
+                    
                     if (reply_queue_e2e_peer_valid) {
                         memcpy(sender_pub, reply_queue_e2e_peer_public, 32);
                         have_sender_key = true;
                         ESP_LOGI(TAG, "      ✅ Using pre-shared key: %02x%02x%02x%02x...",
                                  sender_pub[0], sender_pub[1], sender_pub[2], sender_pub[3]);
+                    } else {
+                        ESP_LOGE(TAG, "      ❌ No pre-shared E2E key available!");
                     }
+                } else {
+                    ESP_LOGE(TAG, "      ❌ Unknown format: maybe_corrId=0x%02x, maybe_e2e=0x%02x", 
+                             maybe_corrId, maybe_e2e);
                 }
                 
                 if (!have_sender_key) {
@@ -470,23 +492,43 @@ static void smp_connect(void) {
                 uint8_t *e2e_plain = malloc(e2e_encrypted_len);
                 if (e2e_plain) {
                     // ================================================================
-                    // CRITICAL DEBUG: Log which E2E key we're using for DECRYPTION!
-                    // This MUST match what queue_create() generated!
+                    // CRITICAL DEBUG: Verify our keypair is valid!
                     // ================================================================
+                    uint8_t derived_pub[32];
+                    crypto_scalarmult_base(derived_pub, our_queue.e2e_private);
+                    
+                    bool keypair_valid = (memcmp(derived_pub, our_queue.e2e_public, 32) == 0);
+                    
                     ESP_LOGW(TAG, "");
                     ESP_LOGW(TAG, "      ╔═══════════════════════════════════════════════════════╗");
-                    ESP_LOGW(TAG, "      ║  🔑 DECRYPT: USING E2E KEY                           ║");
+                    ESP_LOGW(TAG, "      ║  🔑 DECRYPT: KEY VERIFICATION                        ║");
                     ESP_LOGW(TAG, "      ╚═══════════════════════════════════════════════════════╝");
-                    ESP_LOGW(TAG, "      DECRYPT e2e_public:  %02x%02x%02x%02x %02x%02x%02x%02x...",
+                    ESP_LOGW(TAG, "      our_queue.e2e_public:  %02x%02x%02x%02x %02x%02x%02x%02x...",
                              our_queue.e2e_public[0], our_queue.e2e_public[1],
                              our_queue.e2e_public[2], our_queue.e2e_public[3],
                              our_queue.e2e_public[4], our_queue.e2e_public[5],
                              our_queue.e2e_public[6], our_queue.e2e_public[7]);
-                    ESP_LOGW(TAG, "      DECRYPT e2e_private: %02x%02x%02x%02x %02x%02x%02x%02x...",
+                    ESP_LOGW(TAG, "      derived from private:  %02x%02x%02x%02x %02x%02x%02x%02x...",
+                             derived_pub[0], derived_pub[1],
+                             derived_pub[2], derived_pub[3],
+                             derived_pub[4], derived_pub[5],
+                             derived_pub[6], derived_pub[7]);
+                    ESP_LOGW(TAG, "      our_queue.e2e_private: %02x%02x%02x%02x %02x%02x%02x%02x...",
                              our_queue.e2e_private[0], our_queue.e2e_private[1],
                              our_queue.e2e_private[2], our_queue.e2e_private[3],
                              our_queue.e2e_private[4], our_queue.e2e_private[5],
                              our_queue.e2e_private[6], our_queue.e2e_private[7]);
+                    ESP_LOGW(TAG, "      sender_pub (from msg): %02x%02x%02x%02x %02x%02x%02x%02x...",
+                             sender_pub[0], sender_pub[1],
+                             sender_pub[2], sender_pub[3],
+                             sender_pub[4], sender_pub[5],
+                             sender_pub[6], sender_pub[7]);
+                    
+                    if (!keypair_valid) {
+                        ESP_LOGE(TAG, "      ❌ KEYPAIR MISMATCH! Private key doesn't match public key!");
+                    } else {
+                        ESP_LOGI(TAG, "      ✅ Keypair valid (private derives to stored public)");
+                    }
                     ESP_LOGW(TAG, "");
                     
                     // Compute DH secret
@@ -527,17 +569,45 @@ static void smp_connect(void) {
                     
                     int decrypt_ret = -1;
                     
-                    // Method 1: crypto_box_open_easy (full NaCl box)
-                    // This does: DH internally + HSalsa20 + XSalsa20-Poly1305
-                    ESP_LOGI(TAG, "      Trying Method 1: crypto_box_open_easy...");
-                    decrypt_ret = crypto_box_open_easy(
-                        e2e_plain,
-                        e2e_encrypted,
-                        e2e_encrypted_len,
-                        cm_nonce,
-                        sender_pub,
-                        our_queue.e2e_private
-                    );
+                    // Method 0: Use decrypt_client_msg (SAME function that works for Contact Queue!)
+                    // This expects [24 nonce][ciphertext+MAC] format
+                    // We pass data starting right after the SPKI key
+                    ESP_LOGI(TAG, "      Trying Method 0: decrypt_client_msg (Contact Queue style)...");
+                    int after_key_offset = offset - 44 + 44;  // Right after SPKI = nonce start
+                    // Actually offset already points past nonce to cipher, so go back
+                    int nonce_start = offset - 24;  // Back to where nonce starts
+                    int enc_block_len = plain_len - nonce_start;
+                    ESP_LOGI(TAG, "      enc_block starts at %d, len=%d", nonce_start, enc_block_len);
+                    
+                    uint8_t *method0_plain = malloc(enc_block_len);
+                    if (method0_plain) {
+                        int dec_len = decrypt_client_msg(&server_plain[nonce_start], enc_block_len,
+                                                         sender_pub,
+                                                         our_queue.e2e_private,
+                                                         method0_plain);
+                        if (dec_len > 0) {
+                            decrypt_ret = 0;
+                            memcpy(e2e_plain, method0_plain, dec_len < (int)e2e_encrypted_len ? dec_len : e2e_encrypted_len);
+                            ESP_LOGI(TAG, "      ✅ Method 0 SUCCESS! Decrypted %d bytes", dec_len);
+                        } else {
+                            ESP_LOGI(TAG, "      Method 0 failed");
+                        }
+                        free(method0_plain);
+                    }
+                    
+                    if (decrypt_ret != 0) {
+                        // Method 1: crypto_box_open_easy (full NaCl box)
+                        // This does: DH internally + HSalsa20 + XSalsa20-Poly1305
+                        ESP_LOGI(TAG, "      Trying Method 1: crypto_box_open_easy...");
+                        decrypt_ret = crypto_box_open_easy(
+                            e2e_plain,
+                            e2e_encrypted,
+                            e2e_encrypted_len,
+                            cm_nonce,
+                            sender_pub,
+                            our_queue.e2e_private
+                        );
+                    }
                     
                     if (decrypt_ret != 0) {
                         // Method 2: crypto_secretbox_open_easy with DH secret
