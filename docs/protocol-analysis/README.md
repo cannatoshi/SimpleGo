@@ -6,27 +6,41 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## Current Status (2026-02-01 Session 15 FINAL)
+## Current Status (2026-02-03 Session 16)
 
 ```
-SESSION 15 - ROOT CAUSE FOUND!
-==============================
+SESSION 16 - DOUBLE RATCHET PROBLEM IDENTIFIED!
+===============================================
 
-THE PROBLEM:
-  App's HELLO on Reply Queue has maybe_e2e = Nothing
-  -> Uses pre-computed e2eDhSecret
-  -> We need app.sndQueue.e2ePubKey to compute same secret
-  -> This key should be in App's AgentConfirmation
-  -> We don't receive this message on Contact Queue!
+MAJOR DISCOVERIES:
+  1. Session 15 "missing message" theory was WRONG!
+     - Evgeny: "in the same message"
+     - Key IS in message header
+  
+  2. SimpleX uses NON-STANDARD XSalsa20!
+     - Standard: HSalsa20(key, nonce[0:16])
+     - SimpleX:  HSalsa20(key, zeros[16])
+     - All libsodium attempts were DOOMED!
+  
+  3. Problem shifted from Layer 4 to Layer 5
+     - Key extraction: FIXED
+     - Wire-format: FIXED
+     - Double Ratchet: BROKEN
 
-SOLUTION (Session 16):
-  After sending HELLO, continue listening on Contact Queue
-  Receive App's AgentConfirmation
-  Extract sndQueue.e2ePubKey
-  Compute e2eDhSecret = DH(app.e2ePubKey, our.e2e_private)
-  Use this secret to decrypt Reply Queue messages
+VERIFIED CORRECT:
+  ✅ Wire-Format (all offsets)
+  ✅ Payload AAD (235 bytes)
+  ✅ Header AAD
+  ✅ emHeader Encoding
+  ✅ Key Consistency
+  ✅ Custom XSalsa20
 
-Bug #18: ROOT CAUSE IDENTIFIED - Fix in Session 16
+PROBLEM NARROWED TO:
+  ❓ rcAD order: our||peer vs peer||our?
+  ❓ X3DH DH order: DH1, DH2, DH3?
+  ❓ HKDF parameters?
+
+Bug #18: Double Ratchet Problem - Fix in Session 17
 ```
 
 ---
@@ -65,11 +79,12 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [11_PART9_SESSION_12.md](11_PART9_SESSION_12.md) | ~400 | E2E Keypair Fix Attempt |
 | [12_PART10_SESSION_13.md](12_PART10_SESSION_13.md) | ~700 | E2E Crypto Deep Analysis |
 | [13_PART11_SESSION_14.md](13_PART11_SESSION_14.md) | ~900 | DH SECRET VERIFIED! |
-| [14_PART12_SESSION_15.md](14_PART12_SESSION_15.md) | ~650 | **ROOT CAUSE FOUND!** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~850 | Complete bug documentation (18 bugs) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~450 | Constants, wire formats, verified values |
+| [14_PART12_SESSION_15.md](14_PART12_SESSION_15.md) | ~650 | Root Cause Found |
+| [15_PART13_SESSION_16.md](15_PART13_SESSION_16.md) | ~900 | **Double Ratchet Investigation** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1000 | Complete bug documentation (18 bugs) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~500 | Constants, wire formats, verified values |
 
-**Total: ~18,000+ lines of detailed protocol analysis**
+**Total: ~20,000+ lines of detailed protocol analysis**
 
 ---
 
@@ -89,7 +104,48 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | 12 | Jan 30, 2026 | E2E Keypair Analysis | - |
 | 13 | Jan 30, 2026 | E2E Crypto Deep Analysis | - |
 | 14 | Jan 31 - Feb 1 | DH SECRET VERIFIED! | #18 (partial) |
-| **15** | **Feb 1** | **ROOT CAUSE FOUND!** | **#18 (root cause)** |
+| 15 | Feb 1 | Root Cause Found | #18 (root cause) |
+| **16** | **Feb 1-3** | **Double Ratchet Investigation** | **#18 (narrowed)** |
+
+---
+
+## Session 16 Key Achievements
+
+### 1. Session 15 Theory DISPROVEN
+
+Evgeny confirmed: **"in the same message"**
+- NO second message needed!
+- Key IS in the message header
+- Session 15 was chasing a non-existent problem
+
+### 2. SimpleX NON-STANDARD XSalsa20 Discovered
+
+```
+Standard libsodium:  HSalsa20(key, nonce[0:16])
+SimpleX:             HSalsa20(key, zeros[16])  <- ZEROS!
+
+Subkeys are COMPLETELY DIFFERENT!
+All previous crypto attempts were DOOMED!
+```
+
+### 3. Custom XSalsa20 Implemented and VERIFIED
+
+```c
+// simplex_crypto.c - Works!
+simplex_secretbox_open() - Round-trip SUCCESS ✅
+```
+
+### 4. Problem Narrowed to Double Ratchet
+
+| Component | Status |
+|-----------|--------|
+| Wire-Format | ✅ CORRECT |
+| AAD | ✅ CORRECT |
+| Keys | ✅ CORRECT |
+| Custom XSalsa20 | ✅ VERIFIED |
+| **Double Ratchet** | ❌ **BROKEN** |
+
+Suspects: rcAD order, X3DH DH order, HKDF params
 
 ---
 
@@ -181,7 +237,7 @@ NO second message on Contact Queue!
 | #13-14 | AAD prefix, IV order | [Part 5](07_PART5_SESSION_8_BREAKTHROUGH.md) |
 | #15-16 | HSalsa20, A_CRYPTO | [Part 6](08_PART6_SESSION_9.md) |
 | #17 | cmNonce instead of msgId | [Part 7](09_PART7_SESSION_10.md) |
-| **#18** | **Reply Queue E2E** | [**Part 12**](14_PART12_SESSION_15.md) |
+| **#18** | **Reply Queue E2E** | [**Part 13**](15_PART13_SESSION_16.md) |
 
 ---
 
@@ -191,4 +247,4 @@ This documentation is part of SimpleGo, licensed under AGPL-3.0.
 
 ---
 
-*Last updated: February 1, 2026 - Session 15 FINAL (Root Cause Found!)*
+*Last updated: February 3, 2026 - Session 16 (Double Ratchet Investigation)*

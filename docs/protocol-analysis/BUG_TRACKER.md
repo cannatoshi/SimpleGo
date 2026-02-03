@@ -533,12 +533,12 @@ App status: "connecting"
 
 ---
 
-## Bug #18: Reply Queue E2E Decryption (ROOT CAUSE FOUND)
+## Bug #18: Reply Queue E2E Decryption (DOUBLE RATCHET PROBLEM)
 
-**Sessions:** 12, 13, 14, 15  
-**Component:** Reply Queue Per-Queue E2E Layer  
-**Impact:** Cannot decrypt Reply Queue messages from app  
-**Status:** ROOT CAUSE FOUND - Missing app.sndQueue.e2ePubKey
+**Sessions:** 12, 13, 14, 15, 16  
+**Component:** Reply Queue Per-Queue E2E Layer → Double Ratchet  
+**Impact:** Cannot decrypt Reply Queue messages / Peer cannot decrypt our messages  
+**Status:** PROBLEM NARROWED - Double Ratchet rcAD/X3DH suspected
 
 ### 18.1 Session 12 Discoveries
 
@@ -732,7 +732,89 @@ According to SimpleX protocol, `sndQueue.e2ePubKey` is sent in:
 
 **Conclusion:** The needed key is NOT in the data we have.
 
-### 18.6 All Crypto Tests (Session 13)
+### 18.6 Session 16 - Correction Session
+
+#### 18.6.1 Session 15 Theory DISPROVEN
+
+Evgeny confirmed: **"in the same message"**
+
+| Session 15 Said | Evgeny Says |
+|-----------------|-------------|
+| "2nd MSG missing" | "in the same message" |
+| "Key never arrives" | "sender's public DH key sent in confirmation header" |
+
+**The key IS in the message header!**
+
+#### 18.6.2 SimpleX NON-STANDARD XSalsa20 Discovered
+
+```
+Standard libsodium crypto_secretbox:
+  HSalsa20(dh_secret, nonce[0:16])
+
+SimpleX xSalsa20:
+  HSalsa20(dh_secret, zeros[16])  <- ZEROS not nonce!
+```
+
+**Python test proof:**
+```
+Standard subkey:  2d4b452885522...
+SimpleX subkey:   ce1b436c8b333...
+COMPLETELY DIFFERENT!
+```
+
+**All previous crypto attempts were DOOMED!**
+
+#### 18.6.3 Custom XSalsa20 Implemented
+
+New files created:
+- `simplex_crypto.c` - Custom XSalsa20 for ESP32
+- `simplex_crypto.h` - Header
+- `test_simplex_crypto.c` - C test
+- `verify_simplex_crypto.py` - Python verification
+
+**Round-trip test: SUCCESS ✅**
+
+#### 18.6.4 Key Race Condition Fixed
+
+```c
+// BUG: reply_queue_e2e_peer_public written from TWO places:
+// 1. main.c:642 → Contact Queue PubHeader SPKI (CORRECT!)
+// 2. smp_parser.c:746 → AgentConnInfoReply Parser (WRONG!)
+
+// FIX: Removed overwrite in smp_parser.c
+```
+
+#### 18.6.5 Problem Shifted to Double Ratchet
+
+```
+Layer 4 (E2E): FIXED ✅
+Layer 5 (Double Ratchet): BROKEN ❌
+
+Peer cannot decrypt our AgentConfirmation!
+- Android: "Request to connect" (Confirmation NOT understood)
+- Desktop: "Connecting" (trying but failing)
+```
+
+#### 18.6.6 Verified CORRECT
+
+| Component | Status |
+|-----------|--------|
+| Wire-Format Parsing | ✅ CORRECT |
+| Payload AAD (235 bytes) | ✅ CORRECT |
+| Header AAD | ✅ CORRECT |
+| emHeader Encoding | ✅ CORRECT |
+| Key Consistency | ✅ CORRECT |
+| Custom XSalsa20 | ✅ VERIFIED |
+
+#### 18.6.7 Suspects (Session 17)
+
+| Suspect | Likelihood |
+|---------|------------|
+| **rcAD order** | HIGH |
+| **X3DH DH order** | MEDIUM |
+| **HKDF Salt/Info** | MEDIUM |
+
+### 18.7 All Crypto Tests (Session 13)
 
 | Test | Method | MAC | Private Key | Result |
 |------|--------|-----|-------------|--------|
@@ -779,7 +861,7 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 3. App **first** message: `e2ePubKey = Just` (sendConfirmation)
 4. App **subsequent** messages: `e2ePubKey = Nothing` (sendAgentMessage)
 
-### 18.9 Sub-Issues Status (Updated Session 15)
+### 18.10 Sub-Issues Status (Updated Session 16)
 
 | Sub-Issue | Description | Status |
 |-----------|-------------|--------|
@@ -794,41 +876,55 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 | #18i | Wrong key bug fixed (S14) | DONE |
 | #18j | Wrong DH function fixed (S14) | DONE |
 | #18k | DH SECRET VERIFIED with Python! (S14) | DONE |
-| **#18l** | **maybe_e2e = Nothing discovered (S15)** | **DONE** |
-| **#18m** | **Pre-computed secret required (S15)** | **DONE** |
-| **#18n** | **Missing App's AgentConfirmation (S15)** | **FOUND** |
-| **#18o** | **app.sndQueue.e2ePubKey identified (S15)** | **FOUND** |
-| **#18p** | **ROOT CAUSE IDENTIFIED (S15)** | **DONE** |
-| #18q | Receive 2nd Contact Queue message | TODO (S16) |
-| #18r | Extract e2ePubKey from Confirmation | TODO (S16) |
-| #18s | Compute e2eDhSecret | TODO (S16) |
-| #18t | Decrypt Reply Queue messages | TODO (S16) |
+| #18l | maybe_e2e = Nothing discovered (S15) | DONE |
+| #18m | Pre-computed secret required (S15) | DONE |
+| #18n | Missing App's AgentConfirmation (S15) | **DISPROVEN (S16)** |
+| #18o | app.sndQueue.e2ePubKey identified (S15) | **DISPROVEN (S16)** |
+| #18p | ROOT CAUSE IDENTIFIED (S15) | **WRONG (S16)** |
+| **#18q** | **Session 15 theory DISPROVEN (S16)** | **DONE** |
+| **#18r** | **SimpleX custom XSalsa20 discovered (S16)** | **DONE** |
+| **#18s** | **simplex_crypto.c implemented (S16)** | **DONE** |
+| **#18t** | **Custom XSalsa20 verified (S16)** | **DONE** |
+| **#18u** | **Key race condition fixed (S16)** | **DONE** |
+| **#18v** | **Wire-format verified correct (S16)** | **DONE** |
+| **#18w** | **Problem is Double Ratchet (S16)** | **IDENTIFIED** |
+| #18x | Fix rcAD order | TODO (S17) |
+| #18y | Fix X3DH DH order | TODO (S17) |
+| #18z | Decrypt Reply Queue | TODO (S17) |
 
-### 18.10 Solution (Session 16)
+### 18.11 Solution (Session 17)
 
-```
-1. After HELLO sent, continue listening on Contact Queue
-2. Receive App's AgentConfirmation (Type 'C')
-3. Extract sndQueue.e2ePubKey from Confirmation
-4. Compute: e2eDhSecret = DH(app.e2ePubKey, our.e2e_private)
-5. Store e2eDhSecret for Reply Queue decryption
-6. Decrypt incoming HELLO with pre-computed secret
-```
+The problem is NOT missing keys - it's Double Ratchet encryption!
 
-### 18.11 Open Questions (Session 16)
+**What's broken:** Peer cannot decrypt our AgentConfirmation
+- Android shows "Request to connect" (not "Connecting")
+- Our Double Ratchet payload encryption is wrong
 
-1. Why doesn't second message arrive on Contact Queue?
-   - Timing issue? (we stop listening too early)
-   - Wrong subscribe status?
-   - App waiting for something else?
+**Suspects to investigate:**
+1. **rcAD order:** `our||peer` vs `peer||our` vs `initiator||responder`
+2. **X3DH DH order:** DH1, DH2, DH3 calculation sequence
+3. **HKDF parameters:** Salt, Info strings
 
-2. Where exactly is `sndQueue.e2ePubKey` in AgentConfirmation?
-   - SMPQueueInfo format?
-   - SPKI or raw key?
+**What's already verified CORRECT:**
+- Wire-format (all offsets)
+- Payload AAD (235 bytes without 0x7B)
+- Header AAD
+- emHeader encoding
+- Key consistency
+- Custom XSalsa20
 
-3. Protocol sequence verification needed
-   - Check agent-protocol.md
-   - Analyze Haskell smpConfirmation function
+### 18.12 Open Questions (Session 17)
+
+1. What is the correct rcAD order?
+   - `sk1 || rk1` - but which is initiator vs responder?
+   - Our current: `our_key1 || peer_key1`
+   
+2. What is the correct X3DH DH order?
+   - DH1, DH2, DH3 - whose keys go where?
+   
+3. HKDF parameters?
+   - Salt: 64 × 0x00?
+   - Info: "SimpleXX3DH"?
 
 ### 18.9 Android vs Desktop Difference
 
@@ -855,7 +951,8 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 | Jan 28, 2026 | S10C | #17 |
 | Jan 30, 2026 | S12-S13 | #18 (deep analysis) |
 | Jan 31-Feb 1 | S14 | #18 DH SECRET VERIFIED! |
-| **Feb 1** | **S15** | **#18 ROOT CAUSE FOUND!** |
+| Feb 1 | S15 | #18 Root Cause (later disproven) |
+| **Feb 1-3** | **S16** | **#18 Double Ratchet Problem!** |
 
 ---
 
@@ -902,11 +999,19 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 21. **Python verification is proof** - DH Secret match proves crypto basis correct! (Session 14)
 22. **maybe_e2e = Nothing means pre-computed** - No key in message, use stored secret! (Session 15)
 23. **Two key types in protocol** - dh= for SMP, sndQueue.e2ePubKey for E2E (Session 15)
-24. **Missing message = missing key** - App's AgentConfirmation has the e2ePubKey! (Session 15)
+24. **Missing message = missing key** - App's AgentConfirmation has the e2ePubKey! (Session 15) **DISPROVEN S16**
 25. **Protocol flow analysis essential** - Must understand full message sequence! (Session 15)
+26. **Ask the developer!** - Evgeny's "in the same message" disproved Session 15 theory! (Session 16)
+27. **SimpleX uses NON-STANDARD XSalsa20** - HSalsa20(key, zeros[16]) not nonce[0:16]! (Session 16)
+28. **Custom crypto may be needed** - simplex_crypto.c for ESP32 (Session 16)
+29. **Key race conditions** - Multiple writes to same variable = bugs! (Session 16)
+30. **Self-decrypt failure is BY DESIGN** - Asymmetric header keys (Session 16)
+31. **Problem can shift between layers** - L4 fixed, L5 broke (Session 16)
+32. **Verify all layers before moving on** - Wire-format ✅, AAD ✅, Keys ✅ (Session 16)
 
 ---
 
-*Bug Tracker v10.0*  
-*Last updated: February 1, 2026 - Session 15 FINAL*  
-*Total bugs documented: 18 (17 fixed, 1 root cause found - fix in S16)*
+*Bug Tracker v11.0*  
+*Last updated: February 3, 2026 - Session 16*  
+*Total bugs documented: 18 (17 fixed, 1 in progress - Double Ratchet)*  
+*32 lessons learned!*

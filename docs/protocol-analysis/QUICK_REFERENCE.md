@@ -2,30 +2,35 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-01 - Session 15 FINAL (ROOT CAUSE FOUND!)**
+**Updated: 2026-02-03 - Session 16 (Double Ratchet Investigation)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 15 - ROOT CAUSE FOUND!
-==============================
+SESSION 16 - DOUBLE RATCHET PROBLEM!
+====================================
 
-THE PROBLEM:
-  maybe_e2e = ',' (Nothing) in Reply Queue HELLO
-  -> No e2ePubKey in message
-  -> Uses pre-computed e2eDhSecret
-  -> We need app.sndQueue.e2ePubKey
-  -> Key is in App's AgentConfirmation on Contact Queue
-  -> We don't receive that message!
+Session 15 Theory DISPROVEN:
+  Evgeny: "in the same message"
+  Key IS in message header - NO second message needed!
 
-SOLUTION (Session 16):
-  1. Continue listening on Contact Queue after HELLO
-  2. Receive App's AgentConfirmation
-  3. Extract sndQueue.e2ePubKey
-  4. Compute e2eDhSecret
-  5. Decrypt Reply Queue messages
+SimpleX NON-STANDARD XSalsa20:
+  Standard: HSalsa20(key, nonce[0:16])
+  SimpleX:  HSalsa20(key, zeros[16])  <- ZEROS!
+
+VERIFIED CORRECT:
+  ✅ Wire-Format (all offsets)
+  ✅ Payload AAD (235 bytes)
+  ✅ Header AAD
+  ✅ emHeader Encoding
+  ✅ Key Consistency
+  ✅ Custom XSalsa20
+
+PROBLEM IS DOUBLE RATCHET:
+  Peer cannot decrypt our AgentConfirmation!
+  Suspects: rcAD order, X3DH DH order, HKDF params
 ```
 
 ---
@@ -204,6 +209,42 @@ int ret = crypto_secretbox_open_detached(
 | DH Function | X25519.dh | crypto_scalarmult | YES |
 | Format | [MAC][Cipher] | detached | YES |
 
+### 5.4 SimpleX Custom XSalsa20 (Session 16 Discovery!)
+
+**CRITICAL:** SimpleX uses NON-STANDARD XSalsa20!
+
+```
+Standard libsodium crypto_secretbox:
+  HSalsa20(dh_secret, nonce[0:16])
+
+SimpleX xSalsa20 (Crypto.hs):
+  HSalsa20(dh_secret, zeros[16])    <- ZEROS not nonce!
+  HSalsa20(subkey1, nonce[8:24])
+  Salsa20(subkey2, nonce[0:8])
+```
+
+**Subkeys are COMPLETELY DIFFERENT!**
+```
+Standard:  2d4b4528855228d0abf137ea...
+SimpleX:   ce1b436c8b333a5ff881d4c0...
+```
+
+**Implementation (simplex_crypto.c):**
+```c
+int simplex_secretbox_open(...) {
+    uint8_t subkey1[32], subkey2[32];
+    uint8_t zeros[16] = {0};
+    
+    // Step 1: HSalsa20(dh_secret, zeros[16])
+    crypto_core_hsalsa20(subkey1, zeros, dh_secret, NULL);
+    
+    // Step 2: HSalsa20(subkey1, nonce[8:24])
+    crypto_core_hsalsa20(subkey2, &nonce[8], subkey1, NULL);
+    
+    // Step 3: Salsa20 decrypt + Poly1305 verify
+}
+```
+
 ---
 
 ## 6. Working Code State
@@ -303,49 +344,67 @@ Question: Do offsets need +2 shift?
 
 ---
 
-## 9. Missing Key (Session 15 Root Cause)
+## 9. Session 15 Theory (DISPROVEN in Session 16)
 
-### 9.1 The Problem
-
-```
-App Side:
-  e2eDhSecret = DH(our_queue.e2e_public, app.sndQueue.e2ePrivKey)
-
-ESP32 Side (what we need):
-  dh_secret = DH(app.sndQueue.e2ePubKey, our_queue.e2e_private)
-                 ^^^^^^^^^^^^^^^^^^^^
-                 WE DON'T HAVE THIS KEY!
-```
-
-### 9.2 Where is the Key?
-
-The `app.sndQueue.e2ePubKey` is sent in:
-- **App's AgentConfirmation** (Type 'C')
-- On our **Contact Queue**
-- After we send HELLO
-
-### 9.3 Why We Don't Have It
+### 9.1 Session 15 Claimed
 
 ```
-✅ Step 1: INVITATION received
-✅ Step 2: AgentConfirmation sent -> OK
-✅ Step 3: HELLO sent -> OK
-❌ Step 4: App's AgentConfirmation NOT received!
-❌ Step 5: Cannot decrypt Reply Queue
+App's HELLO on Reply Queue has maybe_e2e = Nothing
+-> Uses pre-computed e2eDhSecret
+-> We need app.sndQueue.e2ePubKey
+-> Key is in App's AgentConfirmation
+-> WE DON'T RECEIVE THIS MESSAGE!
 ```
 
-### 9.4 Solution (Session 16)
+### 9.2 Evgeny's Response (Session 16)
 
-```
-1. After HELLO, continue listening on Contact Queue
-2. Receive App's AgentConfirmation
-3. Extract sndQueue.e2ePubKey
-4. Compute e2eDhSecret
-5. Decrypt Reply Queue messages
-```
+> "sender's public DH key sent in confirmation header - this is
+> **outside of AgentConnInfoReply but in the same message**"
+
+**The key IS in the message header! NO second message needed!**
 
 ---
 
-*Quick Reference v9.0*  
-*Last updated: February 1, 2026 - Session 15 FINAL*  
-*Root Cause Found: Missing app.sndQueue.e2ePubKey!*
+## 10. The Real Problem (Session 16)
+
+### 10.1 Double Ratchet Problem
+
+```
+The Peer CANNOT decrypt our AgentConfirmation!
+
+Evidence:
+- Android shows "Request to connect" (not "Connecting")
+- Header decrypt OK, Payload decrypt FAILED
+- 4 different DH keys all fail
+
+Root Cause:
+- NOT missing keys
+- Probably rcAD order wrong
+- Or X3DH DH order wrong
+- Or HKDF parameters wrong
+```
+
+### 10.2 Verified CORRECT
+
+| Component | Status |
+|-----------|--------|
+| Wire-Format | ✅ CORRECT |
+| Payload AAD (235 bytes) | ✅ CORRECT |
+| Header AAD | ✅ CORRECT |
+| emHeader Encoding | ✅ CORRECT |
+| Key Consistency | ✅ CORRECT |
+| Custom XSalsa20 | ✅ VERIFIED |
+
+### 10.3 Suspects (Session 17)
+
+| Suspect | Likelihood |
+|---------|------------|
+| **rcAD order** | HIGH |
+| **X3DH DH order** | MEDIUM |
+| **HKDF Salt/Info** | MEDIUM |
+
+---
+
+*Quick Reference v10.0*  
+*Last updated: February 3, 2026 - Session 16*  
+*Status: Double Ratchet Problem - rcAD/X3DH suspected*
