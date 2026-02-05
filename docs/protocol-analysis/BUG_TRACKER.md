@@ -27,7 +27,9 @@ This document provides detailed documentation of all bugs discovered during Simp
 | 15 | Reply Queue HSalsa20 | 9 | FIXED |
 | 16 | A_CRYPTO header AAD | 9 | FIXED |
 | 17 | cmNonce instead of msgId | 10C | FIXED |
-| **18** | **Reply Queue E2E** | **13** | **OPEN** |
+| **18** | **Reply Queue E2E** | **12-18** | **✅ SOLVED** |
+
+**Total: 18 bugs documented, 18 FIXED! 🎉**
 
 ---
 
@@ -533,12 +535,93 @@ App status: "connecting"
 
 ---
 
-## Bug #18: Reply Queue E2E Decryption (KEY INVESTIGATION)
+## Bug #18: Reply Queue E2E Decryption — ✅ SOLVED!
 
-**Sessions:** 12, 13, 14, 15, 16, 17  
-**Component:** Reply Queue Per-Queue E2E Layer → Double Ratchet → Key Consistency  
-**Impact:** Cannot decrypt Reply Queue messages / Peer cannot decrypt our messages  
-**Status:** KEY CONSISTENCY INVESTIGATION - Debug test pending
+**Sessions:** 12, 13, 14, 15, 16, 17, 18  
+**Component:** Reply Queue Per-Queue E2E Layer 2 → envelope_len calculation  
+**Impact:** Cannot decrypt Reply Queue messages  
+**Status:** ✅ **SOLVED in Session 18!**
+
+### 18.0 FINAL ROOT CAUSE & FIX (Session 18, 2026-02-05) 🎉
+
+#### Root Cause
+
+```
+envelope_len = plain_len - 2 = 16104       ← WRONG! Includes 102B SMP padding
+envelope_len = raw_len_prefix = 16002      ← CORRECT! Exact content length
+
+plain_len:      16106 (total decrypted from Layer 1)
+raw_len_prefix: 16002 (actual ClientMsgEnvelope length from 2-byte prefix)
+prefix_bytes:   2     (length prefix itself)
+padding:        102   (16106 - 16002 - 2 = SMP block-padding 0x23)
+```
+
+#### The Fix — ONE LINE!
+
+```c
+// BEFORE (WRONG):
+size_t envelope_len = plain_len - rq_prefix_len;  // Includes 102B SMP padding!
+
+// AFTER (CORRECT):
+size_t envelope_len = raw_len_prefix;  // Use actual length from 2-byte prefix
+```
+
+#### Result
+
+```
+Method 0 (decrypt_client_msg): SUCCESS!
+Decrypted: 15904 bytes
+Content: AgentConfirmation + EncRatchetMessage
+
+Decrypted plaintext:
+  [0]     = 0x3a ':' → PrivHeader Type (new, must identify)
+  [2-14]  = Ed25519 SPKI (OID 1.3.101.112)
+  [...]   = 00 07 43 → Agent Version 7, 'C' = AgentConfirmation
+  [...]   = 30 7b 00 02 → '0' (Nothing) + 0x7b = EncRatchetMessage
+```
+
+#### Wire-Format Discovery (Claude Code Analysis #1)
+
+Our code assumed WRONG offsets for ClientMsgEnvelope:
+
+```
+WRONG (our assumption):
+  [0-7]   = Message Header (Timestamps)
+  [8-9]   = "T " (PubHeader Tag + Space)
+  [10-11] = Version
+  [12]    = maybe_corrId        ← DOES NOT EXIST IN ENVELOPE!
+  [13]    = maybe_e2e           ← WRONG OFFSET!
+  
+CORRECT (Haskell reality):
+  ClientMsgEnvelope = (PubHeader, cmNonce, Tail cmEncBody)
+  PubHeader = (phVersion, Maybe phE2ePubDhKey)
+
+  WITH e2ePubKey:
+  [0-1]   = phVersion (00 04)
+  [2]     = '1' (0x31) = Just
+  [3-46]  = X25519 SPKI (44 bytes)
+  [47-70] = cmNonce (24 bytes, raw)
+  [71+]   = cmEncBody (rest)
+  
+  WITHOUT e2ePubKey:
+  [0-1]   = phVersion (00 04)
+  [2]     = '0' (0x30) = Nothing
+  [3-26]  = cmNonce (24 bytes, raw)
+  [27+]   = cmEncBody (rest)
+```
+
+#### Key Insight: corrId is NOT in ClientMsgEnvelope
+
+corrId is SMP Transport Layer — parsed BEFORE the envelope, not inside it.
+
+#### Contact Queue vs Reply Queue Architecture
+
+| Queue | Layer 1 (Server) | Layer 2 (E2E) |
+|-------|-------------------|---------------|
+| Contact Queue | ✅ decrypt_smp_message | ❌ NO E2E Layer! |
+| Reply Queue | ✅ decrypt_smp_message | ✅ E2E decrypt |
+
+**Contact Queue never had a separate E2E layer!** The assumption "Contact Queue E2E works" was FALSE — it only has Layer 1 (server decryption).
 
 ### 18.1 Session 12 Discoveries
 
@@ -672,7 +755,7 @@ ESP32 DH:   d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
 Match: TRUE!
 ```
 
-### 18.5 Session 15 - ROOT CAUSE FOUND!
+### 18.5 Session 15 - ROOT CAUSE FOUND! (Later Disproven in S16)
 
 #### 18.5.1 Critical Discovery: `maybe_e2e = ','` (Nothing)
 
@@ -806,14 +889,6 @@ Peer cannot decrypt our AgentConfirmation!
 | Key Consistency | ✅ CORRECT |
 | Custom XSalsa20 | ✅ VERIFIED |
 
-#### 18.6.7 Suspects (Session 17)
-
-| Suspect | Likelihood |
-|---------|------------|
-| **rcAD order** | HIGH |
-| **X3DH DH order** | MEDIUM |
-| **HKDF Salt/Info** | MEDIUM |
-
 ### 18.7 Session 17 - Key Consistency Debug
 
 #### 18.7.1 Evgeny Already Answered!
@@ -844,30 +919,73 @@ Reply Queue:   2-byte length prefix (e.g. 0x3E82 = 16002)
 
 Fix applied: offset +2 for Reply Queue.
 
-#### 18.7.4 Key Mismatch in Logs
+#### 18.7.4 Key Mismatch in Logs (Resolved in S18)
 
 ```
 Queue Creation:      e2e_private = c4cd6fd7...
 Reply Queue Decrypt: e2e_private = 6156a27f...
 ```
 
-Possible explanations:
-- Different test runs (not same session)
-- Wrong variable logged
-- Memory corruption
+**Resolution:** Different test runs (not same session). 3-point logging in S18 confirmed keys are CONSISTENT.
 
-Debug test implemented to verify.
+### 18.8 Session 18 - 🎉 BUG #18 SOLVED!
 
-#### 18.7.5 MAC Mismatch Data
+#### 18.8.1 Wire-Format Root Cause
+
+Our code parsed ClientMsgEnvelope with completely wrong assumptions:
+- Assumed corrId exists in envelope (WRONG — it's SMP Transport Layer)
+- Used `plain_len - 2` for envelope length (WRONG — includes 102B SMP padding)
+- All offsets shifted, causing MAC mismatch
+
+#### 18.8.2 Claude Code Analyses
+
+**Analysis #1:** ClientMsgEnvelope wire-format
+- corrId NOT in envelope
+- Structure: `(PubHeader, cmNonce, Tail cmEncBody)`
+- No comma separators
+
+**Analysis #2:** Tuple-encoding + wrapper chain
+- `smpEncode a <> smpEncode b` (direct concatenation)
+- Wrapper: `ClientRcvMsgBody {msgTs, msgFlags, msgBody}`
+- Chain: EncRcvMsgBody → ClientRcvMsgBody → ClientMsgEnvelope → ClientMessage
+
+#### 18.8.3 Evidence from ESP Log
 
 ```
-Expected MAC: ed319f1858168cfc18ceeb255d414f77
-Computed MAC: f48d300da052597801d9c3a721b9e86a
+plain_len:      16106 (total decrypted from Layer 1)
+raw_len_prefix: 16002 (actual content length)
+Difference:     102 bytes = 0x23 SMP block-padding
 ```
 
-Completely different - indicates wrong key, not wrong offset.
+Contact Queue parser correctly used prefix_len → works.
+Reply Queue parser used plain_len - 2 → includes padding → fails.
 
-### 18.8 All Crypto Tests (Session 13)
+#### 18.8.4 The Fix
+
+```c
+envelope_len = raw_len_prefix;  // ONE LINE!
+```
+
+#### 18.8.5 Result
+
+```
+Method 0 (decrypt_client_msg): SUCCESS!
+15904 bytes decrypted
+Content: PrivHeader ':' + Ed25519 SPKI + AgentConfirmation + EncRatchetMessage
+```
+
+#### 18.8.6 Excluded Theories (Final)
+
+| Theory | Status | Evidence |
+|--------|--------|----------|
+| our_queue.e2e_private gets overwritten | WRONG | 3-point logging: identical |
+| Wrong key in Invitation | WRONG | Consistency test: all 3 match |
+| Byte offsets were correct | **WRONG** | Session 18: offsets completely wrong |
+| corrId SPKI = E2E Key | WRONG | Claude Code: corrId is Transport Layer |
+| Contact Queue has E2E Layer 2 | **WRONG** | Code analysis: only Layer 1! |
+| corrId exists in Envelope | **WRONG** | Claude Code #1: corrId is SMP Transport |
+
+### 18.9 All Crypto Tests (Session 13)
 
 | Test | Method | MAC | Private Key | Result |
 |------|--------|-----|-------------|--------|
@@ -914,7 +1032,7 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 3. App **first** message: `e2ePubKey = Just` (sendConfirmation)
 4. App **subsequent** messages: `e2ePubKey = Nothing` (sendAgentMessage)
 
-### 18.11 Sub-Issues Status (Updated Session 17)
+### 18.11 Sub-Issues Status (FINAL — All Resolved)
 
 | Sub-Issue | Description | Status |
 |-----------|-------------|--------|
@@ -941,38 +1059,18 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 | #18u | Key race condition fixed (S16) | DONE |
 | #18v | Wire-format verified correct (S16) | DONE |
 | #18w | Problem is Double Ratchet (S16) | IDENTIFIED |
-| **#18x** | **rcAD order analyzed (S17)** | **DONE - staying OUR\|\|PEER** |
-| **#18y** | **Length prefix fix (S17)** | **DONE** |
-| **#18z** | **Key consistency check (S17)** | **INVESTIGATING** |
+| #18x | rcAD order analyzed (S17) | DONE - staying OUR\|\|PEER |
+| #18y | Length prefix fix (S17) | DONE |
+| #18z | Key consistency check (S17) | DONE - keys consistent |
+| **#18aa** | **Contact Queue has NO E2E Layer 2 (S18)** | **DONE** |
+| **#18ab** | **ClientMsgEnvelope wire-format analyzed (S18)** | **DONE** |
+| **#18ac** | **Tuple-encoding: no comma separators (S18)** | **DONE** |
+| **#18ad** | **Wrapper chain documented (S18)** | **DONE** |
+| **#18ae** | **Root cause: 102B SMP padding in envelope_len (S18)** | **DONE** |
+| **#18af** | **Fix: envelope_len = raw_len_prefix (S18)** | **DONE** |
+| **#18ag** | **E2E Layer 2 decrypt SUCCESS: 15904 bytes (S18)** | **✅ SOLVED** |
 
-### 18.12 Current Investigation (Session 17)
-
-**Debug test pending:** Are e2e_private keys consistent between creation and decrypt?
-
-| If Keys EQUAL | If Keys DIFFERENT |
-|---------------|-------------------|
-| Problem is sender_pub extraction | our_queue.e2e_private gets overwritten somewhere |
-| Check which key we read from message | Find where and why |
-
-**MAC Mismatch:**
-```
-Expected: ed319f1858168cfc18ceeb255d414f77
-Computed: f48d300da052597801d9c3a721b9e86a
-```
-Completely different → wrong key, not wrong offset.
-
-### 18.13 Open Questions (Session 18)
-
-1. Is e2e_private consistent across the session?
-   - Debug test will reveal
-   
-2. Are we extracting the correct sender_pub from message?
-   - Which SPKI? At what offset?
-   
-3. Is cmNonce correctly extracted?
-   - Random nonce from message, not calculated
-
-### 18.9 Android vs Desktop Difference
+### 18.12 Android vs Desktop Difference
 
 | Aspect | Desktop | Android |
 |--------|---------|---------|
@@ -998,15 +1096,16 @@ Completely different → wrong key, not wrong offset.
 | Jan 30, 2026 | S12-S13 | #18 (deep analysis) |
 | Jan 31-Feb 1 | S14 | #18 DH SECRET VERIFIED! |
 | Feb 1 | S15 | #18 Root Cause (later disproven) |
-| Feb 1-3 | S16 | #18 Double Ratchet Problem! |
-| **Feb 4** | **S17** | **#18 Key Consistency Debug** |
+| Feb 1-3 | S16 | #18 Custom XSalsa20! |
+| Feb 4 | S17 | #18 Key Consistency Debug |
+| **Feb 5** | **S18** | **#18 ✅ SOLVED! One-line fix!** |
 
 ---
 
 ## Bug Categories
 
 ```
-18 Bugs Total:
+18 Bugs Total (ALL FIXED! 🎉):
 - 7x Length Prefix issues (#1-6, #13)
 - 3x KDF/IV Order issues (#7, #8, #14)
 - 1x Byte Order issue (#9 - wolfSSL)
@@ -1016,7 +1115,7 @@ Completely different → wrong key, not wrong offset.
 - 1x NaCl crypto layer issue (#15 - HSalsa20)
 - 1x Header encryption issue (#16)
 - 1x Nonce source issue (#17 - cmNonce)
-- 1x E2E crypto compatibility issue (#18 - OPEN)
+- 1x Envelope length calculation issue (#18 - SMP padding)
 ```
 
 ---
@@ -1058,10 +1157,18 @@ Completely different → wrong key, not wrong offset.
 33. **ALWAYS search past Evgeny conversations first!** - He already answered Jan 28 (Session 17)
 34. **Length prefix differs per queue** - Reply Queue has 2-byte prefix, Contact Queue doesn't (Session 17)
 35. **cmNonce is RANDOM** - Directly in message, not calculated (Session 17)
+36. **ALWAYS use length prefix for content boundaries** - Never assume buffer_size - header = content_size! (Session 18)
+37. **SMP block-padding exists** - 0x23 padding for traffic analysis resistance, must be excluded! (Session 18)
+38. **corrId is SMP Transport, NOT in ClientMsgEnvelope** - Parsed before envelope, not inside it! (Session 18)
+39. **Contact Queue has NO E2E Layer 2** - Only server-level decryption, no separate E2E! (Session 18)
+40. **Compare working code with broken code** - Contact Queue parser used prefix_len correctly, Reply Queue didn't! (Session 18)
+41. **No comma separators in smpEncode** - Direct concatenation: `smpEncode a <> smpEncode b`! (Session 18)
+42. **Wrapper chain matters** - EncRcvMsgBody → ClientRcvMsgBody → ClientMsgEnvelope → ClientMessage! (Session 18)
+43. **One line can block weeks of progress** - Bug #18 was ONE LINE: envelope_len = raw_len_prefix! (Session 18)
 
 ---
 
-*Bug Tracker v12.0*  
-*Last updated: February 4, 2026 - Session 17*  
-*Total bugs documented: 18 (17 fixed, 1 in progress - Key Investigation)*  
-*35 lessons learned!*
+*Bug Tracker v13.0*  
+*Last updated: February 5, 2026 - Session 18*  
+*Total bugs documented: 18 (18 fixed! 🎉)*  
+*43 lessons learned!*

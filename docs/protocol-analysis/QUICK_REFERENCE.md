@@ -2,28 +2,33 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-04 - Session 17 (Key Consistency Debug)**
+**Updated: 2026-02-05 - Session 18 (🎉 BUG #18 SOLVED!)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 17 - KEY CONSISTENCY INVESTIGATION
-==========================================
+SESSION 18 - 🎉 BUG #18 SOLVED! E2E LAYER 2 DECRYPT SUCCESS!
+================================================================
 
-Evgeny ALREADY ANSWERED (Jan 28, 2026):
-  - Key in "confirmation header" (SPKI in message header)
-  - "outside of AgentConnInfoReply but in the same message"
-  - TWO crypto_box layers with different keys/nonces
+Root Cause: envelope_len included 102 bytes SMP block-padding
+  plain_len = 16106, raw_len_prefix = 16002, padding = 102 (0x23)
+  
+Fix: ONE LINE — envelope_len = raw_len_prefix
 
-New Discoveries:
-  - Reply Queue: 2-byte length prefix (Contact Queue: none)
-  - cmNonce: RANDOM (directly in message, not calculated)
-  - Both keypairs at queue creation, NEVER changed
-  - Key mismatch in logs (under investigation)
+Result: Method 0 (decrypt_client_msg) SUCCESS! 15904 bytes!
+  Content: PrivHeader ':' + Ed25519 SPKI + AgentConfirmation + EncRatchetMessage
 
-Debug test pending: e2e_private consistency
+All Layers Through Layer 2: ✅
+  Layer 0: TLS 1.3 ✅
+  Layer 1: SMP Transport ✅
+  Layer 2: E2E Decrypt ✅ (FIXED Session 18!)
+  Layer 3: AgentMsgEnvelope parsing ⏳
+  Layer 4: Double Ratchet ⏳
+  Layer 5: Application Data ⏳
+
+Next: Parse AgentConfirmation, identify PrivHeader ':', decrypt EncRatchetMessage
 ```
 
 ---
@@ -37,6 +42,11 @@ Debug test pending: e2e_private consistency
 5. [Crypto Functions](#5-crypto-functions)
 6. [Working Code State](#6-working-code-state)
 7. [Message Flow](#7-message-flow)
+8. [Queue Architecture](#8-queue-architecture)
+9. [SMP Block-Padding](#9-smp-block-padding)
+10. [Decryption Chain](#10-complete-decryption-chain)
+11. [Important Source Locations](#11-important-source-locations)
+12. [Evgeny Quotes](#12-evgeny-quotes-authoritative)
 
 ---
 
@@ -111,7 +121,30 @@ Offset  Bytes                              Meaning
 [100+]  5b f2 2e fa ...                    Ciphertext
 ```
 
-### 3.2 Key Extraction
+### 3.2 ClientMsgEnvelope Wire-Format (CORRECTED Session 18!)
+
+**CRITICAL: corrId does NOT exist in ClientMsgEnvelope!**
+corrId is SMP Transport Layer, parsed BEFORE the envelope.
+
+```
+ClientMsgEnvelope = (PubHeader, cmNonce, Tail cmEncBody)
+PubHeader = (phVersion, Maybe phE2ePubDhKey)
+
+WITH e2ePubKey (first message):
+[0-1]   = phVersion (00 04)
+[2]     = '1' (0x31) = Just
+[3-46]  = X25519 SPKI (44 bytes)
+[47-70] = cmNonce (24 bytes, raw)
+[71+]   = cmEncBody (rest)
+
+WITHOUT e2ePubKey (subsequent messages):
+[0-1]   = phVersion (00 04)
+[2]     = '0' (0x30) = Nothing
+[3-26]  = cmNonce (24 bytes, raw)
+[27+]   = cmEncBody (rest)
+```
+
+### 3.3 Key Extraction
 
 ```c
 // Peer's E2E public key at offset 28
@@ -157,6 +190,16 @@ mac = "cc3eec548b0440cf0222466a79a00c0c"
 
 # Ciphertext length
 ciphertext_len = 16006
+```
+
+### 4.3 Session 18 Verified Values
+
+```
+plain_len:        16106 (total decrypted from Layer 1)
+raw_len_prefix:   16002 (actual ClientMsgEnvelope length)
+prefix_bytes:     2     (length prefix itself)
+padding:          102   (SMP block-padding 0x23)
+decrypted_result: 15904 bytes (AgentConfirmation + EncRatchetMessage)
 ```
 
 ---
@@ -266,6 +309,13 @@ typedef struct {
 } our_queue_t;
 ```
 
+### 6.3 Reply Queue E2E Decrypt (FIXED Session 18!)
+
+```c
+// CRITICAL: Use length prefix, NOT buffer size!
+size_t envelope_len = raw_len_prefix;  // NOT plain_len - rq_prefix_len!
+```
+
 ---
 
 ## 7. Message Flow (VERIFIED Session 14)
@@ -292,30 +342,109 @@ NO SECOND MESSAGE ON CONTACT QUEUE!
 
 ---
 
-## 8. Open Questions (Session 15)
+## 8. Queue Architecture (Clarified Session 18!)
 
-### 8.1 Offset Problem?
+### 8.1 Contact Queue (ONLY Layer 1!)
 
 ```
-server_plain[0-1] = 3e 82 (Length Prefix)
-
-Question: Do offsets need +2 shift?
-- peer_e2e_pub: [28-59] or [30-61]?
-- cm_nonce: [60-83] or [62-85]?
-- MAC: [84-99] or [86-101]?
+Incoming MSG on Contact Queue:
+  1. SMP Transport decrypt (Server→Recipient) → Layer 1
+  2. Direct parse_agent_message() — NO E2E Layer!
+  
+decrypt_smp_message() → parse_agent_message()
 ```
 
-### 8.2 To Verify
+**Contact Queue NEVER had a separate E2E layer!**
 
-1. Add debug output for raw offsets
-2. Export full ciphertext (16006 bytes) for Python test
-3. Check libsodium parameter order
+### 8.2 Reply Queue (TWO Layers)
+
+```
+Incoming MSG on Reply Queue:
+  1. SMP Transport decrypt (Server→Recipient) → Layer 1
+  2. ClientMsgEnvelope parse + E2E decrypt → Layer 2
+  
+decrypt_smp_message() → parse ClientMsgEnvelope → E2E decrypt → parse_agent_message()
+```
+
+### 8.3 Comparison
+
+| Queue | Layer 1 (Server) | Layer 2 (E2E) | Status |
+|-------|-------------------|---------------|--------|
+| Contact Queue | ✅ decrypt_smp_message | ❌ NO E2E Layer | Working |
+| Reply Queue | ✅ decrypt_smp_message | ✅ E2E decrypt | **FIXED S18!** |
 
 ---
 
-## 9. Important Source Locations
+## 9. SMP Block-Padding (Session 18 Discovery!)
 
-### 9.1 Haskell
+### 9.1 The Padding
+
+```
+plain_len:        16106 (total decrypted from Layer 1)
+raw_len_prefix:   16002 (actual ClientMsgEnvelope length)
+prefix_bytes:     2     (length prefix itself)
+padding:          102   (16106 - 16002 - 2)
+padding_value:    0x23  (SMP block-padding character)
+```
+
+### 9.2 Why Padding Exists
+
+SMP protocol pads messages to fixed block sizes for traffic analysis resistance. Padding is added AFTER the ClientMsgEnvelope but BEFORE Layer 1 encryption.
+
+### 9.3 CRITICAL Rule
+
+```
+ALWAYS use length prefix for content boundaries!
+NEVER use buffer_size - header_size!
+
+WRONG:  envelope_len = plain_len - header_len    // Includes padding!
+CORRECT: envelope_len = raw_len_prefix            // Exact content length!
+```
+
+---
+
+## 10. Complete Decryption Chain (Verified Session 18!)
+
+```
+Layer 0: TLS 1.3 (mbedTLS)                                    ✅ Working
+  ↓
+Layer 1: SMP Transport (rcvDhSecret + cbNonce(msgId))          ✅ Working
+  ↓ Output: [2B len prefix][ClientMsgEnvelope][padding 0x23...]
+  ↓ CRITICAL: Use len prefix, NOT buffer size!
+  ↓
+Layer 2: E2E (e2eDhSecret + cmNonce from envelope)             ✅ FIXED S18!
+  ↓ Input: ClientMsgEnvelope = [PubHeader][cmNonce][cmEncBody]
+  ↓ PubHeader = [version 2B][maybe 1B][opt. SPKI 44B]
+  ↓ Output: 15904 bytes
+  ↓
+Layer 3: AgentMsgEnvelope / ClientMessage                      ⏳ Next
+  ↓ Contains: PrivHeader + AgentMessage
+  ↓
+Layer 4: Double Ratchet (EncRatchetMessage)                    ⏳ After L3
+  ↓ Inside AgentConfirmation
+  ↓
+Layer 5: Application Data (ConnInfo, etc.)                     ⏳ After L4
+```
+
+### Wrapper Chain (Session 18 Discovery)
+
+```
+EncRcvMsgBody (encrypted blob from server)
+  ↓ decrypt with rcvDhSecret
+ClientRcvMsgBody {msgTs :: SysTime, msgFlags :: Word8, msgBody :: Tail ByteString}
+  ↓ extract msgBody
+ClientMsgEnvelope (PubHeader, cmNonce, Tail cmEncBody)
+  ↓ decrypt cmEncBody with e2eDhSecret + cmNonce
+ClientMessage / AgentMsgEnvelope
+```
+
+**No comma separators!** `smpEncode a <> smpEncode b` — direct concatenation.
+
+---
+
+## 11. Important Source Locations
+
+### 11.1 Haskell
 
 | Function | File | Lines |
 |----------|------|-------|
@@ -326,7 +455,7 @@ Question: Do offsets need +2 shift?
 | e2eDhSecret | Agent.hs | 3379 |
 | ICDuplexSecure | Agent.hs | 1549-1551 |
 
-### 9.2 SimpleGo
+### 11.2 SimpleGo
 
 | Function | File |
 |----------|------|
@@ -337,9 +466,47 @@ Question: Do offsets need +2 shift?
 
 ---
 
-## 9. Session 15 Theory (DISPROVEN in Session 16)
+## 12. Evgeny Quotes (Authoritative)
 
-### 9.1 Session 15 Claimed
+**ALWAYS read these before asking Evgeny new questions!**
+
+| # | Date | Quote | Topic |
+|---|------|-------|-------|
+| 1 | 28.01 | "To your question, most likely A" | Reply Queue E2E Key |
+| 2 | 28.01 | "combine your private DH key...with sender's public DH key sent in confirmation header - outside of AgentConnInfoReply but in the same message" | Key Location |
+| 3 | 28.01 | "TWO separate crypto_box decryption layers...different keys and different nonces" | Two Layers |
+| 4 | 28.01 | "it does seem like you're indeed missing server to client encryption layer" | Missing Layer |
+| 5 | 28.01 | "I think the key would be in PHConfirmation, no?" | PHConfirmation |
+| 6 | 26.01 | "A_MESSAGE is a bit too broad error" | Error Types |
+| 7 | 26.01 | "claude is surprisingly good...Opus 4.5 specifically" | Claude Recommendation |
+| 8 | 26.01 | "I'd make an automatic test that tests it against haskell implementation" | Testing |
+| 9 | 26.01 | "what you did is impressive...first third-party SMP implementation" | Impressed |
+
+---
+
+## 13. Decrypted Content Preview (Session 18)
+
+### 13.1 First Bytes After E2E Decrypt
+
+```
+[0]     = 0x3a ':' → PrivHeader Type (NEW — must identify!)
+[1]     = 0xae     → Length byte?
+[2-14]  = Ed25519 SPKI (4b 2c 30 2a 30 05 06 03 2b 65 70 03 21 00)
+[...]   = 00 07 43 → Agent Version 7, 'C' = AgentConfirmation
+[...]   = 30 7b 00 02 → '0' (Nothing) + 0x7b = EncRatchetMessage Start
+```
+
+### 13.2 Open Questions (Session 19)
+
+1. What is PrivHeader ':' (0x3a)? — Not PHConfirmation='K', not PHEmpty='_'
+2. Parse AgentConfirmation → e2eEncryption + encConnInfo
+3. Decrypt EncRatchetMessage with Double Ratchet
+
+---
+
+## 14. Session 15 Theory (DISPROVEN in Session 16)
+
+### 14.1 Session 15 Claimed
 
 ```
 App's HELLO on Reply Queue has maybe_e2e = Nothing
@@ -349,7 +516,7 @@ App's HELLO on Reply Queue has maybe_e2e = Nothing
 -> WE DON'T RECEIVE THIS MESSAGE!
 ```
 
-### 9.2 Evgeny's Response (Session 16)
+### 14.2 Evgeny's Response (Session 16)
 
 > "sender's public DH key sent in confirmation header - this is
 > **outside of AgentConnInfoReply but in the same message**"
@@ -358,52 +525,36 @@ App's HELLO on Reply Queue has maybe_e2e = Nothing
 
 ---
 
-## 10. The Real Problem (Session 16-17)
+## 15. The Real Problem (Sessions 16-17, SOLVED in Session 18!)
 
-### 10.1 Double Ratchet Problem
-
-```
-The Peer CANNOT decrypt our AgentConfirmation!
-
-Evidence:
-- Android shows "Request to connect" (not "Connecting")
-- Header decrypt OK, Payload decrypt FAILED
-- 4 different DH keys all fail
-
-Root Cause:
-- NOT missing keys
-- Probably rcAD order wrong
-- Or X3DH DH order wrong
-- Or HKDF parameters wrong
-```
-
-### 10.2 Length Prefix Difference (Session 17)
+### 15.1 Session 16-17: Double Ratchet Theory
 
 ```
-Contact Queue: No length prefix before ClientMsgEnvelope
-Reply Queue:   2-byte length prefix (e.g. 0x3E82 = 16002)
+Session 16: Peer CANNOT decrypt our AgentConfirmation
+  - Android: "Request to connect"
+  - Desktop: "Connecting"
+  Suspected: rcAD order, X3DH DH order, HKDF params
+
+Session 17: Key Consistency Investigation
+  - Key mismatch in logs (later: different test runs)
+  - rcAD order tested (staying OUR||PEER)
 ```
 
-### 10.3 cmNonce (Session 17)
+### 15.2 Session 18: ACTUAL Root Cause
 
 ```
-cmNonce is RANDOM - directly stored in the message!
-NOT calculated from any other value.
-Extract from message at correct offset.
-```
+NOT a crypto problem!
+NOT a Double Ratchet problem!
+NOT a key problem!
 
-### 10.4 Layer 2 Decrypt Flow (Haskell Reference)
-
-```
-1. Parse ClientMsgEnvelope from Layer 1 output
-2. Extract e2ePubKey_ (sender's ephemeral) from PubHeader
-3. Get e2ePrivKey from RcvQueue (key from queue creation!)
-4. e2eDh = DH(sender_ephemeral_pub, our_e2e_private)
-5. plaintext = crypto_box_open(cmEncBody, cmNonce, e2eDh)
+ACTUAL: envelope_len included 102 bytes SMP block-padding
+FIX: envelope_len = raw_len_prefix (ONE LINE!)
+RESULT: 15904 bytes decrypted successfully!
 ```
 
 ---
 
-*Quick Reference v11.0*  
-*Last updated: February 4, 2026 - Session 17*  
-*Status: Key Consistency Investigation*
+*Quick Reference v12.0*  
+*Last updated: February 5, 2026 - Session 18*  
+*Status: 🎉 BUG #18 SOLVED! E2E Layer 2 Decrypt SUCCESS!*  
+*Next: Parse AgentConfirmation, decrypt EncRatchetMessage*
