@@ -364,6 +364,104 @@ static void smp_connect(void) {
                 int plain_len = enc_len - crypto_box_MACBYTES;
                 ESP_LOGI(TAG, "      Server-level decrypt SUCCESS! (%d bytes)", plain_len);
                 
+                // ================================================================
+                // 🐰 CRITICAL: Raw Wire Format Analysis
+                // ================================================================
+                static int reply_msg_counter = 0;
+                reply_msg_counter++;
+                
+                ESP_LOGE(TAG, "");
+                ESP_LOGE(TAG, "      ╔═══════════════════════════════════════════════════════╗");
+                ESP_LOGE(TAG, "      ║  🔬 REPLY QUEUE MESSAGE #%d RAW ANALYSIS              ║", reply_msg_counter);
+                ESP_LOGE(TAG, "      ╚═══════════════════════════════════════════════════════╝");
+                
+                // Show raw bytes WITHOUT any offset adjustments first
+                ESP_LOGE(TAG, "      📏 Total decrypted length: %d bytes", plain_len);
+                
+                ESP_LOGE(TAG, "      📦 RAW server_plain[0-31] (NO offset adjustment):");
+                printf("         ");
+                for (int i = 0; i < 32 && i < plain_len; i++) {
+                    printf("%02x ", server_plain[i]);
+                    if ((i + 1) % 16 == 0) printf("\n         ");
+                }
+                printf("\n");
+                printf("         ASCII: ");
+                for (int i = 0; i < 32 && i < plain_len; i++) {
+                    char c = server_plain[i];
+                    printf("%c", (c >= 32 && c < 127) ? c : '.');
+                }
+                printf("\n");
+                
+                // Check for length prefix
+                uint16_t raw_len_prefix = (server_plain[0] << 8) | server_plain[1];
+                ESP_LOGE(TAG, "      📏 Bytes [0-1] as BE uint16: 0x%04x = %d", raw_len_prefix, raw_len_prefix);
+                
+                // Now check different offset interpretations
+                ESP_LOGE(TAG, "");
+                ESP_LOGE(TAG, "      🔍 MAYBE ENCODING CHECK (Haskell: '0'=Nothing, '1'=Just):");
+                
+                // Without length prefix skip (raw)
+                ESP_LOGE(TAG, "      [RAW] server_plain[12-17]: %02x %02x %02x %02x %02x %02x  ('%c' '%c' '%c' '%c' '%c' '%c')",
+                         server_plain[12], server_plain[13], server_plain[14], server_plain[15], server_plain[16], server_plain[17],
+                         (server_plain[12] >= 32 && server_plain[12] < 127) ? server_plain[12] : '.',
+                         (server_plain[13] >= 32 && server_plain[13] < 127) ? server_plain[13] : '.',
+                         (server_plain[14] >= 32 && server_plain[14] < 127) ? server_plain[14] : '.',
+                         (server_plain[15] >= 32 && server_plain[15] < 127) ? server_plain[15] : '.',
+                         (server_plain[16] >= 32 && server_plain[16] < 127) ? server_plain[16] : '.',
+                         (server_plain[17] >= 32 && server_plain[17] < 127) ? server_plain[17] : '.');
+                
+                // With +2 offset (after length prefix)
+                ESP_LOGE(TAG, "      [+2]  server_plain[14-19]: %02x %02x %02x %02x %02x %02x  ('%c' '%c' '%c' '%c' '%c' '%c')",
+                         server_plain[14], server_plain[15], server_plain[16], server_plain[17], server_plain[18], server_plain[19],
+                         (server_plain[14] >= 32 && server_plain[14] < 127) ? server_plain[14] : '.',
+                         (server_plain[15] >= 32 && server_plain[15] < 127) ? server_plain[15] : '.',
+                         (server_plain[16] >= 32 && server_plain[16] < 127) ? server_plain[16] : '.',
+                         (server_plain[17] >= 32 && server_plain[17] < 127) ? server_plain[17] : '.',
+                         (server_plain[18] >= 32 && server_plain[18] < 127) ? server_plain[18] : '.',
+                         (server_plain[19] >= 32 && server_plain[19] < 127) ? server_plain[19] : '.');
+                
+                // Look for '0' or '1' anywhere in first 25 bytes
+                ESP_LOGE(TAG, "");
+                ESP_LOGE(TAG, "      🎯 SEARCHING FOR MAYBE MARKERS ('0'=0x30, '1'=0x31):");
+                for (int i = 0; i < 25 && i < plain_len; i++) {
+                    if (server_plain[i] == '0') {
+                        ESP_LOGW(TAG, "         Found '0' (Nothing) at RAW offset %d", i);
+                    }
+                    if (server_plain[i] == '1') {
+                        ESP_LOGW(TAG, "         Found '1' (Just) at RAW offset %d", i);
+                    }
+                }
+                
+                // Look for SPKI pattern (30 2a 30 05 06 03 2b 65 6e)
+                ESP_LOGE(TAG, "");
+                ESP_LOGE(TAG, "      🔍 SEARCHING FOR X25519 SPKI PATTERN (30 2a 30 05 06 03 2b 65 6e):");
+                for (int i = 0; i < plain_len - 9 && i < 100; i++) {
+                    if (server_plain[i] == 0x30 && server_plain[i+1] == 0x2a && 
+                        server_plain[i+2] == 0x30 && server_plain[i+3] == 0x05 &&
+                        server_plain[i+4] == 0x06 && server_plain[i+5] == 0x03 &&
+                        server_plain[i+6] == 0x2b && server_plain[i+7] == 0x65) {
+                        ESP_LOGW(TAG, "         Found X25519 SPKI at RAW offset %d", i);
+                        if (i >= 4) {
+                            ESP_LOGW(TAG, "         Bytes BEFORE SPKI [%d-%d]: %02x %02x %02x %02x  ('%c' '%c' '%c' '%c')",
+                                     i-4, i-1, server_plain[i-4], server_plain[i-3], server_plain[i-2], server_plain[i-1],
+                                     (server_plain[i-4] >= 32 && server_plain[i-4] < 127) ? server_plain[i-4] : '.',
+                                     (server_plain[i-3] >= 32 && server_plain[i-3] < 127) ? server_plain[i-3] : '.',
+                                     (server_plain[i-2] >= 32 && server_plain[i-2] < 127) ? server_plain[i-2] : '.',
+                                     (server_plain[i-1] >= 32 && server_plain[i-1] < 127) ? server_plain[i-1] : '.');
+                        }
+                        // Show the raw key after SPKI header
+                        ESP_LOGW(TAG, "         Raw key at offset %d: %02x%02x%02x%02x%02x%02x%02x%02x...",
+                                 i + 12,
+                                 server_plain[i+12], server_plain[i+13], server_plain[i+14], server_plain[i+15],
+                                 server_plain[i+16], server_plain[i+17], server_plain[i+18], server_plain[i+19]);
+                    }
+                }
+                
+                ESP_LOGE(TAG, "");
+                ESP_LOGE(TAG, "      ⚠️  NOTE: ',' (0x2C) is NOT a valid Maybe marker!");
+                ESP_LOGE(TAG, "      ⚠️  Valid Haskell Maybe: '0' (0x30)=Nothing, '1' (0x31)=Just");
+                ESP_LOGE(TAG, "");
+                
                 // Debug: First 64 bytes
                 ESP_LOGI(TAG, "      First 64 bytes:");
                 printf("         ");
@@ -375,30 +473,93 @@ static void smp_connect(void) {
                 
                 // === LAYER 2: Per-Queue E2E Decrypt ===
                 // ================================================================
-                // FINAL CORRECT Wire Format:
-                // 
-                // [14]    = maybe_corrId tag ('1' = Just)
-                // [15]    = maybe_e2e tag (',' = 0x2C = Nothing = corrId IS the E2E key!)
-                // [16-59] = SPKI (44 bytes) = BOTH corrId AND E2E key!
-                // [60-83] = cmNonce (24 bytes)
-                // [84+]   = cmEncBody
+                // IMPORTANT: Reply Queue messages have a 2-byte LENGTH PREFIX!
+                // Contact Queue: ClientMsgEnvelope starts at offset 0
+                // Reply Queue:   [0-1] = Length prefix, ClientMsgEnvelope at offset 2
                 //
-                // CRITICAL: When maybe_e2e = ',' (0x2C), the corrId SPKI doubles as E2E key!
-                // The 0x2C byte is NOT a length - it's the "Nothing" tag for maybe_e2e!
+                // ClientMsgEnvelope Layout (after length prefix):
+                // [0-7]   = Message Header (timestamps, etc.)
+                // [8-9]   = "T " (PubHeader Tag + Space)
+                // [10-11] = Version (0x0004 = ClientMsg v4)
+                // [12]    = maybe_corrId tag ('0' = Nothing, '1' = Just)
+                // [13]    = maybe_e2e tag ('0' = Nothing, '1' = Just)
+                // 
+                // NOTE: We're seeing ',' (0x2C) which is NOT a valid Maybe marker!
+                // Haskell Maybe encoding: '0' (0x30) = Nothing, '1' (0x31) = Just
+                // This suggests our offset might be wrong or format is different!
+                //
+                // If maybe_corrId='1' and maybe_e2e='0' (Nothing = no separate e2e key):
+                //   [14-57] = corrId SPKI (44 bytes) - this IS the E2E key!
+                //   [58-81] = cmNonce (24 bytes RANDOM - read directly!)
+                //   [82+]   = cmEncBody
+                //
+                // CRITICAL: cmNonce is NOT derived - it's IN the message!
                 // ================================================================
                 
-                int offset = 14;
+                // Check for 2-byte length prefix (Reply Queue specific!)
+                int rq_prefix_len = 0;
+                if (plain_len > 2 && (server_plain[0] != 0x00 || server_plain[1] != 0x00)) {
+                    // First 2 bytes are non-zero = length prefix present
+                    uint16_t len_prefix = (server_plain[0] << 8) | server_plain[1];
+                    ESP_LOGI(TAG, "      📏 Reply Queue length prefix: %u (0x%02x%02x)",
+                             len_prefix, server_plain[0], server_plain[1]);
+                    rq_prefix_len = 2;  // Skip the length prefix
+                }
                 
-                // [14] = maybe_corrId
-                uint8_t maybe_corrId = server_plain[offset];
-                ESP_LOGI(TAG, "      [%d] maybe_corrId = '%c' (0x%02x)", offset, maybe_corrId, maybe_corrId);
-                offset++;  // Now at 15
+                // Point to the actual ClientMsgEnvelope (after any length prefix)
+                const uint8_t *envelope = server_plain + rq_prefix_len;
+                size_t envelope_len = plain_len - rq_prefix_len;
                 
-                // [15] = maybe_e2e (NOT corrId_len!)
-                uint8_t maybe_e2e = server_plain[offset];
-                ESP_LOGI(TAG, "      [%d] maybe_e2e = '%c' (0x%02x)", offset, 
+                // ================================================================
+                // 🐰 DEBUG: Exakte Byte-Extraktion für E2E Decrypt
+                // ================================================================
+                ESP_LOGE(TAG, "");
+                ESP_LOGE(TAG, "      ╔═══════════════════════════════════════════════════════╗");
+                ESP_LOGE(TAG, "      ║  📐 BYTE EXTRACTION DEBUG                             ║");
+                ESP_LOGE(TAG, "      ╚═══════════════════════════════════════════════════════╝");
+                
+                // Show raw envelope bytes
+                ESP_LOGE(TAG, "      📏 envelope starts at server_plain + %d", rq_prefix_len);
+                ESP_LOGE(TAG, "      📏 envelope_len = %zu", envelope_len);
+                ESP_LOGE(TAG, "      Raw envelope [0-31]:");
+                printf("         ");
+                for (int i = 0; i < 32 && i < (int)envelope_len; i++) {
+                    printf("%02x ", envelope[i]);
+                    if ((i + 1) % 16 == 0) printf("\n         ");
+                }
+                printf("\n");
+                
+                // Show critical offsets
+                ESP_LOGE(TAG, "      Critical bytes:");
+                ESP_LOGE(TAG, "         envelope[12] (maybe_corrId): 0x%02x '%c'", 
+                         envelope[12], (envelope[12] >= 0x20 && envelope[12] < 0x7f) ? envelope[12] : '?');
+                ESP_LOGE(TAG, "         envelope[13] (maybe_e2e):    0x%02x '%c'", 
+                         envelope[13], (envelope[13] >= 0x20 && envelope[13] < 0x7f) ? envelope[13] : '?');
+                ESP_LOGE(TAG, "         envelope[14-19] (SPKI start): %02x %02x %02x %02x %02x %02x",
+                         envelope[14], envelope[15], envelope[16], envelope[17], envelope[18], envelope[19]);
+                ESP_LOGE(TAG, "         envelope[26-33] (raw key):    %02x %02x %02x %02x %02x %02x %02x %02x",
+                         envelope[26], envelope[27], envelope[28], envelope[29],
+                         envelope[30], envelope[31], envelope[32], envelope[33]);
+                ESP_LOGE(TAG, "         envelope[58-65] (cmNonce):    %02x %02x %02x %02x %02x %02x %02x %02x",
+                         envelope[58], envelope[59], envelope[60], envelope[61],
+                         envelope[62], envelope[63], envelope[64], envelope[65]);
+                ESP_LOGE(TAG, "         envelope[82-89] (ciphertext): %02x %02x %02x %02x %02x %02x %02x %02x",
+                         envelope[82], envelope[83], envelope[84], envelope[85],
+                         envelope[86], envelope[87], envelope[88], envelope[89]);
+                ESP_LOGE(TAG, "");
+                
+                int offset = 12;
+                
+                // [12] = maybe_corrId
+                uint8_t maybe_corrId = envelope[offset];
+                ESP_LOGI(TAG, "      [%d] maybe_corrId = '%c' (0x%02x)", offset + rq_prefix_len, maybe_corrId, maybe_corrId);
+                offset++;  // Now at 13
+                
+                // [13] = maybe_e2e (NOT corrId_len!)
+                uint8_t maybe_e2e = envelope[offset];
+                ESP_LOGI(TAG, "      [%d] maybe_e2e = '%c' (0x%02x)", offset + rq_prefix_len, 
                          (maybe_e2e >= 0x20 && maybe_e2e < 0x7f) ? maybe_e2e : '?', maybe_e2e);
-                offset++;  // Now at 16
+                offset++;  // Now at 14
                 
                 const uint8_t x25519_spki_header[] = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 
                                                        0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00};
@@ -406,28 +567,37 @@ static void smp_connect(void) {
                 uint8_t sender_pub[32];
                 bool have_sender_key = false;
                 
-                if (maybe_corrId == '1' && maybe_e2e == ',') {
-                    // maybe_e2e = ',' (0x2C) means: corrId SPKI IS the E2E key!
-                    ESP_LOGI(TAG, "      maybe_e2e = ',' -> corrId SPKI doubles as E2E key!");
+                if (maybe_corrId == '1' && (maybe_e2e == ',' || maybe_e2e == '0')) {
+                    // maybe_e2e = ',' (0x2C) or '0' (0x30) = Nothing = corrId SPKI IS the E2E key!
+                    // NOTE: ',' is not standard Haskell Maybe encoding, but we see it in logs
+                    ESP_LOGI(TAG, "      maybe_e2e = '%c' -> corrId SPKI doubles as E2E key!", maybe_e2e);
                     
-                    // Verify SPKI header at offset 16
-                    if (memcmp(&server_plain[offset], x25519_spki_header, 12) == 0) {
+                    // Verify SPKI header at offset 14
+                    if (memcmp(&envelope[offset], x25519_spki_header, 12) == 0) {
                         // Extract raw key (after 12-byte SPKI header)
-                        memcpy(sender_pub, &server_plain[offset + 12], 32);
+                        memcpy(sender_pub, &envelope[offset + 12], 32);
                         have_sender_key = true;
                         
-                        ESP_LOGI(TAG, "      ✅ Found E2E Key (from corrId SPKI) at offset %d!", offset);
-                        ESP_LOGI(TAG, "      sender_pub: %02x%02x%02x%02x%02x%02x%02x%02x...",
-                                 sender_pub[0], sender_pub[1], sender_pub[2], sender_pub[3],
-                                 sender_pub[4], sender_pub[5], sender_pub[6], sender_pub[7]);
+                        ESP_LOGI(TAG, "      ✅ Found E2E Key (from corrId SPKI) at offset %d!", offset + rq_prefix_len);
+                        
+                        // 🐰 Full sender_pub debug
+                        ESP_LOGE(TAG, "      📦 SENDER_PUB FULL (from envelope[%d + 12 = %d]):", offset, offset + 12);
+                        printf("         ");
+                        for (int i = 0; i < 32; i++) printf("%02x", sender_pub[i]);
+                        printf("\n");
                         
                         // Save for future messages
                         memcpy(reply_queue_e2e_peer_public, sender_pub, 32);
                         reply_queue_e2e_peer_valid = true;
                     } else {
-                        ESP_LOGE(TAG, "      ❌ SPKI header mismatch at offset %d", offset);
+                        ESP_LOGE(TAG, "      ❌ SPKI header mismatch at offset %d", offset + rq_prefix_len);
+                        ESP_LOGE(TAG, "         Expected: 30 2a 30 05 06 03 2b 65 6e 03 21 00");
+                        ESP_LOGE(TAG, "         Got:      %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                                 envelope[offset], envelope[offset+1], envelope[offset+2], envelope[offset+3],
+                                 envelope[offset+4], envelope[offset+5], envelope[offset+6], envelope[offset+7],
+                                 envelope[offset+8], envelope[offset+9], envelope[offset+10], envelope[offset+11]);
                     }
-                    offset += 44;  // Skip past SPKI, now at cmNonce (offset 60)
+                    offset += 44;  // Skip past SPKI, now at cmNonce (offset 58)
                     
                 } else if (maybe_corrId == '1' && maybe_e2e == '1') {
                     // maybe_e2e = '1' means: separate E2E key follows after corrId
@@ -438,19 +608,19 @@ static void smp_connect(void) {
                     offset += corrId_len;  // Now past corrId
                     
                     // Now read e2e key length and key
-                    uint8_t e2e_len = server_plain[offset];
+                    uint8_t e2e_len = envelope[offset];
                     offset++;
                     
-                    if (e2e_len == 44 && memcmp(&server_plain[offset], x25519_spki_header, 12) == 0) {
-                        memcpy(sender_pub, &server_plain[offset + 12], 32);
+                    if (e2e_len == 44 && memcmp(&envelope[offset], x25519_spki_header, 12) == 0) {
+                        memcpy(sender_pub, &envelope[offset + 12], 32);
                         have_sender_key = true;
-                        ESP_LOGI(TAG, "      ✅ Found separate E2E Key at offset %d!", offset);
+                        ESP_LOGI(TAG, "      ✅ Found separate E2E Key at offset %d!", offset + rq_prefix_len);
                     }
                     offset += 44;  // Skip E2E SPKI
                     
-                } else if (maybe_corrId == ',') {
+                } else if (maybe_corrId == ',' || maybe_corrId == '0') {
                     // No corrId - use pre-shared key
-                    ESP_LOGI(TAG, "      maybe_corrId = ',' -> using PRE-SHARED key!");
+                    ESP_LOGI(TAG, "      maybe_corrId = '%c' -> using PRE-SHARED key!", maybe_corrId);
                     
                     if (reply_queue_e2e_peer_valid) {
                         memcpy(sender_pub, reply_queue_e2e_peer_public, 32);
@@ -461,8 +631,30 @@ static void smp_connect(void) {
                         ESP_LOGE(TAG, "      ❌ No pre-shared E2E key available!");
                     }
                 } else {
-                    ESP_LOGE(TAG, "      ❌ Unknown format: maybe_corrId=0x%02x, maybe_e2e=0x%02x", 
-                             maybe_corrId, maybe_e2e);
+                    ESP_LOGE(TAG, "      ❌ Unknown format: maybe_corrId=0x%02x ('%c'), maybe_e2e=0x%02x ('%c')", 
+                             maybe_corrId, (maybe_corrId >= 32 && maybe_corrId < 127) ? maybe_corrId : '?',
+                             maybe_e2e, (maybe_e2e >= 32 && maybe_e2e < 127) ? maybe_e2e : '?');
+                    ESP_LOGE(TAG, "         Haskell Maybe: '0' (0x30) = Nothing, '1' (0x31) = Just");
+                    ESP_LOGE(TAG, "         Try looking at the RAW ANALYSIS output above!");
+                    
+                    // Try to find SPKI anyway at different offsets
+                    ESP_LOGE(TAG, "         🔍 Attempting SPKI search at nearby offsets...");
+                    for (int try_off = 10; try_off <= 20; try_off++) {
+                        if (memcmp(&envelope[try_off], x25519_spki_header, 12) == 0) {
+                            ESP_LOGW(TAG, "         Found SPKI at envelope[%d]! Maybe offset is %d?", try_off, try_off);
+                            // Try extracting key from this offset
+                            memcpy(sender_pub, &envelope[try_off + 12], 32);
+                            have_sender_key = true;
+                            ESP_LOGW(TAG, "         Extracted key: %02x%02x%02x%02x%02x%02x%02x%02x...",
+                                     sender_pub[0], sender_pub[1], sender_pub[2], sender_pub[3],
+                                     sender_pub[4], sender_pub[5], sender_pub[6], sender_pub[7]);
+                            
+                            // Adjust offset to continue parsing
+                            offset = try_off + 44;  // After SPKI
+                            ESP_LOGW(TAG, "         Adjusted offset to %d for nonce/cipher", offset);
+                            break;
+                        }
+                    }
                 }
                 
                 if (!have_sender_key) {
@@ -472,22 +664,43 @@ static void smp_connect(void) {
                 }
                 
                 // Now offset points to cmNonce (24 bytes)
-                if (plain_len < (size_t)offset + 24 + 16) {
+                if (envelope_len < (size_t)offset + 24 + 16) {
                     ESP_LOGE(TAG, "      Message too short for E2E decrypt");
                     free(server_plain);
                     continue;
                 }
                 
                 uint8_t cm_nonce[24];
-                memcpy(cm_nonce, &server_plain[offset], 24);
+                memcpy(cm_nonce, &envelope[offset], 24);
                 ESP_LOGI(TAG, "      cmNonce (at offset %d): %02x%02x%02x%02x...",
-                         offset, cm_nonce[0], cm_nonce[1], cm_nonce[2], cm_nonce[3]);
+                         offset + rq_prefix_len, cm_nonce[0], cm_nonce[1], cm_nonce[2], cm_nonce[3]);
+                
+                // 🐰 Full nonce debug
+                ESP_LOGE(TAG, "      📦 CM_NONCE FULL (from envelope[%d]):", offset);
+                printf("         ");
+                for (int i = 0; i < 24; i++) printf("%02x", cm_nonce[i]);
+                printf("\n");
+                
                 offset += 24;
                 
-                const uint8_t *e2e_encrypted = &server_plain[offset];
-                size_t e2e_encrypted_len = plain_len - offset;
+                const uint8_t *e2e_encrypted = &envelope[offset];
+                size_t e2e_encrypted_len = envelope_len - offset;
                 
-                ESP_LOGI(TAG, "      E2E encrypted at offset %d, len: %zu", offset, e2e_encrypted_len);
+                ESP_LOGI(TAG, "      E2E encrypted at offset %d, len: %zu", offset + rq_prefix_len, e2e_encrypted_len);
+                
+                // 🐰 Ciphertext debug
+                ESP_LOGE(TAG, "      📦 CIPHERTEXT (from envelope[%d], len=%zu):", offset, e2e_encrypted_len);
+                ESP_LOGE(TAG, "         First 32 bytes:");
+                printf("            ");
+                for (int i = 0; i < 32 && i < (int)e2e_encrypted_len; i++) printf("%02x", e2e_encrypted[i]);
+                printf("\n");
+                if (e2e_encrypted_len > 16) {
+                    ESP_LOGE(TAG, "         Last 16 bytes (Poly1305 MAC):");
+                    printf("            ");
+                    for (size_t i = e2e_encrypted_len - 16; i < e2e_encrypted_len; i++) printf("%02x", e2e_encrypted[i]);
+                    printf("\n");
+                }
+                ESP_LOGE(TAG, "");
                 
                 uint8_t *e2e_plain = malloc(e2e_encrypted_len);
                 if (e2e_plain) {
@@ -529,7 +742,36 @@ static void smp_connect(void) {
                     } else {
                         ESP_LOGI(TAG, "      ✅ Keypair valid (private derives to stored public)");
                     }
+                    
+                    // ================================================================
+                    // 🐰 CHECK: Ist sender_pub unser eigener Key? (wäre Bug!)
+                    // ================================================================
+                    bool sender_is_us = (memcmp(sender_pub, our_queue.e2e_public, 32) == 0);
+                    if (sender_is_us) {
+                        ESP_LOGE(TAG, "      ⚠️ WARNING: sender_pub == our_queue.e2e_public!");
+                        ESP_LOGE(TAG, "      This means the App encrypted TO our own key - WRONG!");
+                    } else {
+                        ESP_LOGI(TAG, "      ✅ sender_pub is different from our key (correct)");
+                    }
                     ESP_LOGW(TAG, "");
+                    
+                    // ================================================================
+                    // DEBUG: Key Identity Check - ist der Key noch derselbe?
+                    // ================================================================
+                    ESP_LOGE(TAG, "");
+                    ESP_LOGE(TAG, "      🔵 REPLY_DECRYPT e2e_private FULL:");
+                    printf("         ");
+                    for (int i = 0; i < 32; i++) printf("%02x", our_queue.e2e_private[i]);
+                    printf("\n");
+                    ESP_LOGE(TAG, "      🔵 REPLY_DECRYPT e2e_public FULL:");
+                    printf("         ");
+                    for (int i = 0; i < 32; i++) printf("%02x", our_queue.e2e_public[i]);
+                    printf("\n");
+                    ESP_LOGE(TAG, "      🟣 sender_pub (from msg) FULL:");
+                    printf("         ");
+                    for (int i = 0; i < 32; i++) printf("%02x", sender_pub[i]);
+                    printf("\n");
+                    ESP_LOGE(TAG, "");
                     
                     // Compute DH secret
                     uint8_t dh_secret[32];
@@ -542,6 +784,32 @@ static void smp_connect(void) {
                     
                     ESP_LOGI(TAG, "      DH secret: %02x%02x%02x%02x...",
                              dh_secret[0], dh_secret[1], dh_secret[2], dh_secret[3]);
+                    
+                    // ================================================================
+                    // 🐰 SUMMARY: All Extracted Values
+                    // ================================================================
+                    ESP_LOGE(TAG, "");
+                    ESP_LOGE(TAG, "      ╔═══════════════════════════════════════════════════════╗");
+                    ESP_LOGE(TAG, "      ║  📊 CRYPTO INPUTS SUMMARY                             ║");
+                    ESP_LOGE(TAG, "      ╚═══════════════════════════════════════════════════════╝");
+                    ESP_LOGE(TAG, "      OUR e2e_private (for DH):");
+                    printf("         ");
+                    for (int i = 0; i < 32; i++) printf("%02x", our_queue.e2e_private[i]);
+                    printf("\n");
+                    ESP_LOGE(TAG, "      THEIR sender_pub (from msg):");
+                    printf("         ");
+                    for (int i = 0; i < 32; i++) printf("%02x", sender_pub[i]);
+                    printf("\n");
+                    ESP_LOGE(TAG, "      DH_SECRET (e2e_private * sender_pub):");
+                    printf("         ");
+                    for (int i = 0; i < 32; i++) printf("%02x", dh_secret[i]);
+                    printf("\n");
+                    ESP_LOGE(TAG, "      CM_NONCE (24 bytes from msg):");
+                    printf("         ");
+                    for (int i = 0; i < 24; i++) printf("%02x", cm_nonce[i]);
+                    printf("\n");
+                    ESP_LOGE(TAG, "      CIPHERTEXT len: %zu bytes", e2e_encrypted_len);
+                    ESP_LOGE(TAG, "");
                     
                     // Full debug dump
                     printf("\n      📋 FULL CRYPTO DEBUG:\n");
@@ -575,13 +843,13 @@ static void smp_connect(void) {
                     ESP_LOGI(TAG, "      Trying Method 0: decrypt_client_msg (Contact Queue style)...");
                     int after_key_offset = offset - 44 + 44;  // Right after SPKI = nonce start
                     // Actually offset already points past nonce to cipher, so go back
-                    int nonce_start = offset - 24;  // Back to where nonce starts
-                    int enc_block_len = plain_len - nonce_start;
-                    ESP_LOGI(TAG, "      enc_block starts at %d, len=%d", nonce_start, enc_block_len);
+                    int nonce_start = offset - 24;  // Back to where nonce starts (relative to envelope)
+                    int enc_block_len = envelope_len - nonce_start;
+                    ESP_LOGI(TAG, "      enc_block starts at %d, len=%d", nonce_start + rq_prefix_len, enc_block_len);
                     
                     uint8_t *method0_plain = malloc(enc_block_len);
                     if (method0_plain) {
-                        int dec_len = decrypt_client_msg(&server_plain[nonce_start], enc_block_len,
+                        int dec_len = decrypt_client_msg(&envelope[nonce_start], enc_block_len,
                                                          sender_pub,
                                                          our_queue.e2e_private,
                                                          method0_plain);

@@ -210,24 +210,23 @@ bool queue_create(const char *host, int port) {
     crypto_box_keypair(our_queue.e2e_public, our_queue.e2e_private);
     
     // ================================================================
-    // CRITICAL DEBUG: Log the E2E keys we generated!
+    // CRITICAL DEBUG: Log the FULL E2E keys we generated!
     // These MUST match what we use for decryption later!
     // ================================================================
     ESP_LOGW(TAG, "");
     ESP_LOGW(TAG, "   ╔═══════════════════════════════════════════════════════╗");
     ESP_LOGW(TAG, "   ║  🔑 E2E KEYPAIR GENERATED (SAVE THESE!)              ║");
     ESP_LOGW(TAG, "   ╚═══════════════════════════════════════════════════════╝");
-    ESP_LOGW(TAG, "   E2E PUBLIC:  %02x%02x%02x%02x %02x%02x%02x%02x...",
-             our_queue.e2e_public[0], our_queue.e2e_public[1],
-             our_queue.e2e_public[2], our_queue.e2e_public[3],
-             our_queue.e2e_public[4], our_queue.e2e_public[5],
-             our_queue.e2e_public[6], our_queue.e2e_public[7]);
-    ESP_LOGW(TAG, "   E2E PRIVATE: %02x%02x%02x%02x %02x%02x%02x%02x...",
-             our_queue.e2e_private[0], our_queue.e2e_private[1],
-             our_queue.e2e_private[2], our_queue.e2e_private[3],
-             our_queue.e2e_private[4], our_queue.e2e_private[5],
-             our_queue.e2e_private[6], our_queue.e2e_private[7]);
-    ESP_LOGW(TAG, "");
+    ESP_LOGE(TAG, "");
+    ESP_LOGE(TAG, "   🔴 QUEUE_CREATE e2e_private FULL:");
+    printf("      ");
+    for (int i = 0; i < 32; i++) printf("%02x", our_queue.e2e_private[i]);
+    printf("\n");
+    ESP_LOGE(TAG, "   🔴 QUEUE_CREATE e2e_public FULL:");
+    printf("      ");
+    for (int i = 0; i < 32; i++) printf("%02x", our_queue.e2e_public[i]);
+    printf("\n");
+    ESP_LOGE(TAG, "");
     
     ESP_LOGI(TAG, "   Auth public: %02x%02x%02x%02x...",
              our_queue.rcv_auth_public[0], our_queue.rcv_auth_public[1],
@@ -574,23 +573,47 @@ int queue_encode_info(uint8_t *buf, int max_len) {
     p += 32;
     
     // ================================================================
-    // CRITICAL DEBUG: Log which E2E key we're SENDING to peer!
-    // This MUST match what queue_create() generated!
+    // 🐰 CONSISTENCY TEST: Alle 3 E2E Public Keys müssen identisch sein!
     // ================================================================
-    ESP_LOGW(TAG, "");
-    ESP_LOGW(TAG, "   ╔═══════════════════════════════════════════════════════╗");
-    ESP_LOGW(TAG, "   ║  🔑 queue_encode_info: SENDING E2E KEY TO PEER       ║");
-    ESP_LOGW(TAG, "   ╚═══════════════════════════════════════════════════════╝");
-    ESP_LOGW(TAG, "   SENDING e2e_public:  %02x%02x%02x%02x %02x%02x%02x%02x...",
-             our_queue.e2e_public[0], our_queue.e2e_public[1],
-             our_queue.e2e_public[2], our_queue.e2e_public[3],
-             our_queue.e2e_public[4], our_queue.e2e_public[5],
-             our_queue.e2e_public[6], our_queue.e2e_public[7]);
-    ESP_LOGW(TAG, "   MATCHING e2e_private: %02x%02x%02x%02x %02x%02x%02x%02x...",
-             our_queue.e2e_private[0], our_queue.e2e_private[1],
-             our_queue.e2e_private[2], our_queue.e2e_private[3],
-             our_queue.e2e_private[4], our_queue.e2e_private[5],
-             our_queue.e2e_private[6], our_queue.e2e_private[7]);
+    uint8_t derived_public[32];
+    crypto_scalarmult_base(derived_public, our_queue.e2e_private);
+    
+    ESP_LOGE(TAG, "");
+    ESP_LOGE(TAG, "   ╔═══════════════════════════════════════════════════════╗");
+    ESP_LOGE(TAG, "   ║  🧪 E2E PUBLIC KEY CONSISTENCY TEST                   ║");
+    ESP_LOGE(TAG, "   ╚═══════════════════════════════════════════════════════╝");
+    
+    ESP_LOGE(TAG, "   [1] our_queue.e2e_public (stored):");
+    printf("       ");
+    for (int i = 0; i < 32; i++) printf("%02x", our_queue.e2e_public[i]);
+    printf("\n");
+    
+    ESP_LOGE(TAG, "   [2] Key being sent in AgentConnInfoReply:");
+    printf("       ");
+    for (int i = 0; i < 32; i++) printf("%02x", our_queue.e2e_public[i]);
+    printf("\n");
+    
+    ESP_LOGE(TAG, "   [3] crypto_scalarmult_base(e2e_private):");
+    printf("       ");
+    for (int i = 0; i < 32; i++) printf("%02x", derived_public[i]);
+    printf("\n");
+    
+    // Check if all match
+    bool match_1_3 = (memcmp(our_queue.e2e_public, derived_public, 32) == 0);
+    
+    if (match_1_3) {
+        ESP_LOGI(TAG, "   ✅ ALL KEYS MATCH!");
+    } else {
+        ESP_LOGE(TAG, "   ❌ MISMATCH DETECTED!");
+        ESP_LOGE(TAG, "   [1] vs [3]: %s", match_1_3 ? "MATCH" : "DIFFERENT!");
+    }
+    ESP_LOGE(TAG, "");
+    
+    // Also log private key for full traceability
+    ESP_LOGE(TAG, "   🟠 ENCODE_INFO e2e_private FULL:");
+    printf("      ");
+    for (int i = 0; i < 32; i++) printf("%02x", our_queue.e2e_private[i]);
+    printf("\n");
     ESP_LOGW(TAG, "");
 
     ESP_LOGI(TAG, "   Encoded SMPQueueInfo: %d bytes", p);
