@@ -28,9 +28,9 @@ This document provides detailed documentation of all bugs discovered during Simp
 | 16 | A_CRYPTO header AAD | 9 | FIXED |
 | 17 | cmNonce instead of msgId | 10C | FIXED |
 | 18 | Reply Queue E2E | 12-18 | ✅ SOLVED |
-| **19** | **header_key_recv overwritten** | **19** | **OPEN** |
+| **19** | **header_key_recv overwritten** | **19** | **FIXED** |
 
-**Total: 19 bugs documented, 18 FIXED, 1 OPEN (workaround functional)**
+**Total: 19 bugs documented, 19 FIXED**
 
 ---
 
@@ -530,7 +530,7 @@ See Session 18 documentation for full 7-session debugging history.
 **Session:** 19  
 **Component:** Double Ratchet key management  
 **Impact:** Medium - header decrypt fails without workaround  
-**Status:** **OPEN** (workaround functional)
+**Status:** **FIXED** (root cause found and removed)
 
 ### 19.1 Symptom
 
@@ -556,22 +556,39 @@ memcpy(saved_nhk, &x3dh_output[32], 32);  // nhk = HKDF output bytes 32-63
 aes_gcm_decrypt(ehBody, saved_nhk, ehIV, rcAD, ...);  // SUCCESS!
 ```
 
-### 19.4 Root Cause
+### 19.4 Root Cause — FOUND
 
-**Not yet identified.** Likely in `smp_peer.c` in the AgentConfirmation/HELLO
-send flow. `ratchet_init_sender()` and `ratchet_encrypt()` don't write to
-`header_key_recv` according to the code — must happen elsewhere.
+**`smp_peer.c:347`** — Debug self-decrypt test calling `ratchet_decrypt()`.
 
-### 19.5 Investigation Needed
+After encrypting the AgentConfirmation, a debug self-test called `ratchet_decrypt()`
+on our own encrypted message. `ratchet_decrypt()` has **side effects**: it performs
+a DH ratchet step when it detects a "new" DH key in the decrypted header.
 
-1. Analyze `smp_peer.c` for writes to ratchet state
-2. Check if `ratchet_init_sender()` modifies receive-side keys
-3. Check HELLO send flow for key state changes
+When decrypting our **own** message, the DH key in the header is `dh_self.public_key`
+(our key), which differs from `dh_peer` (the peer's key). So `dh_changed = true`
+and the function overwrites:
+- `ratchet_state.root_key` → corrupted
+- `ratchet_state.chain_key_recv` → corrupted
+- **`ratchet_state.header_key_recv`** → changed from `1c08e86e...` to `cf0c74d2...`
+- `ratchet_state.dh_peer` → corrupted (set to our own key)
+- `ratchet_state.msg_num_recv` → reset to 0
 
-### 19.6 Impact
+### 19.5 Fix Applied
 
-Low — workaround is functional and header decrypt succeeds with `saved_nhk`.
-Should be fixed for code cleanliness.
+Removed the debug self-decrypt test from `smp_peer.c:343-359`. The `saved_nhk`
+workaround in `smp_ratchet.c` is no longer needed but kept as safety net.
+
+### 19.6 Call Flow (for reference)
+
+```
+send_agent_confirmation():
+  [309] ratchet_x3dh_sender()    → header_key_recv = 1c08e86e... ✅
+  [317] ratchet_init_sender()    → no change to header_key_recv ✅
+  [335] ratchet_encrypt()        → msg #0, no change to recv keys ✅
+  [347] ratchet_decrypt() DEBUG  → header_key_recv = cf0c74d2... ❌ BUG!
+  [689] complete_handshake()     → ratchet_encrypt() msg #1 (HELLO)
+  ... later: ratchet_decrypt() on incoming msg → fails with wrong key
+```
 
 ---
 

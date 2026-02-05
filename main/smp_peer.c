@@ -340,24 +340,13 @@ bool send_agent_confirmation(contact_t *contact) {
         return false;
     }
 
-    // 🔥 DEBUG: Selbst-Test - können wir es wieder entschlüsseln?
-    ESP_LOGI(TAG, "🔍 DEBUG: Testing self-decrypt of encConnInfo...");
-    uint8_t *test_decrypt = malloc(14832);
-    size_t test_len = 0;
-    if (ratchet_decrypt(enc_conn_info, enc_conn_info_len, test_decrypt, &test_len) == 0) {
-        ESP_LOGI(TAG, "✅ Self-decrypt SUCCESS! First bytes: %02x %02x %02x %02x",
-                 test_decrypt[0], test_decrypt[1], test_decrypt[2], test_decrypt[3]);
-        if (test_decrypt[0] == 'D') {
-            ESP_LOGI(TAG, "✅ First byte is 'D' - CORRECT!");
-        } else {
-            ESP_LOGE(TAG, "❌ First byte is NOT 'D'! Got: 0x%02X ('%c')", 
-                     test_decrypt[0], test_decrypt[0]);
-        }
-    } else {
-        ESP_LOGE(TAG, "❌ Self-decrypt FAILED!");
-    }
-    free(test_decrypt);
-    
+    // BUG #19 FIX: Removed debug self-decrypt test that was here.
+    // ratchet_decrypt() has side effects (DH ratchet step) that corrupted
+    // header_key_recv, root_key, chain_key_recv, and dh_peer when called
+    // on our own message. The DH key in our header (dh_self) differs from
+    // dh_peer, triggering a spurious ratchet step that overwrote the keys
+    // needed to decrypt incoming messages from the peer.
+
     // DEBUG: Show encConnInfo wire format (first 160 bytes)
     ESP_LOGI(TAG, "📋 encConnInfo COMPLETE Wire-Format:");
     ESP_LOGI(TAG, "   Bytes 0-31:");
