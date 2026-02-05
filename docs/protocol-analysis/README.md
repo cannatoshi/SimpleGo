@@ -6,41 +6,32 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## Current Status (2026-02-03 Session 16)
+## Current Status (2026-02-04 Session 17)
 
 ```
-SESSION 16 - DOUBLE RATCHET PROBLEM IDENTIFIED!
-===============================================
+SESSION 17 - KEY CONSISTENCY INVESTIGATION
+==========================================
 
-MAJOR DISCOVERIES:
-  1. Session 15 "missing message" theory was WRONG!
-     - Evgeny: "in the same message"
-     - Key IS in message header
+CRITICAL REALIZATION:
+  Evgeny ALREADY ANSWERED our question (Jan 28, 2026)!
+  - Key is in "confirmation header" (SPKI in message header)
+  - "outside of AgentConnInfoReply but in the same message"
+  - TWO crypto_box layers with different keys and nonces
+
+NEW DISCOVERIES:
+  - Reply Queue has 2-byte length prefix (Contact Queue doesn't)
+  - cmNonce is RANDOM (directly in message, not calculated)
+  - Both keypairs generated at queue creation, NEVER changed
+  - Key mismatch observed in logs (under investigation)
+
+STILL VERIFIED CORRECT:
+  ✅ Wire-Format, AAD, Keys, Custom XSalsa20
   
-  2. SimpleX uses NON-STANDARD XSalsa20!
-     - Standard: HSalsa20(key, nonce[0:16])
-     - SimpleX:  HSalsa20(key, zeros[16])
-     - All libsodium attempts were DOOMED!
-  
-  3. Problem shifted from Layer 4 to Layer 5
-     - Key extraction: FIXED
-     - Wire-format: FIXED
-     - Double Ratchet: BROKEN
+INVESTIGATING:
+  ❓ e2e_private key consistency between creation and decrypt
+  ❓ sender_pub extraction from message
 
-VERIFIED CORRECT:
-  ✅ Wire-Format (all offsets)
-  ✅ Payload AAD (235 bytes)
-  ✅ Header AAD
-  ✅ emHeader Encoding
-  ✅ Key Consistency
-  ✅ Custom XSalsa20
-
-PROBLEM NARROWED TO:
-  ❓ rcAD order: our||peer vs peer||our?
-  ❓ X3DH DH order: DH1, DH2, DH3?
-  ❓ HKDF parameters?
-
-Bug #18: Double Ratchet Problem - Fix in Session 17
+Bug #18: Key Consistency Investigation - Debug test pending
 ```
 
 ---
@@ -80,11 +71,12 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [12_PART10_SESSION_13.md](12_PART10_SESSION_13.md) | ~700 | E2E Crypto Deep Analysis |
 | [13_PART11_SESSION_14.md](13_PART11_SESSION_14.md) | ~900 | DH SECRET VERIFIED! |
 | [14_PART12_SESSION_15.md](14_PART12_SESSION_15.md) | ~650 | Root Cause Found |
-| [15_PART13_SESSION_16.md](15_PART13_SESSION_16.md) | ~900 | **Double Ratchet Investigation** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1000 | Complete bug documentation (18 bugs) |
+| [15_PART13_SESSION_16.md](15_PART13_SESSION_16.md) | ~900 | Custom XSalsa20 + Double Ratchet |
+| [16_PART14_SESSION_17.md](16_PART14_SESSION_17.md) | ~500 | **Key Consistency Debug** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1050 | Complete bug documentation (18 bugs) |
 | [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~500 | Constants, wire formats, verified values |
 
-**Total: ~20,000+ lines of detailed protocol analysis**
+**Total: ~21,000+ lines of detailed protocol analysis**
 
 ---
 
@@ -105,7 +97,30 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | 13 | Jan 30, 2026 | E2E Crypto Deep Analysis | - |
 | 14 | Jan 31 - Feb 1 | DH SECRET VERIFIED! | #18 (partial) |
 | 15 | Feb 1 | Root Cause Found | #18 (root cause) |
-| **16** | **Feb 1-3** | **Double Ratchet Investigation** | **#18 (narrowed)** |
+| 16 | Feb 1-3 | Double Ratchet Investigation | #18 (narrowed) |
+| **17** | **Feb 4** | **Key Consistency Debug** | **#18 (investigating)** |
+
+---
+
+## Session 17 Key Achievements
+
+### 1. Evgeny Already Answered!
+
+We asked a question he had already answered on Jan 28, 2026:
+- Key is in **confirmation header** (SPKI in message header)
+- "outside of AgentConnInfoReply but in the **same message**"
+- TWO crypto_box layers with different keys and nonces
+
+**Rule added: ALWAYS search past Evgeny conversations first!**
+
+### 2. New Discoveries
+
+| Discovery | Detail |
+|-----------|--------|
+| Length prefix | Reply Queue has 2-byte prefix, Contact Queue doesn't |
+| cmNonce | Is RANDOM (in message), not calculated |
+| Keypairs | Both generated at queue creation, NEVER changed |
+| Key mismatch | Different e2e_private in logs (under investigation) |
 
 ---
 
@@ -237,7 +252,7 @@ NO second message on Contact Queue!
 | #13-14 | AAD prefix, IV order | [Part 5](07_PART5_SESSION_8_BREAKTHROUGH.md) |
 | #15-16 | HSalsa20, A_CRYPTO | [Part 6](08_PART6_SESSION_9.md) |
 | #17 | cmNonce instead of msgId | [Part 7](09_PART7_SESSION_10.md) |
-| **#18** | **Reply Queue E2E** | [**Part 13**](15_PART13_SESSION_16.md) |
+| **#18** | **Reply Queue E2E** | [**Part 14**](16_PART14_SESSION_17.md) |
 
 ---
 
@@ -247,4 +262,4 @@ This documentation is part of SimpleGo, licensed under AGPL-3.0.
 
 ---
 
-*Last updated: February 3, 2026 - Session 16 (Double Ratchet Investigation)*
+*Last updated: February 4, 2026 - Session 17 (Key Consistency Debug)*

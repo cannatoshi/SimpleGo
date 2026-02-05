@@ -533,12 +533,12 @@ App status: "connecting"
 
 ---
 
-## Bug #18: Reply Queue E2E Decryption (DOUBLE RATCHET PROBLEM)
+## Bug #18: Reply Queue E2E Decryption (KEY INVESTIGATION)
 
-**Sessions:** 12, 13, 14, 15, 16  
-**Component:** Reply Queue Per-Queue E2E Layer → Double Ratchet  
+**Sessions:** 12, 13, 14, 15, 16, 17  
+**Component:** Reply Queue Per-Queue E2E Layer → Double Ratchet → Key Consistency  
 **Impact:** Cannot decrypt Reply Queue messages / Peer cannot decrypt our messages  
-**Status:** PROBLEM NARROWED - Double Ratchet rcAD/X3DH suspected
+**Status:** KEY CONSISTENCY INVESTIGATION - Debug test pending
 
 ### 18.1 Session 12 Discoveries
 
@@ -814,7 +814,60 @@ Peer cannot decrypt our AgentConfirmation!
 | **X3DH DH order** | MEDIUM |
 | **HKDF Salt/Info** | MEDIUM |
 
-### 18.7 All Crypto Tests (Session 13)
+### 18.7 Session 17 - Key Consistency Debug
+
+#### 18.7.1 Evgeny Already Answered!
+
+On January 28, 2026 Evgeny already told us:
+- Key is in **confirmation header** (SPKI in message header)
+- "outside of AgentConnInfoReply but in the same message"
+- TWO crypto_box layers with different keys and nonces
+
+**Rule: ALWAYS search past Evgeny conversations before asking!**
+
+#### 18.7.2 rcAD Order Analysis
+
+```
+rcAD = sk1 || rk1 = JOINER_KEY || INITIATOR_KEY
+     = APP_KEY    || ESP32_KEY  = PEER || OUR
+```
+
+Test result: PEER||OUR was WORSE than OUR||PEER.
+Staying with OUR||PEER for now.
+
+#### 18.7.3 Length Prefix Discovery
+
+```
+Contact Queue: No length prefix before ClientMsgEnvelope
+Reply Queue:   2-byte length prefix (e.g. 0x3E82 = 16002)
+```
+
+Fix applied: offset +2 for Reply Queue.
+
+#### 18.7.4 Key Mismatch in Logs
+
+```
+Queue Creation:      e2e_private = c4cd6fd7...
+Reply Queue Decrypt: e2e_private = 6156a27f...
+```
+
+Possible explanations:
+- Different test runs (not same session)
+- Wrong variable logged
+- Memory corruption
+
+Debug test implemented to verify.
+
+#### 18.7.5 MAC Mismatch Data
+
+```
+Expected MAC: ed319f1858168cfc18ceeb255d414f77
+Computed MAC: f48d300da052597801d9c3a721b9e86a
+```
+
+Completely different - indicates wrong key, not wrong offset.
+
+### 18.8 All Crypto Tests (Session 13)
 
 | Test | Method | MAC | Private Key | Result |
 |------|--------|-----|-------------|--------|
@@ -861,7 +914,7 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 3. App **first** message: `e2ePubKey = Just` (sendConfirmation)
 4. App **subsequent** messages: `e2ePubKey = Nothing` (sendAgentMessage)
 
-### 18.10 Sub-Issues Status (Updated Session 16)
+### 18.11 Sub-Issues Status (Updated Session 17)
 
 | Sub-Issue | Description | Status |
 |-----------|-------------|--------|
@@ -878,53 +931,46 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 | #18k | DH SECRET VERIFIED with Python! (S14) | DONE |
 | #18l | maybe_e2e = Nothing discovered (S15) | DONE |
 | #18m | Pre-computed secret required (S15) | DONE |
-| #18n | Missing App's AgentConfirmation (S15) | **DISPROVEN (S16)** |
-| #18o | app.sndQueue.e2ePubKey identified (S15) | **DISPROVEN (S16)** |
-| #18p | ROOT CAUSE IDENTIFIED (S15) | **WRONG (S16)** |
-| **#18q** | **Session 15 theory DISPROVEN (S16)** | **DONE** |
-| **#18r** | **SimpleX custom XSalsa20 discovered (S16)** | **DONE** |
-| **#18s** | **simplex_crypto.c implemented (S16)** | **DONE** |
-| **#18t** | **Custom XSalsa20 verified (S16)** | **DONE** |
-| **#18u** | **Key race condition fixed (S16)** | **DONE** |
-| **#18v** | **Wire-format verified correct (S16)** | **DONE** |
-| **#18w** | **Problem is Double Ratchet (S16)** | **IDENTIFIED** |
-| #18x | Fix rcAD order | TODO (S17) |
-| #18y | Fix X3DH DH order | TODO (S17) |
-| #18z | Decrypt Reply Queue | TODO (S17) |
+| #18n | Missing App's AgentConfirmation (S15) | DISPROVEN (S16) |
+| #18o | app.sndQueue.e2ePubKey identified (S15) | DISPROVEN (S16) |
+| #18p | ROOT CAUSE IDENTIFIED (S15) | WRONG (S16) |
+| #18q | Session 15 theory DISPROVEN (S16) | DONE |
+| #18r | SimpleX custom XSalsa20 discovered (S16) | DONE |
+| #18s | simplex_crypto.c implemented (S16) | DONE |
+| #18t | Custom XSalsa20 verified (S16) | DONE |
+| #18u | Key race condition fixed (S16) | DONE |
+| #18v | Wire-format verified correct (S16) | DONE |
+| #18w | Problem is Double Ratchet (S16) | IDENTIFIED |
+| **#18x** | **rcAD order analyzed (S17)** | **DONE - staying OUR\|\|PEER** |
+| **#18y** | **Length prefix fix (S17)** | **DONE** |
+| **#18z** | **Key consistency check (S17)** | **INVESTIGATING** |
 
-### 18.11 Solution (Session 17)
+### 18.12 Current Investigation (Session 17)
 
-The problem is NOT missing keys - it's Double Ratchet encryption!
+**Debug test pending:** Are e2e_private keys consistent between creation and decrypt?
 
-**What's broken:** Peer cannot decrypt our AgentConfirmation
-- Android shows "Request to connect" (not "Connecting")
-- Our Double Ratchet payload encryption is wrong
+| If Keys EQUAL | If Keys DIFFERENT |
+|---------------|-------------------|
+| Problem is sender_pub extraction | our_queue.e2e_private gets overwritten somewhere |
+| Check which key we read from message | Find where and why |
 
-**Suspects to investigate:**
-1. **rcAD order:** `our||peer` vs `peer||our` vs `initiator||responder`
-2. **X3DH DH order:** DH1, DH2, DH3 calculation sequence
-3. **HKDF parameters:** Salt, Info strings
+**MAC Mismatch:**
+```
+Expected: ed319f1858168cfc18ceeb255d414f77
+Computed: f48d300da052597801d9c3a721b9e86a
+```
+Completely different → wrong key, not wrong offset.
 
-**What's already verified CORRECT:**
-- Wire-format (all offsets)
-- Payload AAD (235 bytes without 0x7B)
-- Header AAD
-- emHeader encoding
-- Key consistency
-- Custom XSalsa20
+### 18.13 Open Questions (Session 18)
 
-### 18.12 Open Questions (Session 17)
-
-1. What is the correct rcAD order?
-   - `sk1 || rk1` - but which is initiator vs responder?
-   - Our current: `our_key1 || peer_key1`
+1. Is e2e_private consistent across the session?
+   - Debug test will reveal
    
-2. What is the correct X3DH DH order?
-   - DH1, DH2, DH3 - whose keys go where?
+2. Are we extracting the correct sender_pub from message?
+   - Which SPKI? At what offset?
    
-3. HKDF parameters?
-   - Salt: 64 × 0x00?
-   - Info: "SimpleXX3DH"?
+3. Is cmNonce correctly extracted?
+   - Random nonce from message, not calculated
 
 ### 18.9 Android vs Desktop Difference
 
@@ -952,7 +998,8 @@ The problem is NOT missing keys - it's Double Ratchet encryption!
 | Jan 30, 2026 | S12-S13 | #18 (deep analysis) |
 | Jan 31-Feb 1 | S14 | #18 DH SECRET VERIFIED! |
 | Feb 1 | S15 | #18 Root Cause (later disproven) |
-| **Feb 1-3** | **S16** | **#18 Double Ratchet Problem!** |
+| Feb 1-3 | S16 | #18 Double Ratchet Problem! |
+| **Feb 4** | **S17** | **#18 Key Consistency Debug** |
 
 ---
 
@@ -1008,10 +1055,13 @@ The problem is NOT missing keys - it's Double Ratchet encryption!
 30. **Self-decrypt failure is BY DESIGN** - Asymmetric header keys (Session 16)
 31. **Problem can shift between layers** - L4 fixed, L5 broke (Session 16)
 32. **Verify all layers before moving on** - Wire-format ✅, AAD ✅, Keys ✅ (Session 16)
+33. **ALWAYS search past Evgeny conversations first!** - He already answered Jan 28 (Session 17)
+34. **Length prefix differs per queue** - Reply Queue has 2-byte prefix, Contact Queue doesn't (Session 17)
+35. **cmNonce is RANDOM** - Directly in message, not calculated (Session 17)
 
 ---
 
-*Bug Tracker v11.0*  
-*Last updated: February 3, 2026 - Session 16*  
-*Total bugs documented: 18 (17 fixed, 1 in progress - Double Ratchet)*  
-*32 lessons learned!*
+*Bug Tracker v12.0*  
+*Last updated: February 4, 2026 - Session 17*  
+*Total bugs documented: 18 (17 fixed, 1 in progress - Key Investigation)*  
+*35 lessons learned!*

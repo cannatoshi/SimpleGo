@@ -2,35 +2,28 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-03 - Session 16 (Double Ratchet Investigation)**
+**Updated: 2026-02-04 - Session 17 (Key Consistency Debug)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 16 - DOUBLE RATCHET PROBLEM!
-====================================
+SESSION 17 - KEY CONSISTENCY INVESTIGATION
+==========================================
 
-Session 15 Theory DISPROVEN:
-  Evgeny: "in the same message"
-  Key IS in message header - NO second message needed!
+Evgeny ALREADY ANSWERED (Jan 28, 2026):
+  - Key in "confirmation header" (SPKI in message header)
+  - "outside of AgentConnInfoReply but in the same message"
+  - TWO crypto_box layers with different keys/nonces
 
-SimpleX NON-STANDARD XSalsa20:
-  Standard: HSalsa20(key, nonce[0:16])
-  SimpleX:  HSalsa20(key, zeros[16])  <- ZEROS!
+New Discoveries:
+  - Reply Queue: 2-byte length prefix (Contact Queue: none)
+  - cmNonce: RANDOM (directly in message, not calculated)
+  - Both keypairs at queue creation, NEVER changed
+  - Key mismatch in logs (under investigation)
 
-VERIFIED CORRECT:
-  ✅ Wire-Format (all offsets)
-  ✅ Payload AAD (235 bytes)
-  ✅ Header AAD
-  ✅ emHeader Encoding
-  ✅ Key Consistency
-  ✅ Custom XSalsa20
-
-PROBLEM IS DOUBLE RATCHET:
-  Peer cannot decrypt our AgentConfirmation!
-  Suspects: rcAD order, X3DH DH order, HKDF params
+Debug test pending: e2e_private consistency
 ```
 
 ---
@@ -365,7 +358,7 @@ App's HELLO on Reply Queue has maybe_e2e = Nothing
 
 ---
 
-## 10. The Real Problem (Session 16)
+## 10. The Real Problem (Session 16-17)
 
 ### 10.1 Double Ratchet Problem
 
@@ -384,27 +377,33 @@ Root Cause:
 - Or HKDF parameters wrong
 ```
 
-### 10.2 Verified CORRECT
+### 10.2 Length Prefix Difference (Session 17)
 
-| Component | Status |
-|-----------|--------|
-| Wire-Format | ✅ CORRECT |
-| Payload AAD (235 bytes) | ✅ CORRECT |
-| Header AAD | ✅ CORRECT |
-| emHeader Encoding | ✅ CORRECT |
-| Key Consistency | ✅ CORRECT |
-| Custom XSalsa20 | ✅ VERIFIED |
+```
+Contact Queue: No length prefix before ClientMsgEnvelope
+Reply Queue:   2-byte length prefix (e.g. 0x3E82 = 16002)
+```
 
-### 10.3 Suspects (Session 17)
+### 10.3 cmNonce (Session 17)
 
-| Suspect | Likelihood |
-|---------|------------|
-| **rcAD order** | HIGH |
-| **X3DH DH order** | MEDIUM |
-| **HKDF Salt/Info** | MEDIUM |
+```
+cmNonce is RANDOM - directly stored in the message!
+NOT calculated from any other value.
+Extract from message at correct offset.
+```
+
+### 10.4 Layer 2 Decrypt Flow (Haskell Reference)
+
+```
+1. Parse ClientMsgEnvelope from Layer 1 output
+2. Extract e2ePubKey_ (sender's ephemeral) from PubHeader
+3. Get e2ePrivKey from RcvQueue (key from queue creation!)
+4. e2eDh = DH(sender_ephemeral_pub, our_e2e_private)
+5. plaintext = crypto_box_open(cmEncBody, cmNonce, e2eDh)
+```
 
 ---
 
-*Quick Reference v10.0*  
-*Last updated: February 3, 2026 - Session 16*  
-*Status: Double Ratchet Problem - rcAD/X3DH suspected*
+*Quick Reference v11.0*  
+*Last updated: February 4, 2026 - Session 17*  
+*Status: Key Consistency Investigation*
