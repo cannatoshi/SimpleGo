@@ -79,6 +79,7 @@ idf_component_register(
         esp_lcd
         esp_timer
         lvgl
+        zstd
 )
 
 # Log what we found

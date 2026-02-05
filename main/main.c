@@ -40,6 +40,7 @@
 #include "smp_x448.h"
 #include "smp_queue.h"
 #include "simplex_crypto.h"  // SimpleX custom XSalsa20-Poly1305
+#include "zstd.h"            // Zstd decompression for ConnInfo
 
 // T-Deck Display Driver
 #include "tdeck_display.h"
@@ -1287,7 +1288,173 @@ static void smp_connect(void) {
                                         }
                                         printf("\n");
                                         
-                                        ESP_LOGI(TAG, "      🎯 Next: Phase 2b — Full Body Decrypt!");
+                                        ESP_LOGI(TAG, "      🎯 Phase 2b — Body Decrypt + Zstd...");
+                                        
+                                        // ================================================================
+                                        // 🐰 PHASE 2b: Body Decrypt (Session 20) + Zstd (Session 21)
+                                        // peer DH key from MsgHeader + current ratchet state
+                                        // ================================================================
+                                        {
+                                            // Peer's new DH key (raw X448, 56 bytes from header_plain)
+                                            uint8_t peer_dh_from_header[56];
+                                            memcpy(peer_dh_from_header, &header_plain[17], 56);
+                                            
+                                            // Reconstruct pointers:
+                                            //   emAuthTag = em_header + em_header_len
+                                            //   emBody    = em_header + em_header_len + 16
+                                            //   emBody_len = original_len - (emBody offset in client_msg)
+                                            const uint8_t *body_em_auth_tag = em_header + em_header_len;
+                                            const uint8_t *body_em_body = em_header + em_header_len + 16;
+                                            size_t body_em_body_len = original_len - (size_t)(body_em_body - client_msg);
+                                            
+                                            ESP_LOGI(TAG, "");
+                                            ESP_LOGI(TAG, "      📐 Body Decrypt Pointers:");
+                                            ESP_LOGI(TAG, "         em_header at client_msg+%d, len=%u",
+                                                     (int)(em_header - client_msg), em_header_len);
+                                            ESP_LOGI(TAG, "         emAuthTag at client_msg+%d",
+                                                     (int)(body_em_auth_tag - client_msg));
+                                            ESP_LOGI(TAG, "         emBody    at client_msg+%d, len=%zu",
+                                                     (int)(body_em_body - client_msg), body_em_body_len);
+                                            
+                                            uint8_t *body_plain = malloc(body_em_body_len + 16);
+                                            if (body_plain) {
+                                                size_t body_plain_len = 0;
+                                                int body_ret = ratchet_decrypt_body(
+                                                    peer_dh_from_header,
+                                                    hdr_pn, hdr_ns,
+                                                    em_header, (size_t)em_header_len,
+                                                    body_em_auth_tag,
+                                                    body_em_body, body_em_body_len,
+                                                    body_plain, &body_plain_len
+                                                );
+                                                
+                                                if (body_ret == 0) {
+                                                    ESP_LOGI(TAG, "");
+                                                    ESP_LOGI(TAG, "      ╔═══════════════════════════════════════════════╗");
+                                                    ESP_LOGI(TAG, "      ║  🎉🎉🎉 ConnInfo DECRYPTED! 🎉🎉🎉          ║");
+                                                    ESP_LOGI(TAG, "      ╚═══════════════════════════════════════════════╝");
+                                                    ESP_LOGI(TAG, "      Plaintext: %zu bytes", body_plain_len);
+                                                    ESP_LOGI(TAG, "      Tag byte: 0x%02X '%c'",
+                                                             body_plain[0],
+                                                             (body_plain[0] >= 0x20 && body_plain[0] < 0x7f) ? (char)body_plain[0] : '?');
+                                                    
+                                                    // Dump first 64 bytes after tag
+                                                    ESP_LOGI(TAG, "      Payload after tag (first 64 bytes):");
+                                                    printf("         HEX: ");
+                                                    for (size_t i = 1; i < 65 && i < body_plain_len; i++) printf("%02x", body_plain[i]);
+                                                    printf("\n         ASCII: ");
+                                                    for (size_t i = 1; i < 65 && i < body_plain_len; i++) {
+                                                        char c = body_plain[i];
+                                                        printf("%c", (c >= 32 && c < 127) ? c : '.');
+                                                    }
+                                                    printf("\n");
+                                                    
+                                                    // === Tag-specific handling ===
+                                                    if (body_plain[0] == 'D') {
+                                                        // AgentConnInfoReply: 'D' + queues + JSON
+                                                        ESP_LOGI(TAG, "      Tag: 'D' = AgentConnInfoReply");
+                                                        for (size_t i = 1; i < body_plain_len && i < 200; i++) {
+                                                            if (body_plain[i] == '{') {
+                                                                int json_end = (body_plain_len - i > 200) ? 200 : (int)(body_plain_len - i);
+                                                                ESP_LOGI(TAG, "      JSON at offset %zu: %.*s", i, json_end, &body_plain[i]);
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                    // ============================================================
+                                                    // 🐰 SESSION 21: Zstd Decompression for 'I' Tag (ConnInfo)
+                                                    // Structure: 'I' + framing bytes + Zstd_frame(28 b5 2f fd...)
+                                                    // ============================================================
+                                                    else if (body_plain_len > 6 && body_plain[0] == 'I') {
+                                                        ESP_LOGI(TAG, "      Tag: 'I' = AgentMessage INFO (peer ConnInfo)");
+                                                        ESP_LOGI(TAG, "      body_plain[0-7]: %02x %02x %02x %02x %02x %02x %02x %02x",
+                                                                 body_plain[0], body_plain[1], body_plain[2], body_plain[3],
+                                                                 body_plain[4], body_plain[5], body_plain[6],
+                                                                 body_plain_len > 7 ? body_plain[7] : 0);
+                                                        
+                                                        // Search for Zstd magic bytes (28 b5 2f fd) in first 16 bytes
+                                                        int zstd_offset = -1;
+                                                        for (int si = 1; si < 16 && si + 3 < (int)body_plain_len; si++) {
+                                                            if (body_plain[si]   == 0x28 && body_plain[si+1] == 0xb5 &&
+                                                                body_plain[si+2] == 0x2f && body_plain[si+3] == 0xfd) {
+                                                                zstd_offset = si;
+                                                                break;
+                                                            }
+                                                        }
+                                                        
+                                                        if (zstd_offset >= 0) {
+                                                            const uint8_t *zstd_frame = &body_plain[zstd_offset];
+                                                            size_t zstd_frame_len = body_plain_len - zstd_offset;
+                                                            
+                                                            ESP_LOGI(TAG, "      🔧 Zstd frame found at offset %d, frame_len=%zu",
+                                                                     zstd_offset, zstd_frame_len);
+                                                            
+                                                            // Get decompressed size from frame header
+                                                            unsigned long long decomp_size = ZSTD_getFrameContentSize(
+                                                                zstd_frame, zstd_frame_len);
+                                                            
+                                                            if (decomp_size == ZSTD_CONTENTSIZE_UNKNOWN) {
+                                                                ESP_LOGW(TAG, "      Zstd: content size unknown, using 16KB buffer");
+                                                                decomp_size = 16384;
+                                                            } else if (decomp_size == ZSTD_CONTENTSIZE_ERROR) {
+                                                                ESP_LOGE(TAG, "      ❌ Zstd: not valid compressed data!");
+                                                            } else {
+                                                                ESP_LOGI(TAG, "      Zstd: decompressed size = %llu bytes", decomp_size);
+                                                            }
+                                                            
+                                                            if (decomp_size != ZSTD_CONTENTSIZE_ERROR && decomp_size < 65536) {
+                                                                char *json_buf = (char *)malloc(decomp_size + 1);
+                                                                if (json_buf) {
+                                                                    size_t zresult = ZSTD_decompress(
+                                                                        json_buf, decomp_size,
+                                                                        zstd_frame, zstd_frame_len);
+                                                                    
+                                                                    if (ZSTD_isError(zresult)) {
+                                                                        ESP_LOGE(TAG, "      ❌ Zstd decompress failed: %s",
+                                                                                 ZSTD_getErrorName(zresult));
+                                                                    } else {
+                                                                        json_buf[zresult] = '\0';
+                                                                        
+                                                                        ESP_LOGI(TAG, "");
+                                                                        ESP_LOGI(TAG, "      ╔═══════════════════════════════════════════════╗");
+                                                                        ESP_LOGI(TAG, "      ║  🎉 ConnInfo JSON DECOMPRESSED!               ║");
+                                                                        ESP_LOGI(TAG, "      ╚═══════════════════════════════════════════════╝");
+                                                                        ESP_LOGI(TAG, "      Decompressed: %zu bytes", zresult);
+                                                                        
+                                                                        // Print JSON in chunks (may be long)
+                                                                        size_t printed = 0;
+                                                                        while (printed < zresult) {
+                                                                            size_t chunk = zresult - printed;
+                                                                            if (chunk > 200) chunk = 200;
+                                                                            ESP_LOGI(TAG, "      %.*s", (int)chunk, &json_buf[printed]);
+                                                                            printed += chunk;
+                                                                        }
+                                                                    }
+                                                                    free(json_buf);
+                                                                } else {
+                                                                    ESP_LOGE(TAG, "      ❌ malloc json_buf failed! (%llu bytes)", decomp_size);
+                                                                }
+                                                            }
+                                                        } else {
+                                                            ESP_LOGW(TAG, "      No Zstd magic (28 b5 2f fd) found in first 16 bytes");
+                                                            ESP_LOGW(TAG, "      Payload may be uncompressed or different format");
+                                                        }
+                                                    } else {
+                                                        ESP_LOGW(TAG, "      Unknown tag: 0x%02X '%c'",
+                                                                 body_plain[0],
+                                                                 (body_plain[0] >= 0x20 && body_plain[0] < 0x7f) ? (char)body_plain[0] : '?');
+                                                    }
+                                                } else {
+                                                    ESP_LOGE(TAG, "      ❌ Body decrypt failed (ret=%d)", body_ret);
+                                                }
+                                                free(body_plain);
+                                            } else {
+                                                ESP_LOGE(TAG, "      ❌ malloc for body_plain failed!");
+                                            }
+                                        }
+                                        // ================================================================
+                                        // END PHASE 2b
+                                        // ================================================================
                                     } else {
                                         ESP_LOGE(TAG, "      ╔═══════════════════════════════════════════════════════╗");
                                         ESP_LOGE(TAG, "      ║  ❌ ALL 8 HEADER DECRYPT ATTEMPTS FAILED              ║");

@@ -137,6 +137,34 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
 int ratchet_self_decrypt_test(const uint8_t *ciphertext, size_t ct_len,
                               uint8_t *plaintext, size_t *pt_len);
 
+/**
+ * Decrypt the body of an incoming EncRatchetMessage (Phase 2b)
+ * 
+ * Called AFTER header has been successfully decrypted and MsgHeader parsed.
+ * Performs: DH Ratchet Step (recv + send) → Chain KDF → AES-GCM Body Decrypt → unPad
+ * 
+ * NOTE: Currently logs all intermediate values but does NOT update ratchet state.
+ *       State update will be enabled after verification.
+ * 
+ * @param peer_new_pub     Peer's new DH public key from MsgHeader (56 bytes, raw X448)
+ * @param msg_pn           PN (previous chain length) from MsgHeader
+ * @param msg_ns           Ns (message number) from MsgHeader
+ * @param em_header_raw    Raw emHeader bytes as received (for AAD, NOT decrypted)
+ * @param em_header_len    Length of emHeader (123)
+ * @param em_auth_tag      emAuthTag (16 bytes)
+ * @param em_body          Encrypted body (emBody)
+ * @param em_body_len      Length of emBody
+ * @param plaintext        Output buffer (must be >= em_body_len)
+ * @param pt_len           Output: actual plaintext length after unPad
+ * @return 0 on success, negative on error
+ */
+int ratchet_decrypt_body(const uint8_t *peer_new_pub,
+                         uint32_t msg_pn, uint32_t msg_ns,
+                         const uint8_t *em_header_raw, size_t em_header_len,
+                         const uint8_t *em_auth_tag,
+                         const uint8_t *em_body, size_t em_body_len,
+                         uint8_t *plaintext, size_t *pt_len);
+
 // ============== State Access / Debug ==============
 
 /**

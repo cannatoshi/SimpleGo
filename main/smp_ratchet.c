@@ -745,6 +745,239 @@ int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
     return ratchet_decrypt(ciphertext, ct_len, plaintext, pt_len);
 }
 
+// ============== Decrypt Body (Phase 2b — Session 20) ==============
+// Called after header decrypt succeeded in main.c Phase 2a.
+// Performs DH Ratchet Step (recv + send) → Chain KDF → AES-GCM Body Decrypt → unPad.
+// Currently: LOGS all intermediate values, does NOT update ratchet state.
+
+int ratchet_decrypt_body(const uint8_t *peer_new_pub,
+                         uint32_t msg_pn, uint32_t msg_ns,
+                         const uint8_t *em_header_raw, size_t em_header_len,
+                         const uint8_t *em_auth_tag,
+                         const uint8_t *em_body, size_t em_body_len,
+                         uint8_t *plaintext, size_t *pt_len) {
+
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔═══════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  🐰 PHASE 2b: Ratchet Body Decrypt                    ║");
+    ESP_LOGI(TAG, "╚═══════════════════════════════════════════════════════╝");
+
+    // === Log inputs ===
+    ESP_LOGI(TAG, "   Inputs:");
+    ESP_LOGI(TAG, "   peer_new_pub: %02x%02x%02x%02x%02x%02x%02x%02x...",
+             peer_new_pub[0], peer_new_pub[1], peer_new_pub[2], peer_new_pub[3],
+             peer_new_pub[4], peer_new_pub[5], peer_new_pub[6], peer_new_pub[7]);
+    ESP_LOGI(TAG, "   msg_pn=%u, msg_ns=%u", msg_pn, msg_ns);
+    ESP_LOGI(TAG, "   em_header_len=%zu, em_body_len=%zu", em_header_len, em_body_len);
+    ESP_LOGI(TAG, "   emAuthTag: %02x%02x%02x%02x%02x%02x%02x%02x %02x%02x%02x%02x%02x%02x%02x%02x",
+             em_auth_tag[0], em_auth_tag[1], em_auth_tag[2], em_auth_tag[3],
+             em_auth_tag[4], em_auth_tag[5], em_auth_tag[6], em_auth_tag[7],
+             em_auth_tag[8], em_auth_tag[9], em_auth_tag[10], em_auth_tag[11],
+             em_auth_tag[12], em_auth_tag[13], em_auth_tag[14], em_auth_tag[15]);
+    ESP_LOGI(TAG, "   emBody[0-15]: %02x%02x%02x%02x%02x%02x%02x%02x %02x%02x%02x%02x%02x%02x%02x%02x",
+             em_body[0], em_body[1], em_body[2], em_body[3],
+             em_body[4], em_body[5], em_body[6], em_body[7],
+             em_body[8], em_body[9], em_body[10], em_body[11],
+             em_body[12], em_body[13], em_body[14], em_body[15]);
+
+    // === Log current ratchet state ===
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "   === Current Ratchet State (BEFORE body decrypt) ===");
+    printf("   root_key:      "); for(int i=0; i<32; i++) printf("%02x", ratchet_state.root_key[i]); printf("\n");
+    printf("   dh_self.priv:  "); for(int i=0; i<56; i++) printf("%02x", ratchet_state.dh_self.private_key[i]); printf("\n");
+    printf("   dh_self.pub:   "); for(int i=0; i<56; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("\n");
+    printf("   dh_peer:       "); for(int i=0; i<56; i++) printf("%02x", ratchet_state.dh_peer[i]); printf("\n");
+
+    // ================================================================
+    // SCHRITT 1: DH Ratchet Step — Receiving Chain
+    // X448 DH: peer_new_pub × our_old_priv → dh_secret_recv
+    // rootKdf #1: HKDF(salt=root_key, ikm=dh_secret_recv, info="SimpleXRootRatchet", 96)
+    // ================================================================
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "   === SCHRITT 1: DH Ratchet (Receiving Chain) ===");
+
+    uint8_t dh_secret_recv[56];
+    if (!x448_dh(peer_new_pub, ratchet_state.dh_self.private_key, dh_secret_recv)) {
+        ESP_LOGE(TAG, "   ❌ X448 DH (recv) failed!");
+        return -1;
+    }
+    printf("   dh_secret_recv: "); for(int i=0; i<56; i++) printf("%02x", dh_secret_recv[i]); printf("\n");
+
+    uint8_t new_root_key_1[32], recv_chain_key[32], new_nhk_recv[32];
+    kdf_root(ratchet_state.root_key, dh_secret_recv,
+             new_root_key_1, recv_chain_key, new_nhk_recv);
+
+    printf("   new_root_key_1: "); for(int i=0; i<32; i++) printf("%02x", new_root_key_1[i]); printf("\n");
+    printf("   recv_chain_key: "); for(int i=0; i<32; i++) printf("%02x", recv_chain_key[i]); printf("\n");
+    printf("   new_nhk_recv:   "); for(int i=0; i<32; i++) printf("%02x", new_nhk_recv[i]); printf("\n");
+
+    // ================================================================
+    // SCHRITT 2: DH Ratchet Step — Sending Chain (new keypair)
+    // Generate new X448 keypair → DH with peer_new_pub
+    // rootKdf #2: HKDF(salt=new_root_key_1, ikm=dh_secret_send, 96)
+    // ================================================================
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "   === SCHRITT 2: DH Ratchet (Sending Chain) ===");
+
+    x448_keypair_t new_dh_self;
+    if (!x448_generate_keypair(&new_dh_self)) {
+        ESP_LOGE(TAG, "   ❌ X448 keygen failed!");
+        return -2;
+    }
+    printf("   new_dh_self.pub: "); for(int i=0; i<56; i++) printf("%02x", new_dh_self.public_key[i]); printf("\n");
+
+    uint8_t dh_secret_send[56];
+    if (!x448_dh(peer_new_pub, new_dh_self.private_key, dh_secret_send)) {
+        ESP_LOGE(TAG, "   ❌ X448 DH (send) failed!");
+        return -3;
+    }
+    printf("   dh_secret_send: "); for(int i=0; i<56; i++) printf("%02x", dh_secret_send[i]); printf("\n");
+
+    uint8_t new_root_key_2[32], send_chain_key[32], new_nhk_send[32];
+    kdf_root(new_root_key_1, dh_secret_send,
+             new_root_key_2, send_chain_key, new_nhk_send);
+
+    printf("   new_root_key_2: "); for(int i=0; i<32; i++) printf("%02x", new_root_key_2[i]); printf("\n");
+    printf("   send_chain_key: "); for(int i=0; i<32; i++) printf("%02x", send_chain_key[i]); printf("\n");
+    printf("   new_nhk_send:   "); for(int i=0; i<32; i++) printf("%02x", new_nhk_send[i]); printf("\n");
+
+    // ================================================================
+    // SCHRITT 3: Chain KDF → message_key + iv
+    // HKDF(salt="", ikm=recv_chain_key, info="SimpleXChainRatchet", 96)
+    // Output: [0-31]=next_ck, [32-63]=message_key, [64-79]=iv1(msg), [80-95]=iv2(hdr)
+    // ================================================================
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "   === SCHRITT 3: Chain KDF ===");
+
+    uint8_t temp_ck[32];
+    memcpy(temp_ck, recv_chain_key, 32);
+
+    uint8_t message_key[32], next_chain_key[32], iv_body[16], iv_header[16];
+
+    // Skip forward if msg_ns > 0
+    for (uint32_t i = 0; i < msg_ns; i++) {
+        ESP_LOGI(TAG, "   Skipping chain step %u...", i);
+        kdf_chain(temp_ck, next_chain_key, message_key, iv_body, iv_header);
+        memcpy(temp_ck, next_chain_key, 32);
+    }
+
+    // The actual chain step for this message
+    kdf_chain(temp_ck, next_chain_key, message_key, iv_body, iv_header);
+
+    ESP_LOGI(TAG, "   chainKdf output (for Ns=%u):", msg_ns);
+    printf("   message_key:     "); for(int i=0; i<32; i++) printf("%02x", message_key[i]); printf("\n");
+    printf("   iv_body (16B):   "); for(int i=0; i<16; i++) printf("%02x", iv_body[i]); printf("\n");
+    printf("   iv_header (16B): "); for(int i=0; i<16; i++) printf("%02x", iv_header[i]); printf("\n");
+    printf("   next_chain_key:  "); for(int i=0; i<32; i++) printf("%02x", next_chain_key[i]); printf("\n");
+
+    // ================================================================
+    // SCHRITT 4: AES-256-GCM Body Decrypt
+    // Key=message_key, IV=iv_body(16B), AAD=rcAD(112)||emHeader_raw(123)
+    // Tag=em_auth_tag, CT=em_body
+    // ================================================================
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "   === SCHRITT 4: AES-GCM Body Decrypt ===");
+
+    size_t aad_len = 112 + em_header_len;
+    uint8_t *aad = malloc(aad_len);
+    if (!aad) {
+        ESP_LOGE(TAG, "   ❌ malloc AAD failed!");
+        return -4;
+    }
+    memcpy(aad, ratchet_state.assoc_data, 112);
+    memcpy(aad + 112, em_header_raw, em_header_len);
+
+    ESP_LOGI(TAG, "   AAD: %zu bytes (112 rcAD + %zu emHeader)", aad_len, em_header_len);
+    ESP_LOGI(TAG, "   rcAD[0-7]:     %02x%02x%02x%02x%02x%02x%02x%02x",
+             aad[0], aad[1], aad[2], aad[3], aad[4], aad[5], aad[6], aad[7]);
+    ESP_LOGI(TAG, "   emHeader[0-7]: %02x%02x%02x%02x%02x%02x%02x%02x",
+             aad[112], aad[113], aad[114], aad[115], aad[116], aad[117], aad[118], aad[119]);
+
+    int ret = aes_gcm_decrypt(message_key, iv_body, GCM_IV_LEN,
+                               aad, aad_len,
+                               em_body, em_body_len,
+                               em_auth_tag, plaintext);
+    free(aad);
+
+    if (ret != 0) {
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "   ❌ AES-GCM Body Decrypt FAILED! (ret=%d)", ret);
+        ESP_LOGE(TAG, "   Possible causes:");
+        ESP_LOGE(TAG, "     1. root_key corrupted by Bug #19 self-decrypt test");
+        ESP_LOGE(TAG, "     2. dh_self corrupted (ratchet_init_sender + ratchet_decrypt)");
+        ESP_LOGE(TAG, "     3. AAD: rcAD order or emHeader raw bytes wrong");
+        ESP_LOGE(TAG, "     4. Chain KDF: empty salt handling (NULL vs len=0)");
+        ESP_LOGE(TAG, "");
+        ESP_LOGE(TAG, "   ⚠️  Bug #19 reminder: smp_peer.c self-decrypt test calls");
+        ESP_LOGE(TAG, "   ratchet_decrypt() which modifies root_key, chain_keys, dh_self!");
+        return -5;
+    }
+
+    // ================================================================
+    // SCHRITT 5: unPad
+    // First 2 bytes = Big-Endian actual content length
+    // ================================================================
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "   === SCHRITT 5: unPad ===");
+
+    uint16_t actual_len = (plaintext[0] << 8) | plaintext[1];
+    ESP_LOGI(TAG, "   Padded size: %zu, actual content: %u, padding: %zu",
+             em_body_len, actual_len, em_body_len - 2 - actual_len);
+
+    if (actual_len > em_body_len - 2) {
+        ESP_LOGE(TAG, "   ❌ unPad length invalid! %u > %zu", actual_len, em_body_len - 2);
+        return -6;
+    }
+
+    memmove(plaintext, plaintext + 2, actual_len);
+    *pt_len = actual_len;
+
+    // Log plaintext
+    ESP_LOGI(TAG, "   Plaintext (%zu bytes):", *pt_len);
+    printf("      ");
+    for (size_t i = 0; i < 64 && i < *pt_len; i++) {
+        printf("%02x ", plaintext[i]);
+        if ((i + 1) % 16 == 0) printf("\n      ");
+    }
+    printf("\n");
+    printf("      ASCII: ");
+    for (size_t i = 0; i < 64 && i < *pt_len; i++) {
+        char c = (char)plaintext[i];
+        printf("%c", (c >= 32 && c < 127) ? c : '.');
+    }
+    printf("\n");
+
+    if (*pt_len > 0) {
+        ESP_LOGI(TAG, "   First byte: 0x%02X '%c'", plaintext[0],
+                 (plaintext[0] >= 0x20 && plaintext[0] < 0x7f) ? (char)plaintext[0] : '?');
+        if (plaintext[0] == 'D') {
+            ESP_LOGI(TAG, "   ✅ Tag 'D' = AgentConnInfoReply — EXPECTED!");
+        }
+    }
+
+    // ================================================================
+    // SCHRITT 6: State Update — NUR LOGGEN!
+    // ================================================================
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "   === SCHRITT 6: State Update (LOG ONLY — not applied) ===");
+    ESP_LOGI(TAG, "   Would update:");
+    ESP_LOGI(TAG, "     root_key        → new_root_key_2");
+    ESP_LOGI(TAG, "     chain_key_recv  → next_chain_key");
+    ESP_LOGI(TAG, "     chain_key_send  → send_chain_key");
+    ESP_LOGI(TAG, "     header_key_recv → new_nhk_recv (for NEXT msg)");
+    ESP_LOGI(TAG, "     dh_self         → new_dh_self");
+    ESP_LOGI(TAG, "     dh_peer         → peer_new_pub");
+    ESP_LOGI(TAG, "     msg_num_recv    → %u", msg_ns + 1);
+    ESP_LOGW(TAG, "   ⚠️ STATE NOT UPDATED — enable after body decrypt confirmed!");
+
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔═══════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  🎉 PHASE 2b BODY DECRYPT SUCCESS!                    ║");
+    ESP_LOGI(TAG, "╚═══════════════════════════════════════════════════════╝");
+
+    return 0;
+}
+
 // ============== Getters ==============
 
 ratchet_state_t *ratchet_get_state(void) { return &ratchet_state; }
