@@ -162,7 +162,7 @@ Persistent wins for real-time; deep sleep for batch.
 
 **Matrix Ecosystem:** Massive—30+ clients, servers (Synapse, Dendrite, Conduit), 70+ bridges, 11,596 federated servers (up from 8,389 in 2025), ~28M+ accounts. Foundation (UK non-profit): £900K target, ~£415K raised. Gov adopters: France (DINUM), Germany, Luxembourg.
 
-**SimpleX Ecosystem:** Focused—One client suite (SimpleX Chat Ltd., London for-profit), ~$2.67M raised + $1.3M Dorsey + 256 ETH Buterin (2025). 1,000+ relays, 40-75% preset traffic. Specs public domain, impls AGPL-3.0.
+**SimpleX Ecosystem:** Focused—One client suite (SimpleX Chat Ltd., London for-profit), ~$2.67M raised + $1.3M Dorsey + 128 ETH Buterin (2025). 1,000+ relays, 40-75% preset traffic. Specs public domain, impls AGPL-3.0.
 
 ### Existing Secure Messaging Hardware Landscape
 
