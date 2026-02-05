@@ -508,7 +508,7 @@ static void smp_connect(void) {
                 
                 // Point to the actual ClientMsgEnvelope (after any length prefix)
                 const uint8_t *envelope = server_plain + rq_prefix_len;
-                size_t envelope_len = plain_len - rq_prefix_len;
+                size_t envelope_len = raw_len_prefix;  // Use actual data length, not buffer length!
                 
                 // ================================================================
                 // 🐰 DEBUG: Exakte Byte-Extraktion für E2E Decrypt
