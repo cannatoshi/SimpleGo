@@ -2,33 +2,31 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-05 - Session 18 (🎉 BUG #18 SOLVED!)**
+**Updated: 2026-02-05 - Session 19 (Double Ratchet Header Decrypt SUCCESS!)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 18 - 🎉 BUG #18 SOLVED! E2E LAYER 2 DECRYPT SUCCESS!
-================================================================
+SESSION 19 - DOUBLE RATCHET HEADER DECRYPT SUCCESS!
+====================================================
 
-Root Cause: envelope_len included 102 bytes SMP block-padding
-  plain_len = 16106, raw_len_prefix = 16002, padding = 102 (0x23)
-  
-Fix: ONE LINE — envelope_len = raw_len_prefix
+Three new layers discovered:
+  1. unPad Layer — [2B len][content][padding 0x23...]
+  2. ClientMessage Layer — PrivHeader + AgentMsgEnvelope
+  3. EncRatchetMessage Layer — Double Ratchet Header-Decrypt
 
-Result: Method 0 (decrypt_client_msg) SUCCESS! 15904 bytes!
-  Content: PrivHeader ':' + Ed25519 SPKI + AgentConfirmation + EncRatchetMessage
+MsgHeader fully parsed:
+  - msgMaxVersion: 3 (Peer supports PQ)
+  - DH Key: 68 bytes X448 SPKI
+  - PN: 0, Ns: 0 (first message)
 
-All Layers Through Layer 2: ✅
-  Layer 0: TLS 1.3 ✅
-  Layer 1: SMP Transport ✅
-  Layer 2: E2E Decrypt ✅ (FIXED Session 18!)
-  Layer 3: AgentMsgEnvelope parsing ⏳
-  Layer 4: Double Ratchet ⏳
-  Layer 5: Application Data ⏳
+Key insight: nhk (HKDF[32-63]) = header_key_recv
 
-Next: Parse AgentConfirmation, identify PrivHeader ':', decrypt EncRatchetMessage
+Bug #19: header_key_recv overwritten (workaround: saved_nhk)
+
+Next: Fix Bug #19, DH Ratchet Step, Body Decrypt
 ```
 
 ---
@@ -37,16 +35,14 @@ Next: Parse AgentConfirmation, identify PrivHeader ':', decrypt EncRatchetMessag
 
 1. [Version Numbers](#1-version-numbers)
 2. [Size Constants](#2-size-constants)
-3. [Message Structure (Verified)](#3-message-structure-verified)
-4. [Verified Test Data (Session 14)](#4-verified-test-data-session-14)
-5. [Crypto Functions](#5-crypto-functions)
-6. [Working Code State](#6-working-code-state)
-7. [Message Flow](#7-message-flow)
-8. [Queue Architecture](#8-queue-architecture)
-9. [SMP Block-Padding](#9-smp-block-padding)
-10. [Decryption Chain](#10-complete-decryption-chain)
-11. [Important Source Locations](#11-important-source-locations)
-12. [Evgeny Quotes](#12-evgeny-quotes-authoritative)
+3. [Encoding Reference](#3-encoding-reference)
+4. [Wire Formats](#4-wire-formats)
+5. [HKDF Chain](#5-hkdf-chain)
+6. [Verified Byte-Map](#6-verified-byte-map)
+7. [Decryption Chain](#7-complete-decryption-chain)
+8. [Crypto Functions](#8-crypto-functions)
+9. [Working Code State](#9-working-code-state)
+10. [Evgeny Quotes](#10-evgeny-quotes)
 
 ---
 
@@ -71,221 +67,312 @@ Next: Parse AgentConfirmation, identify PrivHeader ':', decrypt EncRatchetMessag
 | X25519 SPKI | 44 | 12 header + 32 raw |
 | cmNonce | 24 | In ClientMsgEnvelope |
 | Poly1305 MAC | 16 | Authentication tag |
+| AES-GCM AuthTag | 16 | Authentication tag |
+| AES-GCM IV | **16** | NOT 12! SimpleX uses 16-byte IV |
 | Payload AAD | **235** | NO prefix! |
+| rcAD | 112 | our_key1 \|\| peer_key1 |
 
 ---
 
-## 3a. Maybe Encoding (Session 15 Discovery)
+## 3. Encoding Reference (from Haskell Source, Verified Session 19)
 
-### 3a.1 Maybe Tags
+| Primitive | Encoding | Source |
+|-----------|----------|--------|
+| Word16 | 2 Bytes Big-Endian | Encoding.hs:70-74 |
+| Char | 1 Byte (B.singleton) | Encoding.hs:52-56 |
+| ByteString | 1-Byte Len + Data | Encoding.hs:100-104 |
+| Large | 2-Byte Word16 Len + Data | Encoding.hs:132-141 |
+| Tail | Rest without length prefix | Encoding.hs:124-130 |
+| **Maybe a** | **'0'=Nothing, '1'+data=Just** | Encoding.hs:114-122 |
+| AuthTag | 16 Bytes raw (no prefix) | Crypto.hs:956-958 |
+| IV | 16 Bytes raw | Crypto.hs:935-937 |
+| PublicKey a | ByteString (1-Byte Len + X.509 DER) | Crypto.hs:567-568 |
+| Tuple | Simple concatenation | Encoding.hs:184-212 |
+
+### Maybe Encoding (CRITICAL - Session 19)
 
 ```
-'0' (0x30) = Nothing (no value)
-'1' (0x31) = Just (value follows)
-',' (0x2C) = Nothing (alternative marker)
+Maybe a:
+  Nothing → 0x30 (ASCII '0') — 1 byte only!
+  Just a  → 0x31 (ASCII '1') + smpEncode a
+
+NOT binary 0x00/0x01!
 ```
 
-### 3a.2 Reply Queue HELLO Structure
+### PrivHeader Encoding (Session 19)
 
-```
-[14] = '1' (0x31) = maybe_corrId = Just (corrId follows)
-[15] = ',' (0x2C) = maybe_e2e = Nothing (NO e2ePubKey!)
-```
+From Protocol.hs:1093-1098:
 
-### 3a.3 When maybe_e2e = Nothing
-
-- Message has NO ephemeral e2ePubKey
-- Uses pre-computed e2eDhSecret
-- Secret was created during connection setup
-- We need `app.sndQueue.e2ePubKey` to calculate it
-- This key is in App's AgentConfirmation!
+| Tag | Hex | Constructor | Content After Tag |
+|-----|-----|-------------|-------------------|
+| `'K'` | 0x4B | PHConfirmation | 1-byte Len + SPKI Key |
+| `'_'` | 0x5F | PHEmpty | (nothing) |
 
 ---
 
-## 3. Message Structure (Verified Session 14)
+## 4. Wire Formats (Verified Session 19)
 
-### 3.1 Reply Queue After Server-Decrypt
-
-```
-Offset  Bytes                              Meaning
-------  -----                              -------
-[0-1]   3e 82                              Length prefix: 16002
-[2-9]   00 00 00 00 69 7e 97 10            Padding/Timestamp
-[10-13] 54 20 00 04                        PubHeader: Version, Flags
-[14]    31 ('1')                           Maybe tag = Just (key present!)
-[15]    2c (44)                            SPKI Length
-[16-27] 30 2a 30 05 06 03 2b 65 6e 03 21 00  X25519 SPKI Header
-[28-59] 91 40 e1 0e ...                    Peer's E2E public key (32 bytes)
-[60-83] b2 1f a2 bc ...                    cmNonce (24 bytes)
-[84-99] cc 3e ec 54 ...                    MAC (16 bytes)
-[100+]  5b f2 2e fa ...                    Ciphertext
-```
-
-### 3.2 ClientMsgEnvelope Wire-Format (CORRECTED Session 18!)
-
-**CRITICAL: corrId does NOT exist in ClientMsgEnvelope!**
-corrId is SMP Transport Layer, parsed BEFORE the envelope.
+### 4.1 unPad Layer (NEW!)
 
 ```
-ClientMsgEnvelope = (PubHeader, cmNonce, Tail cmEncBody)
-PubHeader = (phVersion, Maybe phE2ePubDhKey)
-
-WITH e2ePubKey (first message):
-[0-1]   = phVersion (00 04)
-[2]     = '1' (0x31) = Just
-[3-46]  = X25519 SPKI (44 bytes)
-[47-70] = cmNonce (24 bytes, raw)
-[71+]   = cmEncBody (rest)
-
-WITHOUT e2ePubKey (subsequent messages):
-[0-1]   = phVersion (00 04)
-[2]     = '0' (0x30) = Nothing
-[3-26]  = cmNonce (24 bytes, raw)
-[27+]   = cmEncBody (rest)
+[0..1]           originalLength (Word16 Big-Endian)
+[2..1+origLen]   ClientMessage (actual content)
+[2+origLen..]    Padding (0x23 = '#')
 ```
 
-### 3.3 Key Extraction
+### 4.2 ClientMessage
+
+```
+ClientMessage = PrivHeader ++ Body (simple concatenation)
+smpEncode (ClientMessage h msg) = smpEncode h <> msg
+```
+
+### 4.3 AgentConfirmation
+
+```
+smpEncode = (agentVersion, 'C', e2eEncryption_, Tail encConnInfo)
+
+Fields:
+  agentVersion    Word16 BE        2 bytes
+  Tag 'C'         Char             1 byte
+  e2eEncryption_  Maybe (...)      1+ bytes
+  encConnInfo     Tail             rest
+```
+
+### 4.4 EncRatchetMessage
+
+```
+encodeEncRatchetMessage v msg =
+  encodeLarge v emHeader <> smpEncode (emAuthTag, Tail emBody)
+
+For v < 3 (legacy): encodeLarge = 1-byte length prefix
+For v >= 3 (PQ):    encodeLarge = 2-byte Word16 length prefix
+
+Structure (v < 3):
+  emHeader Len    1 byte           = 123 (0x7B)
+  emHeader        123 bytes        EncMessageHeader
+  emAuthTag       16 bytes raw     AES-GCM Auth Tag
+  emBody          Tail             rest (encrypted payload)
+```
+
+### 4.5 EncMessageHeader
+
+```
+smpEncode = (ehVersion, ehIV, ehAuthTag) <> encodeLarge ehVersion ehBody
+
+Structure (v < 3):
+  ehVersion       2 bytes          Word16 BE
+  ehIV            16 bytes raw     AES-256-GCM IV
+  ehAuthTag       16 bytes raw     Header Auth Tag
+  ehBody Len      1 byte           = 88 (0x58)
+  ehBody          88 bytes         encrypted MsgHeader
+```
+
+### 4.6 MsgHeader (Decrypted)
+
+```
+contentLen        variable         msgMaxVersion + DH Key + counters
+msgMaxVersion     2 bytes          Word16 BE
+DH Key Len        1 byte           = 68 (X448 SPKI)
+DH Key            68 bytes         X448 SPKI
+PN                4 bytes          Word32 BE (previous chain count)
+Ns                4 bytes          Word32 BE (message number in chain)
+Padding           fill to 88       0x23 ('#')
+```
+
+---
+
+## 5. HKDF Chain (Verified Session 19)
+
+### 5.1 HKDF #1: X3DH Initial
+
+```
+Salt:   64 × 0x00
+IKM:    DH1 || DH2 || DH3 (168 bytes for X448)
+Info:   "SimpleXX3DH"
+Output: 96 bytes
+  [0-31]   hk  = header_key_send (peer decrypts our headers)
+  [32-63]  nhk = header_key_recv (WE decrypt peer's headers) ← THE KEY!
+  [64-95]  sk  = root_key (input for Root KDF)
+```
+
+### 5.2 HKDF #2/#4: Root KDF
+
+```
+Salt:   sk (32 bytes, Root Key)
+IKM:    DH(Peer_ratchet_pub, Our_sk2) [56 bytes X448]
+Info:   "SimpleXRootRatchet"
+Output: 96 bytes
+  [0-31]   rk'  = new root_key
+  [32-63]  ck   = chain_key_recv
+  [64-95]  nhk' = next_header_key_recv
+```
+
+### 5.3 HKDF #3/#6: Chain KDF
+
+```
+Salt:   "" (empty!)
+IKM:    ck (32 bytes, Chain Key)
+Info:   "SimpleXChainRatchet"
+Output: 96 bytes
+  [0-31]   ck'  = next chain_key
+  [32-63]  mk   = message_key (for body decrypt)
+  [64-79]  iv1  = header_iv
+  [80-95]  iv2  = message_iv
+```
+
+### 5.4 Key Assignment Summary
+
+| HKDF | Output | Bytes | Name | Usage |
+|------|--------|-------|------|-------|
+| X3DH | Block 1 | [0-31] | hk | Peer decrypts our headers |
+| X3DH | Block 2 | [32-63] | **nhk** | **WE decrypt peer's headers** |
+| X3DH | Block 3 | [64-95] | sk | Input for Root KDF |
+| Root | Block 1 | [0-31] | rk' | New root key |
+| Root | Block 2 | [32-63] | ck | Chain key for receive |
+| Root | Block 3 | [64-95] | nhk' | Next header key |
+| Chain | Block 1 | [0-31] | ck' | Next chain key |
+| Chain | Block 2 | [32-63] | mk | Message key |
+| Chain | Block 3a | [64-79] | iv1 | Header IV |
+| Chain | Block 3b | [80-95] | iv2 | Message IV |
+
+---
+
+## 6. Verified Byte-Map (Reply Queue AgentConfirmation, Session 19)
+
+### 6.1 Level 1: E2E Plaintext (15904 Bytes)
+
+```
+Offset  Hex         Field                         Status
+[0-1]   3a ae       unPad originalLength: 15022   ✅
+[2]     4B          PrivHeader 'K' (PHConfirm)    ✅
+[3]     2C          Auth Key Length: 44           ✅
+[4-47]  30 2a 30..  Ed25519 SPKI Auth Key         ✅
+[48-49] 00 07       agentVersion: 7               ✅
+[50]    43          'C' = AgentConfirmation       ✅
+[51]    30          e2eEncryption_ = Nothing      ✅
+```
+
+### 6.2 Level 2: EncRatchetMessage (from Offset 52)
+
+```
+Offset  Hex         Field                         Status
+[52]    7B          emHeader Length: 123          ✅
+[53-175]            emHeader (EncMessageHeader):
+  [53-54] XX XX       ehVersion: 2                ✅
+  [55-70] ...         ehIV (16 Bytes)             ✅
+  [71-86] ...         ehAuthTag (16 Bytes)        ✅
+  [87]    58          ehBody Length: 88           ✅
+  [88-175] ...        ehBody (encrypted MsgHeader) ✅
+[176-191]           emAuthTag (16 Bytes)          ✅
+[192-15023]         emBody (14832 Bytes)          ✅
+```
+
+### 6.3 Level 3: MsgHeader (after Header-Decrypt)
+
+```
+Field             Value                           Status
+contentLen        79                              ✅
+msgMaxVersion     3 (Peer supports PQ)            ✅
+DH Key Len        68 (X448 SPKI)                  ✅
+Peer DH Key       c3d0cb637a26c2c8... (56B raw)   ✅
+PN                0 (first message)               ✅
+Ns                0 (Message #0)                  ✅
+Padding           0x23 ('#')                      ✅
+```
+
+---
+
+## 7. Complete Decryption Chain (Updated Session 19)
+
+```
+Layer 0: TLS 1.3 (mbedTLS)                                    ✅ Working
+  ↓
+Layer 1: SMP Transport (rcvDhSecret + cbNonce(msgId))          ✅ Working
+  ↓ Output: [2B len prefix][ClientMsgEnvelope][padding 0x23...]
+  ↓
+Layer 2: E2E (e2eDhSecret + cmNonce from envelope)             ✅ Working (S18)
+  ↓ Output: 15904 bytes (padded)
+  ↓
+Layer 2.5: unPad                                               ✅ Working (S19)
+  ↓ Input: [2B originalLen][ClientMessage][padding 0x23...]
+  ↓ Output: 15022 bytes ClientMessage
+  ↓
+Layer 3: ClientMessage Parse                                   ✅ Working (S19)
+  ↓ Input: [PrivHeader][AgentMsgEnvelope]
+  ↓ PrivHeader: 'K' + 44B Ed25519 SPKI
+  ↓ AgentMsgEnvelope: version + 'C' + e2eEncryption_ + Tail encConnInfo
+  ↓
+Layer 4: EncRatchetMessage Parse                               ✅ Working (S19)
+  ↓ Input: [1B emHeader len=123][emHeader 123B][emAuthTag 16B][Tail emBody]
+  ↓ emHeader: [version 2B][ehIV 16B][ehAuthTag 16B][ehBody len 1B][ehBody 88B]
+  ↓
+Layer 5: Double Ratchet Header Decrypt                         ✅ Working (S19)
+  ↓ Key: saved_nhk (HKDF[32-63] from X3DH)
+  ↓ IV: ehIV (16 bytes)
+  ↓ AAD: rcAD (112 bytes = our_key1 || peer_key1)
+  ↓ Output: MsgHeader (79 bytes content + 9 bytes header/padding)
+  ↓
+Layer 6: Double Ratchet Body Decrypt                           ⏳ Next Step
+  ↓ Need: DH Ratchet Step → Root KDF → Chain KDF → message_key
+  ↓ Input: emBody (14832 bytes)
+  ↓ AAD: rcAD || emHeader (112 + 123 = 235 bytes)
+  ↓
+Layer 7: ConnInfo Parse                                        ⏳ After L6
+  ↓ AgentConnInfoReply with peer's SMP Queues
+  ↓
+Layer 8: Connection Established                                ⏳ Final Goal
+```
+
+---
+
+## 8. Crypto Functions
+
+### 8.1 Header Decrypt (Verified Session 19)
 
 ```c
-// Peer's E2E public key at offset 28
-uint8_t peer_e2e_pub[32];
-memcpy(peer_e2e_pub, &server_plain[28], 32);
+// Key: saved_nhk (HKDF[32-63] from X3DH)
+// IV: ehIV (16 bytes from EncMessageHeader)
+// AAD: rcAD (112 bytes = our_key1 || peer_key1)
+// Ciphertext: ehBody (88 bytes)
+// AuthTag: ehAuthTag (16 bytes)
 
-// Nonce at offset 60
-uint8_t cm_nonce[24];
-memcpy(cm_nonce, &server_plain[60], 24);
-
-// MAC at offset 84
-const uint8_t *mac = &server_plain[84];
-
-// Ciphertext at offset 100
-const uint8_t *ciphertext = &server_plain[100];
-```
-
----
-
-## 4. Verified Test Data (Session 14)
-
-### 4.1 Keys (VERIFIED MATCH!)
-
-```python
-# Our E2E private key
-our_e2e_private = "83473153de033039edec9c5db7591cacfa42b6dd89a0618a00806732d01a96fa"
-
-# Peer's E2E public key (from message header)
-peer_e2e_pub = "9140e10e9fdee92ebb801ae8694435b5e9f06c4e0077dfa98d39b0f1bf0c0300"
-
-# DH Secret (VERIFIED - Python matches ESP32!)
-dh_secret = "d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810"
-```
-
-### 4.2 Nonce and MAC (VERIFIED)
-
-```python
-# cmNonce (24 bytes)
-cm_nonce = "b21fa2bc0dbb5cb02d674dedfd65b0e6ff0fcf793791fd3b"
-
-# MAC (16 bytes)
-mac = "cc3eec548b0440cf0222466a79a00c0c"
-
-# Ciphertext length
-ciphertext_len = 16006
-```
-
-### 4.3 Session 18 Verified Values
-
-```
-plain_len:        16106 (total decrypted from Layer 1)
-raw_len_prefix:   16002 (actual ClientMsgEnvelope length)
-prefix_bytes:     2     (length prefix itself)
-padding:          102   (SMP block-padding 0x23)
-decrypted_result: 15904 bytes (AgentConfirmation + EncRatchetMessage)
-```
-
----
-
-## 5. Crypto Functions
-
-### 5.1 DH Calculation (CORRECT)
-
-```c
-// Use crypto_scalarmult for raw DH (NOT crypto_box_beforenm!)
-uint8_t dh_secret[32];
-crypto_scalarmult(dh_secret, our_queue.e2e_private, peer_e2e_pub);
-```
-
-**Why NOT crypto_box_beforenm?**
-- `crypto_box_beforenm` applies HSalsa20 key derivation
-- Haskell uses raw DH output directly
-- `crypto_scalarmult` gives raw DH output
-
-### 5.2 Decrypt (Current Implementation)
-
-```c
-// Haskell format: [MAC 16][Ciphertext]
-const uint8_t *mac = &server_plain[84];
-const uint8_t *ciphertext = &server_plain[100];
-
-int ret = crypto_secretbox_open_detached(
-    plain,          // output
-    ciphertext,     // input (after MAC)
-    mac,            // MAC (first 16 bytes)
-    ciphertext_len, // only ciphertext length
-    cm_nonce,       // 24 bytes
-    dh_secret       // raw DH output
+int ret = mbedtls_gcm_auth_decrypt(
+    &gcm_ctx,
+    88,                    // ehBody length
+    ehIV,                  // 16-byte IV
+    16,                    // IV length
+    rcAD,                  // 112-byte AAD
+    112,                   // AAD length
+    ehAuthTag,             // 16-byte auth tag
+    16,                    // tag length
+    ehBody,                // ciphertext
+    msg_header             // output plaintext
 );
 ```
 
-### 5.3 Haskell vs libsodium
+### 8.2 Body Decrypt (Next Step)
 
-| Aspect | Haskell | libsodium | Match? |
-|--------|---------|-----------|--------|
-| Algorithm | XSalsa20-Poly1305 | crypto_secretbox | YES |
-| Key | Raw DH (32 bytes) | Raw DH | YES |
-| DH Function | X25519.dh | crypto_scalarmult | YES |
-| Format | [MAC][Cipher] | detached | YES |
-
-### 5.4 SimpleX Custom XSalsa20 (Session 16 Discovery!)
-
-**CRITICAL:** SimpleX uses NON-STANDARD XSalsa20!
-
-```
-Standard libsodium crypto_secretbox:
-  HSalsa20(dh_secret, nonce[0:16])
-
-SimpleX xSalsa20 (Crypto.hs):
-  HSalsa20(dh_secret, zeros[16])    <- ZEROS not nonce!
-  HSalsa20(subkey1, nonce[8:24])
-  Salsa20(subkey2, nonce[0:8])
-```
-
-**Subkeys are COMPLETELY DIFFERENT!**
-```
-Standard:  2d4b4528855228d0abf137ea...
-SimpleX:   ce1b436c8b333a5ff881d4c0...
-```
-
-**Implementation (simplex_crypto.c):**
 ```c
-int simplex_secretbox_open(...) {
-    uint8_t subkey1[32], subkey2[32];
-    uint8_t zeros[16] = {0};
-    
-    // Step 1: HSalsa20(dh_secret, zeros[16])
-    crypto_core_hsalsa20(subkey1, zeros, dh_secret, NULL);
-    
-    // Step 2: HSalsa20(subkey1, nonce[8:24])
-    crypto_core_hsalsa20(subkey2, &nonce[8], subkey1, NULL);
-    
-    // Step 3: Salsa20 decrypt + Poly1305 verify
-}
+// Key: message_key (from Chain KDF)
+// IV: iv2 (Chain KDF output [80-95])
+// AAD: rcAD || emHeader (112 + 123 = 235 bytes)
+// Ciphertext: emBody (14832 bytes)
+// AuthTag: emAuthTag (16 bytes)
+```
+
+### 8.3 SimpleX Custom XSalsa20 (Session 16)
+
+```
+Standard libsodium: HSalsa20(dh_secret, nonce[0:16])
+SimpleX:            HSalsa20(dh_secret, zeros[16])  ← ZEROS!
 ```
 
 ---
 
-## 6. Working Code State
+## 9. Working Code State
 
-### 6.1 smp_ratchet.c (DO NOT CHANGE!)
+### 9.1 smp_ratchet.c (DO NOT CHANGE!)
 
 ```c
 #define RATCHET_VERSION         2
@@ -294,179 +381,19 @@ em_header[hp++] = 0x58;         // ehBody-len = 88 (1 BYTE!)
 output[p++] = 0x7B;             // emHeader len = 123
 ```
 
-### 6.2 smp_queue.h
+### 9.2 Key Preservation (Bug #19 Workaround)
 
 ```c
-typedef struct {
-    uint8_t rcv_dh_public[32];    // Server DH
-    uint8_t rcv_dh_private[32];
-    
-    uint8_t e2e_public[32];       // E2E DH (separate!)
-    uint8_t e2e_private[32];
-    
-    uint8_t shared_secret[32];
-    // ...
-} our_queue_t;
-```
+// Save nhk immediately after X3DH HKDF
+uint8_t saved_nhk[32];
+memcpy(saved_nhk, &x3dh_output[32], 32);
 
-### 6.3 Reply Queue E2E Decrypt (FIXED Session 18!)
-
-```c
-// CRITICAL: Use length prefix, NOT buffer size!
-size_t envelope_len = raw_len_prefix;  // NOT plain_len - rq_prefix_len!
+// Use saved_nhk for header decrypt instead of header_key_recv
 ```
 
 ---
 
-## 7. Message Flow (VERIFIED Session 14)
-
-### 7.1 Correct Flow (from Haskell Source)
-
-```
-Contact Queue: 1 message
-  - INVITATION (Type 'I')
-
-Reply Queue: 1 message
-  - HELLO (AgentMsgEnvelope)
-
-NO SECOND MESSAGE ON CONTACT QUEUE!
-```
-
-### 7.2 Handoff Theory Was WRONG
-
-| Handoff Document | Reality |
-|------------------|---------|
-| 2 MSGs on Contact Queue | FALSE |
-| PHConfirmation has key | FALSE |
-| HELLO on Reply Queue | TRUE |
-
----
-
-## 8. Queue Architecture (Clarified Session 18!)
-
-### 8.1 Contact Queue (ONLY Layer 1!)
-
-```
-Incoming MSG on Contact Queue:
-  1. SMP Transport decrypt (Server→Recipient) → Layer 1
-  2. Direct parse_agent_message() — NO E2E Layer!
-  
-decrypt_smp_message() → parse_agent_message()
-```
-
-**Contact Queue NEVER had a separate E2E layer!**
-
-### 8.2 Reply Queue (TWO Layers)
-
-```
-Incoming MSG on Reply Queue:
-  1. SMP Transport decrypt (Server→Recipient) → Layer 1
-  2. ClientMsgEnvelope parse + E2E decrypt → Layer 2
-  
-decrypt_smp_message() → parse ClientMsgEnvelope → E2E decrypt → parse_agent_message()
-```
-
-### 8.3 Comparison
-
-| Queue | Layer 1 (Server) | Layer 2 (E2E) | Status |
-|-------|-------------------|---------------|--------|
-| Contact Queue | ✅ decrypt_smp_message | ❌ NO E2E Layer | Working |
-| Reply Queue | ✅ decrypt_smp_message | ✅ E2E decrypt | **FIXED S18!** |
-
----
-
-## 9. SMP Block-Padding (Session 18 Discovery!)
-
-### 9.1 The Padding
-
-```
-plain_len:        16106 (total decrypted from Layer 1)
-raw_len_prefix:   16002 (actual ClientMsgEnvelope length)
-prefix_bytes:     2     (length prefix itself)
-padding:          102   (16106 - 16002 - 2)
-padding_value:    0x23  (SMP block-padding character)
-```
-
-### 9.2 Why Padding Exists
-
-SMP protocol pads messages to fixed block sizes for traffic analysis resistance. Padding is added AFTER the ClientMsgEnvelope but BEFORE Layer 1 encryption.
-
-### 9.3 CRITICAL Rule
-
-```
-ALWAYS use length prefix for content boundaries!
-NEVER use buffer_size - header_size!
-
-WRONG:  envelope_len = plain_len - header_len    // Includes padding!
-CORRECT: envelope_len = raw_len_prefix            // Exact content length!
-```
-
----
-
-## 10. Complete Decryption Chain (Verified Session 18!)
-
-```
-Layer 0: TLS 1.3 (mbedTLS)                                    ✅ Working
-  ↓
-Layer 1: SMP Transport (rcvDhSecret + cbNonce(msgId))          ✅ Working
-  ↓ Output: [2B len prefix][ClientMsgEnvelope][padding 0x23...]
-  ↓ CRITICAL: Use len prefix, NOT buffer size!
-  ↓
-Layer 2: E2E (e2eDhSecret + cmNonce from envelope)             ✅ FIXED S18!
-  ↓ Input: ClientMsgEnvelope = [PubHeader][cmNonce][cmEncBody]
-  ↓ PubHeader = [version 2B][maybe 1B][opt. SPKI 44B]
-  ↓ Output: 15904 bytes
-  ↓
-Layer 3: AgentMsgEnvelope / ClientMessage                      ⏳ Next
-  ↓ Contains: PrivHeader + AgentMessage
-  ↓
-Layer 4: Double Ratchet (EncRatchetMessage)                    ⏳ After L3
-  ↓ Inside AgentConfirmation
-  ↓
-Layer 5: Application Data (ConnInfo, etc.)                     ⏳ After L4
-```
-
-### Wrapper Chain (Session 18 Discovery)
-
-```
-EncRcvMsgBody (encrypted blob from server)
-  ↓ decrypt with rcvDhSecret
-ClientRcvMsgBody {msgTs :: SysTime, msgFlags :: Word8, msgBody :: Tail ByteString}
-  ↓ extract msgBody
-ClientMsgEnvelope (PubHeader, cmNonce, Tail cmEncBody)
-  ↓ decrypt cmEncBody with e2eDhSecret + cmNonce
-ClientMessage / AgentMsgEnvelope
-```
-
-**No comma separators!** `smpEncode a <> smpEncode b` — direct concatenation.
-
----
-
-## 11. Important Source Locations
-
-### 11.1 Haskell
-
-| Function | File | Lines |
-|----------|------|-------|
-| agentCbEncrypt | Agent/Client.hs | 1925-1933 |
-| cryptoBox | Crypto.hs | 1295-1298 |
-| xSalsa20 | Crypto.hs | 1449-1456 |
-| sbDecryptNoPad_ | Crypto.hs | 1325-1333 |
-| e2eDhSecret | Agent.hs | 3379 |
-| ICDuplexSecure | Agent.hs | 1549-1551 |
-
-### 11.2 SimpleGo
-
-| Function | File |
-|----------|------|
-| E2E Decrypt | main.c:780-850 |
-| Queue Create | smp_queue.c:210 |
-| Queue Encode | smp_queue.c:455 |
-| Peer Connect | smp_peer.c:50 |
-
----
-
-## 12. Evgeny Quotes (Authoritative)
+## 10. Evgeny Quotes (Authoritative)
 
 **ALWAYS read these before asking Evgeny new questions!**
 
@@ -484,77 +411,23 @@ ClientMessage / AgentMsgEnvelope
 
 ---
 
-## 13. Decrypted Content Preview (Session 18)
+## 11. Session 19 Key Insights Summary
 
-### 13.1 First Bytes After E2E Decrypt
-
-```
-[0]     = 0x3a ':' → PrivHeader Type (NEW — must identify!)
-[1]     = 0xae     → Length byte?
-[2-14]  = Ed25519 SPKI (4b 2c 30 2a 30 05 06 03 2b 65 70 03 21 00)
-[...]   = 00 07 43 → Agent Version 7, 'C' = AgentConfirmation
-[...]   = 30 7b 00 02 → '0' (Nothing) + 0x7b = EncRatchetMessage Start
-```
-
-### 13.2 Open Questions (Session 19)
-
-1. What is PrivHeader ':' (0x3a)? — Not PHConfirmation='K', not PHEmpty='_'
-2. Parse AgentConfirmation → e2eEncryption + encConnInfo
-3. Decrypt EncRatchetMessage with Double Ratchet
+1. **unPad Layer** — [2B len][content][padding 0x23...]
+2. **PrivHeader** — 'K'=PHConfirmation, '_'=PHEmpty
+3. **ClientMessage** — Simple concatenation, no length prefix
+4. **Maybe encoding** — '0'=Nothing, '1'=Just (NOT 0x00/0x01!)
+5. **AgentConfirmation** — (version, 'C', e2eEncryption_, Tail encConnInfo)
+6. **EncRatchetMessage** — v<3: 1-byte len prefix
+7. **EncMessageHeader** — [version][IV 16B][AuthTag 16B][len 1B][body 88B]
+8. **AES-GCM IV** — 16 bytes (not standard 12!)
+9. **X3DH HKDF** — hk[0-31], nhk[32-63], sk[64-95]
+10. **rcAD** — our_key1 || peer_key1 (112 bytes)
+11. **nhk = header_key_recv** — THE key for header decrypt!
 
 ---
 
-## 14. Session 15 Theory (DISPROVEN in Session 16)
-
-### 14.1 Session 15 Claimed
-
-```
-App's HELLO on Reply Queue has maybe_e2e = Nothing
--> Uses pre-computed e2eDhSecret
--> We need app.sndQueue.e2ePubKey
--> Key is in App's AgentConfirmation
--> WE DON'T RECEIVE THIS MESSAGE!
-```
-
-### 14.2 Evgeny's Response (Session 16)
-
-> "sender's public DH key sent in confirmation header - this is
-> **outside of AgentConnInfoReply but in the same message**"
-
-**The key IS in the message header! NO second message needed!**
-
----
-
-## 15. The Real Problem (Sessions 16-17, SOLVED in Session 18!)
-
-### 15.1 Session 16-17: Double Ratchet Theory
-
-```
-Session 16: Peer CANNOT decrypt our AgentConfirmation
-  - Android: "Request to connect"
-  - Desktop: "Connecting"
-  Suspected: rcAD order, X3DH DH order, HKDF params
-
-Session 17: Key Consistency Investigation
-  - Key mismatch in logs (later: different test runs)
-  - rcAD order tested (staying OUR||PEER)
-```
-
-### 15.2 Session 18: ACTUAL Root Cause
-
-```
-NOT a crypto problem!
-NOT a Double Ratchet problem!
-NOT a key problem!
-
-ACTUAL: envelope_len included 102 bytes SMP block-padding
-FIX: envelope_len = raw_len_prefix (ONE LINE!)
-RESULT: 15904 bytes decrypted successfully!
-```
-
----
-
-*Quick Reference v12.0*  
-*Last updated: February 5, 2026 - Session 18*  
-*Status: 🎉 BUG #18 SOLVED! E2E Layer 2 Decrypt SUCCESS!*  
-*Next: Parse AgentConfirmation, decrypt EncRatchetMessage*
+*Quick Reference v13.0*  
+*Last updated: February 5, 2026 - Session 19*  
+*Status: Double Ratchet Header Decrypt SUCCESS!*  
+*Next: Fix Bug #19, DH Ratchet Step, Body Decrypt*

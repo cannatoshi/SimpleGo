@@ -1,6 +1,6 @@
 # Bug Tracker
 
-## Complete Documentation of All 18 Bugs
+## Complete Documentation of All 19 Bugs
 
 This document provides detailed documentation of all bugs discovered during SimpleGo development, including the incorrect code, correct code, and root cause analysis.
 
@@ -27,9 +27,10 @@ This document provides detailed documentation of all bugs discovered during Simp
 | 15 | Reply Queue HSalsa20 | 9 | FIXED |
 | 16 | A_CRYPTO header AAD | 9 | FIXED |
 | 17 | cmNonce instead of msgId | 10C | FIXED |
-| **18** | **Reply Queue E2E** | **12-18** | **✅ SOLVED** |
+| 18 | Reply Queue E2E | 12-18 | ✅ SOLVED |
+| **19** | **header_key_recv overwritten** | **19** | **OPEN** |
 
-**Total: 18 bugs documented, 18 FIXED! 🎉**
+**Total: 19 bugs documented, 18 FIXED, 1 OPEN (workaround functional)**
 
 ---
 
@@ -447,21 +448,6 @@ crypto_box_beforenm(dh_secret, srv_dh_public, rcv_dh_private);
 // dh_secret is NOW ready for crypto_box_open_easy_afternm!
 ```
 
-### NaCl Crypto Layers
-```
-+-------------------------------------------------------------+
-|                     NaCl crypto_box                         |
-+-------------------------------------------------------------+
-|  1. X25519 DH:       scalarmult(sk, pk) -> raw_secret       |
-|  2. HSalsa20:        derive(raw_secret) -> box_key          |
-|  3. XSalsa20-Poly1305: encrypt(box_key, nonce, msg)         |
-+-------------------------------------------------------------+
-|  crypto_scalarmult:    Only step 1                          |
-|  crypto_box_beforenm:  Steps 1 + 2 (returns box_key)        |
-|  crypto_box_easy:      All steps in one call                |
-+-------------------------------------------------------------+
-```
-
 ### Root Cause
 
 Must use same crypto primitive chain as sender.
@@ -494,19 +480,6 @@ Incorrect AAD construction for header encryption causing authentication failure.
 
 Used `msgId` as nonce for per-queue E2E decryption, but the correct nonce is `cmNonce` from the ClientMsgEnvelope structure.
 
-### ClientMsgEnvelope Structure
-```
-Offset  Size  Content
-------  ----  -------
-[0-1]   2     length prefix
-[12-13] 2     version
-[14]    1     maybe tag
-[15]    1     maybe tag for e2ePubKey
-[16-59] 44    X25519 SPKI
-[60-83] 24    cmNonce <- CORRECT NONCE!
-[84+]   var   cmEncBody
-```
-
 ### Incorrect Code
 ```c
 // WRONG - used msgId as nonce
@@ -524,15 +497,6 @@ crypto_box_open_easy_afternm(plain, &data[cm_enc_body_offset],
                               enc_len, cm_nonce, dh_shared);
 ```
 
-### Result After Fix
-```
-TEST4 SUCCESS! Per-queue E2E decrypt worked!
-   Decrypted 15904 bytes (ClientMessage)
-   PrivHeader tag: 'K' (PHConfirmation)
-
-App status: "connecting"
-```
-
 ---
 
 ## Bug #18: Reply Queue E2E Decryption — ✅ SOLVED!
@@ -542,543 +506,72 @@ App status: "connecting"
 **Impact:** Cannot decrypt Reply Queue messages  
 **Status:** ✅ **SOLVED in Session 18!**
 
-### 18.0 FINAL ROOT CAUSE & FIX (Session 18, 2026-02-05) 🎉
-
-#### Root Cause
+### Root Cause & Fix
 
 ```
-envelope_len = plain_len - 2 = 16104       ← WRONG! Includes 102B SMP padding
-envelope_len = raw_len_prefix = 16002      ← CORRECT! Exact content length
+ROOT CAUSE:
+  envelope_len = plain_len - 2 = 16104       ← WRONG! Includes 102B SMP padding
+  envelope_len = raw_len_prefix = 16002      ← CORRECT! Exact content length
 
-plain_len:      16106 (total decrypted from Layer 1)
-raw_len_prefix: 16002 (actual ClientMsgEnvelope length from 2-byte prefix)
-prefix_bytes:   2     (length prefix itself)
-padding:        102   (16106 - 16002 - 2 = SMP block-padding 0x23)
+FIX — ONE LINE:
+  envelope_len = raw_len_prefix;
+
+RESULT:
+  Method 0 (decrypt_client_msg): SUCCESS!
+  Decrypted: 15904 bytes AgentConfirmation + EncRatchetMessage
 ```
 
-#### The Fix — ONE LINE!
+See Session 18 documentation for full 7-session debugging history.
 
+---
+
+## Bug #19: header_key_recv Gets Overwritten (NEW - Session 19)
+
+**Session:** 19  
+**Component:** Double Ratchet key management  
+**Impact:** Medium - header decrypt fails without workaround  
+**Status:** **OPEN** (workaround functional)
+
+### 19.1 Symptom
+
+```
+header_key_recv after X3DH = 1c08e86e... (saved_nhk, correct)
+header_key_recv at receipt = cf0c74d2... (wrong, overwritten)
+```
+
+### 19.2 Discovery
+
+During Session 19 Double Ratchet header decrypt implementation, we discovered that
+`header_key_recv` (the key used to decrypt incoming message headers) is being
+overwritten somewhere between X3DH initialization and message receipt.
+
+### 19.3 Workaround
+
+Saving `nhk` immediately after X3DH HKDF calculation as `saved_nhk`:
 ```c
-// BEFORE (WRONG):
-size_t envelope_len = plain_len - rq_prefix_len;  // Includes 102B SMP padding!
+// After X3DH HKDF:
+memcpy(saved_nhk, &x3dh_output[32], 32);  // nhk = HKDF output bytes 32-63
 
-// AFTER (CORRECT):
-size_t envelope_len = raw_len_prefix;  // Use actual length from 2-byte prefix
+// At header decrypt (instead of header_key_recv):
+aes_gcm_decrypt(ehBody, saved_nhk, ehIV, rcAD, ...);  // SUCCESS!
 ```
 
-#### Result
+### 19.4 Root Cause
 
-```
-Method 0 (decrypt_client_msg): SUCCESS!
-Decrypted: 15904 bytes
-Content: AgentConfirmation + EncRatchetMessage
+**Not yet identified.** Likely in `smp_peer.c` in the AgentConfirmation/HELLO
+send flow. `ratchet_init_sender()` and `ratchet_encrypt()` don't write to
+`header_key_recv` according to the code — must happen elsewhere.
 
-Decrypted plaintext:
-  [0]     = 0x3a ':' → PrivHeader Type (new, must identify)
-  [2-14]  = Ed25519 SPKI (OID 1.3.101.112)
-  [...]   = 00 07 43 → Agent Version 7, 'C' = AgentConfirmation
-  [...]   = 30 7b 00 02 → '0' (Nothing) + 0x7b = EncRatchetMessage
-```
+### 19.5 Investigation Needed
 
-#### Wire-Format Discovery (Claude Code Analysis #1)
+1. Analyze `smp_peer.c` for writes to ratchet state
+2. Check if `ratchet_init_sender()` modifies receive-side keys
+3. Check HELLO send flow for key state changes
 
-Our code assumed WRONG offsets for ClientMsgEnvelope:
+### 19.6 Impact
 
-```
-WRONG (our assumption):
-  [0-7]   = Message Header (Timestamps)
-  [8-9]   = "T " (PubHeader Tag + Space)
-  [10-11] = Version
-  [12]    = maybe_corrId        ← DOES NOT EXIST IN ENVELOPE!
-  [13]    = maybe_e2e           ← WRONG OFFSET!
-  
-CORRECT (Haskell reality):
-  ClientMsgEnvelope = (PubHeader, cmNonce, Tail cmEncBody)
-  PubHeader = (phVersion, Maybe phE2ePubDhKey)
-
-  WITH e2ePubKey:
-  [0-1]   = phVersion (00 04)
-  [2]     = '1' (0x31) = Just
-  [3-46]  = X25519 SPKI (44 bytes)
-  [47-70] = cmNonce (24 bytes, raw)
-  [71+]   = cmEncBody (rest)
-  
-  WITHOUT e2ePubKey:
-  [0-1]   = phVersion (00 04)
-  [2]     = '0' (0x30) = Nothing
-  [3-26]  = cmNonce (24 bytes, raw)
-  [27+]   = cmEncBody (rest)
-```
-
-#### Key Insight: corrId is NOT in ClientMsgEnvelope
-
-corrId is SMP Transport Layer — parsed BEFORE the envelope, not inside it.
-
-#### Contact Queue vs Reply Queue Architecture
-
-| Queue | Layer 1 (Server) | Layer 2 (E2E) |
-|-------|-------------------|---------------|
-| Contact Queue | ✅ decrypt_smp_message | ❌ NO E2E Layer! |
-| Reply Queue | ✅ decrypt_smp_message | ✅ E2E decrypt |
-
-**Contact Queue never had a separate E2E layer!** The assumption "Contact Queue E2E works" was FALSE — it only has Layer 1 (server decryption).
-
-### 18.1 Session 12 Discoveries
-
-**Two Separate X25519 Keypairs:**
-
-| Keypair | Purpose | Used in |
-|---------|---------|---------|
-| dhKey / privDhKey | Server-level DH (NEW command) | rcvDhSecret |
-| e2eDhKey / e2ePrivKey | E2E-level DH (Peer encryption) | SMPQueueAddress |
-
-**Changes Implemented:**
-```c
-// smp_queue.h - Added E2E keys
-uint8_t e2e_public[32];
-uint8_t e2e_private[32];
-
-// smp_queue.c - Generate E2E keypair
-crypto_box_keypair(our_queue.e2e_public, our_queue.e2e_private);
-
-// smp_queue.c - Send e2e_public in SMPQueueInfo
-memcpy(&buf[p], our_queue.e2e_public, 32);
-```
-
-### 18.2 Session 13 Discoveries
-
-#### 18.2.1 Parsing Bug Fixed
-
-**Old (Wrong):**
-```c
-uint8_t maybe_corrId = plain[14];  // Wrong name!
-uint8_t maybe_e2e = plain[15];     // This is SPKI length, not a tag!
-```
-
-**New (Correct):**
-```c
-uint8_t maybe_e2e = plain[14];     // '1' = Just, '0'/',' = Nothing
-// [15] = 0x2c = 44 = SPKI length
-// [16-59] = X25519 SPKI (e2ePubKey!)
-// [60-83] = cmNonce
-// [84+] = cmEncBody
-```
-
-#### 18.2.2 HSalsa20 Difference Discovered
-
-| Step | Haskell | libsodium |
-|------|---------|-----------|
-| 1 | DH(pub, priv) -> secret | DH(pub, priv) -> secret |
-| 2 | XSalsa20(secret, nonce, msg) | **HSalsa20(secret)** -> key |
-| 3 | - | XSalsa20(key, nonce, msg) |
-
-**Haskell xSalsa20 (Direct):**
-```haskell
-cryptoBox secret nonce s = BA.convert tag <> c
-  where
-    (rs, c) = xSalsa20 secret nonce s  -- Direct!
-```
-
-**libsodium (Extra HSalsa20):**
-```c
-crypto_box_beforenm(k, peer_pub, our_priv);  // HSalsa20 applied here!
-crypto_box_open_easy_afternm(..., k);
-```
-
-#### 18.2.3 MAC Position Difference Discovered
-
-**Haskell cbDecrypt:**
-```haskell
-(tag', c) = B.splitAt 16 packet  -- TAG = first 16 bytes!
-```
-
-| Format | Layout |
-|--------|--------|
-| **Haskell** | `[MAC 16 bytes][Ciphertext]` |
-| **libsodium** | `[Ciphertext][MAC 16 bytes]` |
-
-### 18.3 Session 14 Discoveries - DH SECRET VERIFIED!
-
-#### 18.3.1 Handoff Theory DISPROVEN
-
-| Statement | Handoff Document | Reality (Source Code) |
-|-----------|------------------|----------------------|
-| 2 MSGs on Contact Queue | Claimed | FALSE |
-| HELLO on Reply Queue | Not mentioned | TRUE (confirmed) |
-| E2E Key in PHConfirmation | Claimed | FALSE |
-| E2E Key in PubHeader | Not mentioned | TRUE (confirmed) |
-
-#### 18.3.2 Bug Fixed: Wrong Key Used
-
-**Before (WRONG):**
-```c
-// Used SMP DH key from INVITATION
-crypto_box_beforenm(e2e_dh_secret, pending_peer.dh_public, our_queue.e2e_private);
-```
-
-**After (CORRECT):**
-```c
-// Extract e2ePubKey from message header (Offset 28)
-uint8_t peer_e2e_pub[32];
-memcpy(peer_e2e_pub, &server_plain[28], 32);
-```
-
-#### 18.3.3 Bug Fixed: Wrong DH Function
-
-**Before (WRONG):**
-```c
-crypto_box_beforenm(e2e_dh_secret, peer_pub, our_priv);
-// ^^^ applies HSalsa20 key derivation!
-```
-
-**After (CORRECT):**
-```c
-crypto_scalarmult(dh_secret, our_queue.e2e_private, peer_e2e_pub);
-// ^^^ raw DH output - matches Haskell!
-```
-
-#### 18.3.4 DH Secret VERIFIED with Python!
-
-```python
-from nacl.bindings import crypto_scalarmult
-
-our_private = bytes.fromhex('83473153de033039edec9c5db7591cacfa42b6dd89a0618a00806732d01a96fa')
-peer_public = bytes.fromhex('9140e10e9fdee92ebb801ae8694435b5e9f06c4e0077dfa98d39b0f1bf0c0300')
-
-dh_secret = crypto_scalarmult(our_private, peer_public)
-```
-
-**Result:**
-```
-Python DH:  d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
-ESP32 DH:   d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
-Match: TRUE!
-```
-
-### 18.5 Session 15 - ROOT CAUSE FOUND! (Later Disproven in S16)
-
-#### 18.5.1 Critical Discovery: `maybe_e2e = ','` (Nothing)
-
-The Reply Queue HELLO message has:
-```
-[14] = '1' (0x31) = maybe_corrId = Just
-[15] = ',' (0x2C) = maybe_e2e = Nothing  <- CRITICAL!
-```
-
-When `maybe_e2e = Nothing`:
-- **NO ephemeral e2ePubKey** in the message
-- Message uses **pre-computed e2eDhSecret**
-- We need `app.sndQueue.e2ePubKey` to calculate same secret
-- This key is NOT in the message!
-
-#### 18.5.2 The Missing Key
-
-**App side calculates:**
-```
-e2eDhSecret = DH(our_queue.e2e_public, app.sndQueue.e2ePrivKey)
-```
-
-**ESP32 needs:**
-```
-dh_secret = DH(app.sndQueue.e2ePubKey, our_queue.e2e_private)
-            ^^^^^^^^^^^^^^^^^^^^
-            WE DON'T HAVE THIS KEY!
-```
-
-#### 18.5.3 Where is the Key?
-
-According to SimpleX protocol, `sndQueue.e2ePubKey` is sent in:
-- **App's AgentConfirmation** (Type 'C')
-- Arrives on our **Contact Queue**
-- As response to our connection request
-
-**PROBLEM:** We don't receive this message!
-
-#### 18.5.4 Protocol Flow Issue
-
-```
-✅ Step 1: INVITATION received on Contact Queue
-✅ Step 2: AgentConfirmation sent -> Server: "OK"
-✅ Step 3: HELLO sent -> Server: "OK"
-❌ Step 4: App's AgentConfirmation NOT received!
-❌ Step 5: App's HELLO received, cannot decrypt
-```
-
-#### 18.5.5 Tests Performed (All Failed)
-
-| Test | Key Source | DH Result | Decrypt |
-|------|------------|-----------|---------|
-| 1 | URL dh= key | 685e7514... | FAILED |
-| 2 | Message corrId | 3863509c... | FAILED |
-| 3 | Offsets 48-80 | Various | All FAILED |
-| 4 | X25519 search | 0 found | N/A |
-
-**Conclusion:** The needed key is NOT in the data we have.
-
-### 18.6 Session 16 - Correction Session
-
-#### 18.6.1 Session 15 Theory DISPROVEN
-
-Evgeny confirmed: **"in the same message"**
-
-| Session 15 Said | Evgeny Says |
-|-----------------|-------------|
-| "2nd MSG missing" | "in the same message" |
-| "Key never arrives" | "sender's public DH key sent in confirmation header" |
-
-**The key IS in the message header!**
-
-#### 18.6.2 SimpleX NON-STANDARD XSalsa20 Discovered
-
-```
-Standard libsodium crypto_secretbox:
-  HSalsa20(dh_secret, nonce[0:16])
-
-SimpleX xSalsa20:
-  HSalsa20(dh_secret, zeros[16])  <- ZEROS not nonce!
-```
-
-**Python test proof:**
-```
-Standard subkey:  2d4b452885522...
-SimpleX subkey:   ce1b436c8b333...
-COMPLETELY DIFFERENT!
-```
-
-**All previous crypto attempts were DOOMED!**
-
-#### 18.6.3 Custom XSalsa20 Implemented
-
-New files created:
-- `simplex_crypto.c` - Custom XSalsa20 for ESP32
-- `simplex_crypto.h` - Header
-- `test_simplex_crypto.c` - C test
-- `verify_simplex_crypto.py` - Python verification
-
-**Round-trip test: SUCCESS ✅**
-
-#### 18.6.4 Key Race Condition Fixed
-
-```c
-// BUG: reply_queue_e2e_peer_public written from TWO places:
-// 1. main.c:642 → Contact Queue PubHeader SPKI (CORRECT!)
-// 2. smp_parser.c:746 → AgentConnInfoReply Parser (WRONG!)
-
-// FIX: Removed overwrite in smp_parser.c
-```
-
-#### 18.6.5 Problem Shifted to Double Ratchet
-
-```
-Layer 4 (E2E): FIXED ✅
-Layer 5 (Double Ratchet): BROKEN ❌
-
-Peer cannot decrypt our AgentConfirmation!
-- Android: "Request to connect" (Confirmation NOT understood)
-- Desktop: "Connecting" (trying but failing)
-```
-
-#### 18.6.6 Verified CORRECT
-
-| Component | Status |
-|-----------|--------|
-| Wire-Format Parsing | ✅ CORRECT |
-| Payload AAD (235 bytes) | ✅ CORRECT |
-| Header AAD | ✅ CORRECT |
-| emHeader Encoding | ✅ CORRECT |
-| Key Consistency | ✅ CORRECT |
-| Custom XSalsa20 | ✅ VERIFIED |
-
-### 18.7 Session 17 - Key Consistency Debug
-
-#### 18.7.1 Evgeny Already Answered!
-
-On January 28, 2026 Evgeny already told us:
-- Key is in **confirmation header** (SPKI in message header)
-- "outside of AgentConnInfoReply but in the same message"
-- TWO crypto_box layers with different keys and nonces
-
-**Rule: ALWAYS search past Evgeny conversations before asking!**
-
-#### 18.7.2 rcAD Order Analysis
-
-```
-rcAD = sk1 || rk1 = JOINER_KEY || INITIATOR_KEY
-     = APP_KEY    || ESP32_KEY  = PEER || OUR
-```
-
-Test result: PEER||OUR was WORSE than OUR||PEER.
-Staying with OUR||PEER for now.
-
-#### 18.7.3 Length Prefix Discovery
-
-```
-Contact Queue: No length prefix before ClientMsgEnvelope
-Reply Queue:   2-byte length prefix (e.g. 0x3E82 = 16002)
-```
-
-Fix applied: offset +2 for Reply Queue.
-
-#### 18.7.4 Key Mismatch in Logs (Resolved in S18)
-
-```
-Queue Creation:      e2e_private = c4cd6fd7...
-Reply Queue Decrypt: e2e_private = 6156a27f...
-```
-
-**Resolution:** Different test runs (not same session). 3-point logging in S18 confirmed keys are CONSISTENT.
-
-### 18.8 Session 18 - 🎉 BUG #18 SOLVED!
-
-#### 18.8.1 Wire-Format Root Cause
-
-Our code parsed ClientMsgEnvelope with completely wrong assumptions:
-- Assumed corrId exists in envelope (WRONG — it's SMP Transport Layer)
-- Used `plain_len - 2` for envelope length (WRONG — includes 102B SMP padding)
-- All offsets shifted, causing MAC mismatch
-
-#### 18.8.2 Claude Code Analyses
-
-**Analysis #1:** ClientMsgEnvelope wire-format
-- corrId NOT in envelope
-- Structure: `(PubHeader, cmNonce, Tail cmEncBody)`
-- No comma separators
-
-**Analysis #2:** Tuple-encoding + wrapper chain
-- `smpEncode a <> smpEncode b` (direct concatenation)
-- Wrapper: `ClientRcvMsgBody {msgTs, msgFlags, msgBody}`
-- Chain: EncRcvMsgBody → ClientRcvMsgBody → ClientMsgEnvelope → ClientMessage
-
-#### 18.8.3 Evidence from ESP Log
-
-```
-plain_len:      16106 (total decrypted from Layer 1)
-raw_len_prefix: 16002 (actual content length)
-Difference:     102 bytes = 0x23 SMP block-padding
-```
-
-Contact Queue parser correctly used prefix_len → works.
-Reply Queue parser used plain_len - 2 → includes padding → fails.
-
-#### 18.8.4 The Fix
-
-```c
-envelope_len = raw_len_prefix;  // ONE LINE!
-```
-
-#### 18.8.5 Result
-
-```
-Method 0 (decrypt_client_msg): SUCCESS!
-15904 bytes decrypted
-Content: PrivHeader ':' + Ed25519 SPKI + AgentConfirmation + EncRatchetMessage
-```
-
-#### 18.8.6 Excluded Theories (Final)
-
-| Theory | Status | Evidence |
-|--------|--------|----------|
-| our_queue.e2e_private gets overwritten | WRONG | 3-point logging: identical |
-| Wrong key in Invitation | WRONG | Consistency test: all 3 match |
-| Byte offsets were correct | **WRONG** | Session 18: offsets completely wrong |
-| corrId SPKI = E2E Key | WRONG | Claude Code: corrId is Transport Layer |
-| Contact Queue has E2E Layer 2 | **WRONG** | Code analysis: only Layer 1! |
-| corrId exists in Envelope | **WRONG** | Claude Code #1: corrId is SMP Transport |
-
-### 18.9 All Crypto Tests (Session 13)
-
-| Test | Method | MAC | Private Key | Result |
-|------|--------|-----|-------------|--------|
-| 1 | crypto_box_open_easy | Auto | e2e_private | FAILED |
-| 2 | crypto_box_open_easy | Auto | rcv_dh_private | FAILED |
-| 3 | crypto_secretbox_open_easy | None | e2e_private | FAILED |
-| 4 | crypto_secretbox_open_easy | Reordered | e2e_private | FAILED |
-| 5 | crypto_secretbox_open_detached | Separate | e2e_private | FAILED |
-
-### 18.4 Verified Correct
-
-- Key extraction: [28-59] = Raw X25519 key
-- Nonce extraction: [60-83] = 24 bytes
-- Body offset: [84+] = cmEncBody
-- Keypair verification: e2e_public matches derived from e2e_private
-- SPKI header: `30 2a 30 05 06 03 2b 65 6e 03 21 00`
-
-### 18.5 SMPConfirmation Contains e2ePubKey!
-
-**Found in Haskell:**
-```haskell
-data SMPConfirmation = SMPConfirmation
-  { senderKey :: Maybe SndPublicAuthKey,
-    e2ePubKey :: C.PublicKeyX25519,        -- THE KEY!
-    connInfo :: ConnInfo,
-    smpReplyQueues :: [SMPQueueInfo],
-    smpClientVersion :: VersionSMPC
-  }
-```
-
-### 18.6 App's e2ePubKey Flow
-
-```haskell
-newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
-  (e2ePubKey, e2ePrivKey) <- generateKeyPair
-  let sq = SndQueue
-        { e2eDhSecret = C.dh' rcvE2ePubDhKey e2ePrivKey,  -- Pre-computed!
-          e2ePubKey = Just e2ePubKey,                     -- App's key
-        }
-```
-
-1. App receives our `e2e_public` from SMPQueueInfo
-2. App generates its own keypair
-3. App **first** message: `e2ePubKey = Just` (sendConfirmation)
-4. App **subsequent** messages: `e2ePubKey = Nothing` (sendAgentMessage)
-
-### 18.11 Sub-Issues Status (FINAL — All Resolved)
-
-| Sub-Issue | Description | Status |
-|-----------|-------------|--------|
-| #18a | Separate E2E Keypair implemented | DONE |
-| #18b | E2E public sent in SMPQueueInfo | DONE |
-| #18c | Parsing fix (correct offsets) | DONE |
-| #18d | HSalsa20 difference identified | DONE |
-| #18e | MAC position difference identified | DONE |
-| #18f | 5 crypto approaches tested (S13) | DONE - All fail |
-| #18g | SMPConfirmation contains e2ePubKey | FOUND |
-| #18h | Handoff theory DISPROVEN (S14) | DONE |
-| #18i | Wrong key bug fixed (S14) | DONE |
-| #18j | Wrong DH function fixed (S14) | DONE |
-| #18k | DH SECRET VERIFIED with Python! (S14) | DONE |
-| #18l | maybe_e2e = Nothing discovered (S15) | DONE |
-| #18m | Pre-computed secret required (S15) | DONE |
-| #18n | Missing App's AgentConfirmation (S15) | DISPROVEN (S16) |
-| #18o | app.sndQueue.e2ePubKey identified (S15) | DISPROVEN (S16) |
-| #18p | ROOT CAUSE IDENTIFIED (S15) | WRONG (S16) |
-| #18q | Session 15 theory DISPROVEN (S16) | DONE |
-| #18r | SimpleX custom XSalsa20 discovered (S16) | DONE |
-| #18s | simplex_crypto.c implemented (S16) | DONE |
-| #18t | Custom XSalsa20 verified (S16) | DONE |
-| #18u | Key race condition fixed (S16) | DONE |
-| #18v | Wire-format verified correct (S16) | DONE |
-| #18w | Problem is Double Ratchet (S16) | IDENTIFIED |
-| #18x | rcAD order analyzed (S17) | DONE - staying OUR\|\|PEER |
-| #18y | Length prefix fix (S17) | DONE |
-| #18z | Key consistency check (S17) | DONE - keys consistent |
-| **#18aa** | **Contact Queue has NO E2E Layer 2 (S18)** | **DONE** |
-| **#18ab** | **ClientMsgEnvelope wire-format analyzed (S18)** | **DONE** |
-| **#18ac** | **Tuple-encoding: no comma separators (S18)** | **DONE** |
-| **#18ad** | **Wrapper chain documented (S18)** | **DONE** |
-| **#18ae** | **Root cause: 102B SMP padding in envelope_len (S18)** | **DONE** |
-| **#18af** | **Fix: envelope_len = raw_len_prefix (S18)** | **DONE** |
-| **#18ag** | **E2E Layer 2 decrypt SUCCESS: 15904 bytes (S18)** | **✅ SOLVED** |
-
-### 18.12 Android vs Desktop Difference
-
-| Aspect | Desktop | Android |
-|--------|---------|---------|
-| URI extraction | SUCCESS (2090 chars) | FAILED |
-| Peer-Connect | YES | NO |
-| AgentConfirmation | Sent | Not sent |
-| Display | "Connecting..." | No status |
-| Padding prefix | `2a fc 5f...` | `09 e7 5f...` |
+Low — workaround is functional and header decrypt succeeds with `saved_nhk`.
+Should be fixed for code cleanliness.
 
 ---
 
@@ -1098,14 +591,15 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 | Feb 1 | S15 | #18 Root Cause (later disproven) |
 | Feb 1-3 | S16 | #18 Custom XSalsa20! |
 | Feb 4 | S17 | #18 Key Consistency Debug |
-| **Feb 5** | **S18** | **#18 ✅ SOLVED! One-line fix!** |
+| Feb 5 | S18 | #18 ✅ SOLVED! One-line fix! |
+| **Feb 5** | **S19** | **#19 header_key_recv overwritten** |
 
 ---
 
 ## Bug Categories
 
 ```
-18 Bugs Total (ALL FIXED! 🎉):
+19 Bugs Total (18 FIXED, 1 OPEN with workaround):
 - 7x Length Prefix issues (#1-6, #13)
 - 3x KDF/IV Order issues (#7, #8, #14)
 - 1x Byte Order issue (#9 - wolfSSL)
@@ -1116,6 +610,7 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 - 1x Header encryption issue (#16)
 - 1x Nonce source issue (#17 - cmNonce)
 - 1x Envelope length calculation issue (#18 - SMP padding)
+- 1x Key management issue (#19 - header_key_recv overwritten)
 ```
 
 ---
@@ -1165,10 +660,18 @@ newSndQueue ... {dhPublicKey = rcvE2ePubDhKey} = do
 41. **No comma separators in smpEncode** - Direct concatenation: `smpEncode a <> smpEncode b`! (Session 18)
 42. **Wrapper chain matters** - EncRcvMsgBody → ClientRcvMsgBody → ClientMsgEnvelope → ClientMessage! (Session 18)
 43. **One line can block weeks of progress** - Bug #18 was ONE LINE: envelope_len = raw_len_prefix! (Session 18)
+44. **unPad layer exists between crypto_box and ClientMessage** - [2B len][content][padding 0x23...] (Session 19)
+45. **PrivHeader tags: 'K'=PHConfirmation, '_'=PHEmpty** - Check Protocol.hs for encoding! (Session 19)
+46. **Maybe encoding is ASCII '0'/'1', NOT binary 0x00/0x01** - Check Encoding.hs! (Session 19)
+47. **nhk (HKDF[32-63]) = header_key_recv** - Second block of X3DH HKDF output! (Session 19)
+48. **AES-GCM uses 16-byte IV in SimpleX** - Not standard 12-byte! (Session 19)
+49. **Save keys immediately after derivation** - Prevents overwrite bugs like #19! (Session 19)
+50. **Always account for ALL wrapper layers when parsing** - 0x3a wasn't PrivHeader, it was unPad length! (Session 19)
+51. **Analysis first, implementation second** - Don't code until you understand the wire format! (Session 19)
 
 ---
 
-*Bug Tracker v13.0*  
-*Last updated: February 5, 2026 - Session 18*  
-*Total bugs documented: 18 (18 fixed! 🎉)*  
-*43 lessons learned!*
+*Bug Tracker v14.0*  
+*Last updated: February 5, 2026 - Session 19*  
+*Total bugs documented: 19 (18 fixed, 1 open with workaround)*  
+*51 lessons learned!*

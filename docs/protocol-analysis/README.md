@@ -6,37 +6,48 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## Current Status (2026-02-05 Session 18)
+## Current Status (2026-02-05 Session 19)
 
 ```
-SESSION 18 - 🎉 BUG #18 SOLVED! E2E LAYER 2 DECRYPT SUCCESS!
-================================================================
+SESSION 19 - DOUBLE RATCHET HEADER DECRYPT SUCCESS!
+====================================================
 
 BREAKTHROUGH:
-  Root Cause: envelope_len included 102 bytes SMP block-padding
-  Fix: ONE LINE — envelope_len = raw_len_prefix
-  Result: Method 0 (decrypt_client_msg) SUCCESS! 15904 bytes!
-  Content: AgentConfirmation + EncRatchetMessage
+  Three new layers discovered and verified:
+    1. unPad Layer — 2-byte length prefix + 0x23 padding
+    2. ClientMessage Layer — PrivHeader + AgentMsgEnvelope
+    3. EncRatchetMessage Layer — Double Ratchet Header-Decrypt
 
-BUG #18 TIMELINE:
-  7 sessions (S12-S18), ~30 sub-issues, weeks of debugging
-  Final fix: ONE LINE OF CODE
+  Header-Decrypt SUCCESS! MsgHeader fully parsed:
+    - msgMaxVersion: 3 (Peer supports PQ)
+    - DH Key: 68 bytes X448 SPKI
+    - PN: 0 (first message)
+    - Ns: 0 (Message #0)
 
-DECRYPTED CONTENT:
-  [0]     = PrivHeader ':' (0x3a) — new type, must be identified
-  [2-14]  = Ed25519 SPKI (OID 1.3.101.112)
-  [...]   = Agent Version 7, Tag 'C' = AgentConfirmation
-  [...]   = EncRatchetMessage — Double Ratchet payload
+11 KEY INSIGHTS:
+  - unPad: [2B len][content][padding 0x23...]
+  - PrivHeader: 'K'=PHConfirmation, '_'=PHEmpty
+  - Maybe: '0'=Nothing, '1'=Just (NOT binary 0x00/0x01!)
+  - nhk (HKDF[32-63]) = header_key_recv
+  - AES-GCM uses 16-byte IV (not standard 12-byte)
 
-ALL LAYERS THROUGH LAYER 2:
+BUG #19: header_key_recv overwritten
+  - Workaround (saved_nhk) functional
+  - Root cause investigation pending
+
+ALL LAYERS THROUGH LAYER 5:
   ✅ Layer 0: TLS 1.3
-  ✅ Layer 1: SMP Transport (Server→Recipient)
-  ✅ Layer 2: E2E (Sender→Recipient) — FIXED SESSION 18!
-  ⏳ Layer 3: AgentMsgEnvelope parsing
-  ⏳ Layer 4: Double Ratchet
-  ⏳ Layer 5: Application Data
+  ✅ Layer 1: SMP Transport
+  ✅ Layer 2: E2E Decrypt (S18)
+  ✅ Layer 2.5: unPad (S19)
+  ✅ Layer 3: ClientMessage Parse (S19)
+  ✅ Layer 4: EncRatchetMessage Parse (S19)
+  ✅ Layer 5: Double Ratchet Header Decrypt (S19)
+  ⏳ Layer 6: Double Ratchet Body Decrypt
+  ⏳ Layer 7: ConnInfo Parse
+  ⏳ Layer 8: Connection Established
 
-NEXT: Parse AgentConfirmation, decrypt EncRatchetMessage
+NEXT: Fix Bug #19, DH Ratchet Step, Body Decrypt
 ```
 
 ---
@@ -78,11 +89,12 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [14_PART12_SESSION_15.md](14_PART12_SESSION_15.md) | ~650 | Root Cause Found |
 | [15_PART13_SESSION_16.md](15_PART13_SESSION_16.md) | ~900 | Custom XSalsa20 + Double Ratchet |
 | [16_PART14_SESSION_17.md](16_PART14_SESSION_17.md) | ~500 | Key Consistency Debug |
-| [17_PART15_SESSION_18.md](17_PART15_SESSION_18.md) | ~600 | **🎉 BUG #18 SOLVED! E2E Decrypt SUCCESS** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1200 | Complete bug documentation (18 bugs) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~600 | Constants, wire formats, verified values |
+| [17_PART15_SESSION_18.md](17_PART15_SESSION_18.md) | ~600 | 🎉 BUG #18 SOLVED! E2E Decrypt SUCCESS |
+| [18_PART16_SESSION_19.md](18_PART16_SESSION_19.md) | ~550 | **Header Decrypt SUCCESS!** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1300 | Complete bug documentation (19 bugs) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~700 | Constants, wire formats, verified values |
 
-**Total: ~22,000+ lines of detailed protocol analysis**
+**Total: ~23,000+ lines of detailed protocol analysis**
 
 ---
 
@@ -105,7 +117,50 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | 15 | Feb 1 | Root Cause Found (later disproven) | #18 (root cause) |
 | 16 | Feb 1-3 | Custom XSalsa20 + Double Ratchet | #18 (narrowed) |
 | 17 | Feb 4 | Key Consistency Debug | #18 (investigating) |
-| **18** | **Feb 5** | **🎉 BUG #18 SOLVED! E2E Decrypt SUCCESS!** | **#18 ✅ SOLVED** |
+| 18 | Feb 5 | 🎉 BUG #18 SOLVED! E2E Decrypt SUCCESS! | #18 ✅ SOLVED |
+| **19** | **Feb 5** | **Header Decrypt SUCCESS! MsgHeader Parsed** | **#19 found** |
+
+---
+
+## Session 19 Key Achievements
+
+### 1. Three New Layers Discovered
+
+| Layer | Name | Content |
+|-------|------|---------|
+| 2.5 | unPad | [2B len][content][padding 0x23...] |
+| 3 | ClientMessage | PrivHeader + AgentMsgEnvelope |
+| 4 | EncRatchetMessage | [emHeader][emAuthTag][Tail emBody] |
+
+### 2. Double Ratchet Header Decrypt SUCCESS!
+
+```
+Key: saved_nhk (HKDF[32-63] from X3DH)
+IV: ehIV (16 bytes from EncMessageHeader)
+AAD: rcAD (112 bytes = our_key1 || peer_key1)
+Result: MsgHeader fully parsed!
+```
+
+### 3. MsgHeader Parsed
+
+| Field | Value |
+|-------|-------|
+| msgMaxVersion | 3 (Peer supports PQ) |
+| DH Key | 68 bytes X448 SPKI |
+| PN | 0 (first message) |
+| Ns | 0 (Message #0) |
+
+### 4. 11 Key Insights
+
+- unPad layer exists between E2E decrypt and ClientMessage
+- PrivHeader: 'K'=PHConfirmation, '_'=PHEmpty
+- Maybe encoding: '0'=Nothing, '1'=Just (NOT 0x00/0x01!)
+- nhk from X3DH HKDF[32-63] = header_key_recv
+- AES-GCM uses 16-byte IV in SimpleX
+
+### 5. Bug #19 Found
+
+`header_key_recv` gets overwritten somewhere. Workaround with `saved_nhk` works.
 
 ---
 
@@ -124,162 +179,7 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | corrId NOT in envelope | corrId is SMP Transport Layer, parsed before envelope |
 | All offsets were WRONG | Code assumed header+corrId+maybe, reality is version+maybe+body |
 | No comma separators | `smpEncode a <> smpEncode b` — direct concatenation |
-| Wrapper chain | EncRcvMsgBody → ClientRcvMsgBody → ClientMsgEnvelope |
 | 102 bytes padding | SMP block-padding (0x23) for traffic analysis resistance |
-
-### 3. Architecture Clarified
-
-| Queue | Layer 1 (Server) | Layer 2 (E2E) |
-|-------|-------------------|---------------|
-| Contact Queue | ✅ decrypt_smp_message | ❌ NO E2E Layer! |
-| Reply Queue | ✅ decrypt_smp_message | ✅ **FIXED Session 18!** |
-
-### 4. Decrypted Content Preview
-
-```
-PrivHeader ':' (0x3a) — new type to identify
-Ed25519 SPKI — OID 1.3.101.112  
-Agent Version 7, Tag 'C' — AgentConfirmation
-EncRatchetMessage — Double Ratchet payload (next step)
-```
-
----
-
-## Session 17 Key Achievements
-
-### 1. Evgeny Already Answered!
-
-We asked a question he had already answered on Jan 28, 2026:
-- Key is in **confirmation header** (SPKI in message header)
-- "outside of AgentConnInfoReply but in the **same message**"
-- TWO crypto_box layers with different keys and nonces
-
-**Rule added: ALWAYS search past Evgeny conversations first!**
-
-### 2. New Discoveries
-
-| Discovery | Detail |
-|-----------|--------|
-| Length prefix | Reply Queue has 2-byte prefix, Contact Queue doesn't |
-| cmNonce | Is RANDOM (in message), not calculated |
-| Keypairs | Both generated at queue creation, NEVER changed |
-| Key mismatch | Different e2e_private in logs (resolved in S18: different test runs) |
-
----
-
-## Session 16 Key Achievements
-
-### 1. Session 15 Theory DISPROVEN
-
-Evgeny confirmed: **"in the same message"**
-- NO second message needed!
-- Key IS in the message header
-- Session 15 was chasing a non-existent problem
-
-### 2. SimpleX NON-STANDARD XSalsa20 Discovered
-
-```
-Standard libsodium:  HSalsa20(key, nonce[0:16])
-SimpleX:             HSalsa20(key, zeros[16])  <- ZEROS!
-
-Subkeys are COMPLETELY DIFFERENT!
-All previous crypto attempts were DOOMED!
-```
-
-### 3. Custom XSalsa20 Implemented and VERIFIED
-
-```c
-// simplex_crypto.c - Works!
-simplex_secretbox_open() - Round-trip SUCCESS ✅
-```
-
-### 4. Problem Narrowed to Double Ratchet
-
-| Component | Status |
-|-----------|--------|
-| Wire-Format | ✅ CORRECT |
-| AAD | ✅ CORRECT |
-| Keys | ✅ CORRECT |
-| Custom XSalsa20 | ✅ VERIFIED |
-| **Double Ratchet** | ❌ **BROKEN** |
-
-Suspects: rcAD order, X3DH DH order, HKDF params
-
----
-
-## Session 15 Key Achievements
-
-### 1. ROOT CAUSE Identified!
-
-```
-maybe_e2e = ',' (Nothing) in message header
-  -> No ephemeral e2ePubKey in message
-  -> Uses pre-computed e2eDhSecret
-  -> Need app.sndQueue.e2ePubKey to calculate it
-  -> Key is in App's AgentConfirmation
-  -> We don't receive that message!
-```
-
-### 2. Protocol Flow Analyzed
-
-```
-✅ Step 1: INVITATION received
-✅ Step 2: AgentConfirmation sent -> OK
-✅ Step 3: HELLO sent -> OK
-❌ Step 4: App's AgentConfirmation NOT received!
-❌ Step 5: Cannot decrypt Reply Queue (missing key)
-```
-
-### 3. All Available Keys Tested
-
-| Key Source | Result |
-|------------|--------|
-| URL dh= key | FAILED |
-| Message corrId | FAILED |
-| All offsets 48-80 | FAILED |
-| X25519 search | 0 found |
-
-**Conclusion:** The needed key is NOT in data we have.
-
----
-
-## Session 14 Key Achievements
-
-### 1. DH Secret VERIFIED with Python!
-
-```python
-from nacl.bindings import crypto_scalarmult
-
-our_private = bytes.fromhex('83473153de033039...')
-peer_public = bytes.fromhex('9140e10e9fdee92e...')
-
-dh_secret = crypto_scalarmult(our_private, peer_public)
-# Result: d0b7b55cbcfacd540e399ab41346e1267a8100ca7e37f9748f59b95ec4291810
-# MATCHES ESP32!
-```
-
-### 2. Bugs Fixed
-
-| Bug | Problem | Fix |
-|-----|---------|-----|
-| Wrong Key | Used SMP DH key from INVITATION | Extract e2ePubKey from message header [28-59] |
-| Wrong DH Function | crypto_box_beforenm (adds HSalsa20) | crypto_scalarmult (raw DH) |
-
-### 3. Handoff Theory DISPROVEN
-
-| Statement | Handoff Document | Reality (Source Code) |
-|-----------|------------------|----------------------|
-| 2 MSGs on Contact Queue | Claimed | FALSE |
-| HELLO on Reply Queue | Not mentioned | TRUE (confirmed) |
-| E2E Key in PHConfirmation | Claimed | FALSE |
-
-### 4. Correct Message Flow Documented
-
-```
-Contact Queue: 1 message (INVITATION)
-Reply Queue: 1 message (HELLO)
-NO second message on Contact Queue!
-```
 
 ---
 
@@ -295,7 +195,8 @@ NO second message on Contact Queue!
 | #13-14 | AAD prefix, IV order | [Part 5](07_PART5_SESSION_8_BREAKTHROUGH.md) |
 | #15-16 | HSalsa20, A_CRYPTO | [Part 6](08_PART6_SESSION_9.md) |
 | #17 | cmNonce instead of msgId | [Part 7](09_PART7_SESSION_10.md) |
-| **#18** | **Reply Queue E2E — SOLVED!** | [**Part 14**](16_PART14_SESSION_17.md), [**Part 15**](17_PART15_SESSION_18.md) |
+| #18 | Reply Queue E2E — SOLVED! | [Part 15](17_PART15_SESSION_18.md) |
+| **#19** | **header_key_recv overwritten** | [**Part 16**](18_PART16_SESSION_19.md) |
 
 ---
 
@@ -305,4 +206,4 @@ This documentation is part of SimpleGo, licensed under AGPL-3.0.
 
 ---
 
-*Last updated: February 5, 2026 - Session 18 (🎉 BUG #18 SOLVED! E2E Decrypt SUCCESS!)*
+*Last updated: February 5, 2026 - Session 19 (Double Ratchet Header Decrypt SUCCESS!)*
