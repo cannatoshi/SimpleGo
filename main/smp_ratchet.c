@@ -45,6 +45,11 @@ static const char *TAG = "SMP_RATCH";
 
 static ratchet_state_t ratchet_state = {0};
 
+// Saved X3DH keys (before ratchet_init_sender modifies them)
+static uint8_t saved_x3dh_hk[32] = {0};   // hk = HKDF[0-31]
+static uint8_t saved_x3dh_nhk[32] = {0};  // nhk = HKDF[32-63]
+static bool saved_x3dh_valid = false;
+
 // ============== Helper Functions ==============
 
 static int hkdf_sha512(const uint8_t *salt, size_t salt_len,
@@ -221,6 +226,14 @@ bool ratchet_x3dh_sender(const uint8_t *peer_key1,
     printf("...\n");
 
     ESP_LOGI(TAG, "✅ X3DH complete - RootKey: %02x%02x...", ratchet_state.root_key[0], ratchet_state.root_key[1]);
+    
+    // 🐰 SAVE original X3DH keys before ratchet_init_sender can modify them!
+    memcpy(saved_x3dh_hk, ratchet_state.header_key_send, 32);
+    memcpy(saved_x3dh_nhk, ratchet_state.header_key_recv, 32);
+    saved_x3dh_valid = true;
+    ESP_LOGI(TAG, "📌 Saved X3DH keys: hk=%02x%02x..., nhk=%02x%02x...",
+             saved_x3dh_hk[0], saved_x3dh_hk[1], saved_x3dh_nhk[0], saved_x3dh_nhk[1]);
+    
     return true;
 }
 
@@ -736,3 +749,6 @@ int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
 
 ratchet_state_t *ratchet_get_state(void) { return &ratchet_state; }
 bool ratchet_is_initialized(void) { return ratchet_state.initialized; }
+
+const uint8_t *ratchet_get_saved_hk(void) { return saved_x3dh_valid ? saved_x3dh_hk : NULL; }
+const uint8_t *ratchet_get_saved_nhk(void) { return saved_x3dh_valid ? saved_x3dh_nhk : NULL; }

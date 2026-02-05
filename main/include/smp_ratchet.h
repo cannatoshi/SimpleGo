@@ -149,4 +149,11 @@ ratchet_state_t *ratchet_get_state(void);
  */
 bool ratchet_is_initialized(void);
 
+/**
+ * Get saved X3DH keys (captured before ratchet_init_sender modifies state)
+ * Returns NULL if X3DH hasn't run yet
+ */
+const uint8_t *ratchet_get_saved_hk(void);
+const uint8_t *ratchet_get_saved_nhk(void);
+
 #endif // SMP_RATCHET_H

@@ -24,6 +24,7 @@
 #include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/sha256.h"
+#include "mbedtls/gcm.h"  // Phase 2a: Header decrypt test
 
 #include "sodium.h"
 
@@ -920,22 +921,401 @@ static void smp_connect(void) {
                         }
                         printf("\n");
                         
-                        // Parse PrivHeader
-                        char priv_header = e2e_plain[0];
-                        ESP_LOGI(TAG, "      PrivHeader: '%c' (0x%02x)", priv_header, priv_header);
+                        // ================================================================
+                        // 🐰 SESSION 19: AgentConfirmation Full Parse
+                        // ================================================================
                         
-                        if (priv_header == '_') {
-                            ESP_LOGI(TAG, "      PHEmpty - AgentMsgEnvelope follows at offset 1");
-                        } else if (priv_header == 'K') {
-                            ESP_LOGI(TAG, "      PHConfirmation - sender auth key present");
-                        }
+                        // === SCHRITT 1: unPad ===
+                        uint16_t original_len = (e2e_plain[0] << 8) | e2e_plain[1];
+                        uint8_t *client_msg = e2e_plain + 2;  // Skip 2-byte length prefix
+                        ESP_LOGI(TAG, "");
+                        ESP_LOGI(TAG, "      ╔═══════════════════════════════════════════════════════╗");
+                        ESP_LOGI(TAG, "      ║  📦 SESSION 19: AgentConfirmation Full Parse           ║");
+                        ESP_LOGI(TAG, "      ╚═══════════════════════════════════════════════════════╝");
+                        ESP_LOGI(TAG, "      unPad: originalLength=%u, totalDecrypted=%d, padding=%d",
+                                 original_len, e2e_plain_len, e2e_plain_len - 2 - original_len);
                         
-                        // Check for EncRatchetMessage (0x7b prefix)
-                        int msg_offset = 1;
-                        if (e2e_plain[msg_offset] == 0x7b) {
-                            ESP_LOGI(TAG, "      Found EncRatchetMessage at offset %d!", msg_offset);
-                            ESP_LOGI(TAG, "      (Double Ratchet decrypt would go here)");
+                        // === SCHRITT 2: PrivHeader parsen ===
+                        uint8_t priv_tag = client_msg[0];
+                        ESP_LOGI(TAG, "      PrivHeader tag: 0x%02x '%c'", priv_tag, priv_tag);
+                        
+                        if (priv_tag == 'K') {  // PHConfirmation
+                            uint8_t key_len = client_msg[1];
+                            ESP_LOGI(TAG, "      PHConfirmation: Auth Key len=%u", key_len);
+                            ESP_LOG_BUFFER_HEX("Auth Key (Ed25519 SPKI)", &client_msg[2], key_len);
+                            
+                            size_t cm_offset = 2 + key_len;  // Nach dem Auth Key
+                            
+                            // === SCHRITT 3: AgentConfirmation parsen ===
+                            uint16_t agent_version = (client_msg[cm_offset] << 8) | client_msg[cm_offset+1];
+                            cm_offset += 2;
+                            
+                            char agent_tag = client_msg[cm_offset];
+                            cm_offset += 1;
+                            
+                            char maybe_tag = client_msg[cm_offset];
+                            cm_offset += 1;
+                            
+                            ESP_LOGI(TAG, "      === AgentConfirmation ===");
+                            ESP_LOGI(TAG, "      agentVersion: %u", agent_version);
+                            ESP_LOGI(TAG, "      Tag: '%c' (0x%02x) — erwartet 'C' (0x43)", agent_tag, agent_tag);
+                            ESP_LOGI(TAG, "      e2eEncryption_: '%c' (0x%02x) — '0'=Nothing, '1'=Just",
+                                     maybe_tag, maybe_tag);
+                            
+                            if (maybe_tag == '0') {
+                                ESP_LOGI(TAG, "      e2eEncryption_ = Nothing (X3DH bereits ausgetauscht)");
+                            } else if (maybe_tag == '1') {
+                                ESP_LOGW(TAG, "      e2eEncryption_ = Just — X448 Keys folgen! Parsing TODO!");
+                                // Für jetzt überspringen — wir loggen trotzdem die nächsten Bytes
+                                ESP_LOG_BUFFER_HEX("Next 32 bytes after maybe_tag", &client_msg[cm_offset], 32);
+                            } else {
+                                ESP_LOGE(TAG, "      ⚠️ Unexpected maybe_tag: 0x%02x '%c'",
+                                         maybe_tag, (maybe_tag >= 0x20 && maybe_tag < 0x7f) ? maybe_tag : '?');
+                                ESP_LOG_BUFFER_HEX("Context around maybe_tag", &client_msg[cm_offset - 4], 32);
+                            }
+                            
+                            // === SCHRITT 4: EncRatchetMessage parsen ===
+                            uint8_t em_header_len = client_msg[cm_offset];  // 1-byte len (v<3)
+                            cm_offset += 1;
+                            
+                            ESP_LOGI(TAG, "      === EncRatchetMessage ===");
+                            ESP_LOGI(TAG, "      emHeader Länge: %u (erwartet 123 = 0x7B)", em_header_len);
+                            
+                            if (em_header_len != 123) {
+                                ESP_LOGW(TAG, "      ⚠️ emHeader Länge != 123! Möglicherweise v3+ PQ-Mode (2-Byte Längen)?");
+                            }
+                            
+                            // EncMessageHeader innerhalb emHeader:
+                            uint8_t *em_header = &client_msg[cm_offset];
+                            uint16_t eh_version = (em_header[0] << 8) | em_header[1];
+                            ESP_LOGI(TAG, "      ehVersion (E2E Ratchet): %u", eh_version);
+                            
+                            if (eh_version >= 3) {
+                                ESP_LOGE(TAG, "      ⛔ ehVersion >= 3 — PQ-Mode! Parsing ändert sich! STOPP.");
+                            } else {
+                                ESP_LOG_BUFFER_HEX("ehIV (16 bytes)", &em_header[2], 16);
+                                ESP_LOG_BUFFER_HEX("ehAuthTag (16 bytes)", &em_header[18], 16);
+                                uint8_t eh_body_len = em_header[34];
+                                ESP_LOGI(TAG, "      ehBody Länge: %u (erwartet 88 = 0x58)", eh_body_len);
+                                ESP_LOG_BUFFER_HEX("ehBody (encrypted MsgHeader)", &em_header[35],
+                                                    eh_body_len > 88 ? 88 : eh_body_len);
+                                
+                                cm_offset += em_header_len;  // Skip gesamten emHeader
+                                
+                                // emAuthTag (16 bytes, raw)
+                                ESP_LOG_BUFFER_HEX("emAuthTag (16 bytes)", &client_msg[cm_offset], 16);
+                                cm_offset += 16;
+                                
+                                // emBody (Tail = Rest)
+                                size_t em_body_len = original_len - cm_offset;
+                                ESP_LOGI(TAG, "      emBody (encrypted ConnInfo): %zu bytes", em_body_len);
+                                ESP_LOG_BUFFER_HEX("emBody first 32 bytes", &client_msg[cm_offset], 32);
+                                
+                                ESP_LOGI(TAG, "");
+                                ESP_LOGI(TAG, "      ╔═══════════════════════════════════════════════════════╗");
+                                ESP_LOGI(TAG, "      ║  ✅ SESSION 19 PARSING COMPLETE                       ║");
+                                ESP_LOGI(TAG, "      ╚═══════════════════════════════════════════════════════╝");
+                                ESP_LOGI(TAG, "      Offset final: %zu / originalLength: %u",
+                                         cm_offset + em_body_len, (unsigned)original_len);
+                                ESP_LOGI(TAG, "      📋 SUMMARY:");
+                                ESP_LOGI(TAG, "         PrivHeader: 'K' (PHConfirmation)");
+                                ESP_LOGI(TAG, "         Auth Key: %u bytes Ed25519", key_len);
+                                ESP_LOGI(TAG, "         Agent v%u, Tag='%c', e2eEnc=%c",
+                                         agent_version, agent_tag, maybe_tag);
+                                ESP_LOGI(TAG, "         EncRatchet: ehVer=%u, ehBody=%u, emBody=%zu",
+                                         eh_version, eh_body_len, em_body_len);
+                                ESP_LOGI(TAG, "         🎯 Next: Double Ratchet Decrypt!");
+                                
+                                // ================================================================
+                                // 🐰 PHASE 2a: Header-Only Decrypt Test
+                                // Verifies X3DH keys + rcAD before attempting full decrypt
+                                // ================================================================
+                                ESP_LOGI(TAG, "");
+                                ESP_LOGI(TAG, "      ╔═══════════════════════════════════════════════════════╗");
+                                ESP_LOGI(TAG, "      ║  🐰 PHASE 2a: Ratchet Header Decrypt Test             ║");
+                                ESP_LOGI(TAG, "      ╚═══════════════════════════════════════════════════════╝");
+                                
+                                if (!ratchet_is_initialized()) {
+                                    ESP_LOGE(TAG, "      ❌ Ratchet NOT initialized! X3DH hasn't run yet?");
+                                    ESP_LOGE(TAG, "      (AgentConfirmation SEND must happen before we can decrypt)");
+                                } else {
+                                    ratchet_state_t *rs = ratchet_get_state();
+                                    
+                                    // === Schritt 1: rcAD Reihenfolge loggen ===
+                                    ESP_LOGI(TAG, "");
+                                    ESP_LOGI(TAG, "      === rcAD Construction ===");
+                                    ESP_LOGI(TAG, "      assoc_data[0-55] (first key in rcAD):");
+                                    printf("         ");
+                                    for (int i = 0; i < 56; i++) {
+                                        printf("%02x", rs->assoc_data[i]);
+                                        if ((i+1) % 32 == 0) printf("\n         ");
+                                    }
+                                    printf("\n");
+                                    ESP_LOGI(TAG, "      assoc_data[56-111] (second key in rcAD):");
+                                    printf("         ");
+                                    for (int i = 56; i < 112; i++) {
+                                        printf("%02x", rs->assoc_data[i]);
+                                        if ((i+1-56) % 32 == 0) printf("\n         ");
+                                    }
+                                    printf("\n");
+                                    ESP_LOGI(TAG, "      NOTE: Current code sets rcAD = our_key1 || peer_key1");
+                                    ESP_LOGI(TAG, "      Haskell expects: rcAD = joiner_key1 || creator_key1");
+                                    
+                                    // === Schritt 2: Header Key Zuordnung loggen ===
+                                    ESP_LOGI(TAG, "");
+                                    ESP_LOGI(TAG, "      === X3DH Output Keys ===");
+                                    ESP_LOGI(TAG, "      header_key_send (hk = HKDF[0-31]):");
+                                    printf("         ");
+                                    for (int i = 0; i < 32; i++) printf("%02x", rs->header_key_send[i]);
+                                    printf("\n");
+                                    ESP_LOGI(TAG, "      header_key_recv (nhk = HKDF[32-63]):");
+                                    printf("         ");
+                                    for (int i = 0; i < 32; i++) printf("%02x", rs->header_key_recv[i]);
+                                    printf("\n");
+                                    ESP_LOGI(TAG, "      root_key (rk = HKDF[64-95]):");
+                                    printf("         ");
+                                    for (int i = 0; i < 32; i++) printf("%02x", rs->root_key[i]);
+                                    printf("\n");
+                                    ESP_LOGI(TAG, "      chain_key_send:");
+                                    printf("         ");
+                                    for (int i = 0; i < 32; i++) printf("%02x", rs->chain_key_send[i]);
+                                    printf("\n");
+                                    ESP_LOGI(TAG, "      chain_key_recv:");
+                                    printf("         ");
+                                    for (int i = 0; i < 32; i++) printf("%02x", rs->chain_key_recv[i]);
+                                    printf("\n");
+                                    ESP_LOGI(TAG, "      CRITICAL: For RECEIVING peer's first msg:");
+                                    ESP_LOGI(TAG, "      Haskell says header_key for decrypt = hk (bytes 0-31)!");
+                                    ESP_LOGI(TAG, "      Our code uses header_key_recv = nhk (bytes 32-63)!");
+                                    
+                                    // === Schritt 3: Header Decrypt — 4 Kombinationen ===
+                                    ESP_LOGI(TAG, "");
+                                    ESP_LOGI(TAG, "      === Header Decrypt Attempts ===");
+                                    
+                                    uint8_t *eh_iv_ptr     = &em_header[2];    // 16 bytes
+                                    uint8_t *eh_tag_ptr    = &em_header[18];   // 16 bytes
+                                    uint8_t *eh_body_ptr   = &em_header[35];   // eh_body_len bytes
+                                    
+                                    ESP_LOGI(TAG, "      ehIV:  %02x%02x%02x%02x%02x%02x%02x%02x...",
+                                             eh_iv_ptr[0], eh_iv_ptr[1], eh_iv_ptr[2], eh_iv_ptr[3],
+                                             eh_iv_ptr[4], eh_iv_ptr[5], eh_iv_ptr[6], eh_iv_ptr[7]);
+                                    ESP_LOGI(TAG, "      ehTag: %02x%02x%02x%02x%02x%02x%02x%02x...",
+                                             eh_tag_ptr[0], eh_tag_ptr[1], eh_tag_ptr[2], eh_tag_ptr[3],
+                                             eh_tag_ptr[4], eh_tag_ptr[5], eh_tag_ptr[6], eh_tag_ptr[7]);
+                                    ESP_LOGI(TAG, "      ehBody (%u bytes): %02x%02x%02x%02x...",
+                                             eh_body_len,
+                                             eh_body_ptr[0], eh_body_ptr[1], eh_body_ptr[2], eh_body_ptr[3]);
+                                    
+                                    // Prepare swapped rcAD (peer_key1 || our_key1)
+                                    uint8_t rcAD_swapped[112];
+                                    memcpy(rcAD_swapped, rs->assoc_data + 56, 56);  // second → first
+                                    memcpy(rcAD_swapped + 56, rs->assoc_data, 56);  // first → second
+                                    
+                                    uint8_t header_plain[128];
+                                    mbedtls_gcm_context gcm;
+                                    int hdr_ret;
+                                    bool header_decrypted = false;
+                                    
+                                    // ---- Try 1: header_key_recv + normal rcAD ----
+                                    ESP_LOGI(TAG, "");
+                                    ESP_LOGI(TAG, "      [Try 1] header_key_recv + rcAD (our||peer)");
+                                    mbedtls_gcm_init(&gcm);
+                                    mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, rs->header_key_recv, 256);
+                                    hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
+                                                eh_iv_ptr, 16, rs->assoc_data, 112,
+                                                eh_tag_ptr, 16, eh_body_ptr, header_plain);
+                                    mbedtls_gcm_free(&gcm);
+                                    ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
+                                    if (hdr_ret == 0) header_decrypted = true;
+                                    
+                                    // ---- Try 2: header_key_send + normal rcAD ----
+                                    if (!header_decrypted) {
+                                        ESP_LOGI(TAG, "      [Try 2] header_key_send + rcAD (our||peer)");
+                                        mbedtls_gcm_init(&gcm);
+                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, rs->header_key_send, 256);
+                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
+                                                    eh_iv_ptr, 16, rs->assoc_data, 112,
+                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
+                                        mbedtls_gcm_free(&gcm);
+                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
+                                        if (hdr_ret == 0) header_decrypted = true;
+                                    }
+                                    
+                                    // ---- Try 3: header_key_recv + SWAPPED rcAD ----
+                                    if (!header_decrypted) {
+                                        ESP_LOGI(TAG, "      [Try 3] header_key_recv + rcAD SWAPPED (peer||our)");
+                                        mbedtls_gcm_init(&gcm);
+                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, rs->header_key_recv, 256);
+                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
+                                                    eh_iv_ptr, 16, rcAD_swapped, 112,
+                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
+                                        mbedtls_gcm_free(&gcm);
+                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
+                                        if (hdr_ret == 0) header_decrypted = true;
+                                    }
+                                    
+                                    // ---- Try 4: header_key_send + SWAPPED rcAD ----
+                                    if (!header_decrypted) {
+                                        ESP_LOGI(TAG, "      [Try 4] header_key_send + rcAD SWAPPED (peer||our)");
+                                        mbedtls_gcm_init(&gcm);
+                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, rs->header_key_send, 256);
+                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
+                                                    eh_iv_ptr, 16, rcAD_swapped, 112,
+                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
+                                        mbedtls_gcm_free(&gcm);
+                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
+                                        if (hdr_ret == 0) header_decrypted = true;
+                                    }
+                                    
+                                    // ---- Tries 5-8: SAVED original X3DH keys ----
+                                    const uint8_t *orig_hk = ratchet_get_saved_hk();
+                                    const uint8_t *orig_nhk = ratchet_get_saved_nhk();
+                                    
+                                    if (orig_hk && orig_nhk && !header_decrypted) {
+                                        ESP_LOGI(TAG, "");
+                                        ESP_LOGI(TAG, "      === Trying SAVED X3DH keys ===");
+                                        ESP_LOGI(TAG, "      saved_hk:  %02x%02x%02x%02x%02x%02x%02x%02x...",
+                                                 orig_hk[0], orig_hk[1], orig_hk[2], orig_hk[3],
+                                                 orig_hk[4], orig_hk[5], orig_hk[6], orig_hk[7]);
+                                        ESP_LOGI(TAG, "      saved_nhk: %02x%02x%02x%02x%02x%02x%02x%02x...",
+                                                 orig_nhk[0], orig_nhk[1], orig_nhk[2], orig_nhk[3],
+                                                 orig_nhk[4], orig_nhk[5], orig_nhk[6], orig_nhk[7]);
+                                        ESP_LOGI(TAG, "      curr hk_s: %02x%02x%02x%02x...",
+                                                 rs->header_key_send[0], rs->header_key_send[1],
+                                                 rs->header_key_send[2], rs->header_key_send[3]);
+                                        ESP_LOGI(TAG, "      curr hk_r: %02x%02x%02x%02x...",
+                                                 rs->header_key_recv[0], rs->header_key_recv[1],
+                                                 rs->header_key_recv[2], rs->header_key_recv[3]);
+                                        bool hk_changed = (memcmp(orig_hk, rs->header_key_send, 32) != 0);
+                                        bool nhk_changed = (memcmp(orig_nhk, rs->header_key_recv, 32) != 0);
+                                        ESP_LOGW(TAG, "      hk changed since X3DH: %s", hk_changed ? "YES ⚠️" : "no");
+                                        ESP_LOGW(TAG, "      nhk changed since X3DH: %s", nhk_changed ? "YES ⚠️" : "no");
+                                        
+                                        // ---- Try 5: saved_nhk + normal rcAD ----
+                                        ESP_LOGI(TAG, "      [Try 5] saved_nhk + rcAD (our||peer)");
+                                        mbedtls_gcm_init(&gcm);
+                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, orig_nhk, 256);
+                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
+                                                    eh_iv_ptr, 16, rs->assoc_data, 112,
+                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
+                                        mbedtls_gcm_free(&gcm);
+                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
+                                        if (hdr_ret == 0) header_decrypted = true;
+                                    }
+                                    
+                                    if (orig_hk && orig_nhk && !header_decrypted) {
+                                        // ---- Try 6: saved_hk + normal rcAD ----
+                                        ESP_LOGI(TAG, "      [Try 6] saved_hk + rcAD (our||peer)");
+                                        mbedtls_gcm_init(&gcm);
+                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, orig_hk, 256);
+                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
+                                                    eh_iv_ptr, 16, rs->assoc_data, 112,
+                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
+                                        mbedtls_gcm_free(&gcm);
+                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
+                                        if (hdr_ret == 0) header_decrypted = true;
+                                    }
+                                    
+                                    if (orig_hk && orig_nhk && !header_decrypted) {
+                                        // ---- Try 7: saved_nhk + SWAPPED rcAD ----
+                                        ESP_LOGI(TAG, "      [Try 7] saved_nhk + rcAD SWAPPED (peer||our)");
+                                        mbedtls_gcm_init(&gcm);
+                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, orig_nhk, 256);
+                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
+                                                    eh_iv_ptr, 16, rcAD_swapped, 112,
+                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
+                                        mbedtls_gcm_free(&gcm);
+                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
+                                        if (hdr_ret == 0) header_decrypted = true;
+                                    }
+                                    
+                                    if (orig_hk && orig_nhk && !header_decrypted) {
+                                        // ---- Try 8: saved_hk + SWAPPED rcAD ----
+                                        ESP_LOGI(TAG, "      [Try 8] saved_hk + rcAD SWAPPED (peer||our)");
+                                        mbedtls_gcm_init(&gcm);
+                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, orig_hk, 256);
+                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
+                                                    eh_iv_ptr, 16, rcAD_swapped, 112,
+                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
+                                        mbedtls_gcm_free(&gcm);
+                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
+                                        if (hdr_ret == 0) header_decrypted = true;
+                                    }
+                                    
+                                    if (!orig_hk || !orig_nhk) {
+                                        ESP_LOGE(TAG, "      ⚠️ Saved X3DH keys NOT available — X3DH didn't run?");
+                                    }
+                                    
+                                    // === Ergebnis ===
+                                    ESP_LOGI(TAG, "");
+                                    if (header_decrypted) {
+                                        ESP_LOGI(TAG, "      ╔═══════════════════════════════════════════════════════╗");
+                                        ESP_LOGI(TAG, "      ║  🎉 HEADER DECRYPT SUCCESS!                           ║");
+                                        ESP_LOGI(TAG, "      ╚═══════════════════════════════════════════════════════╝");
+                                        
+                                        // Parse MsgHeader
+                                        uint16_t hdr_content_len = (header_plain[0] << 8) | header_plain[1];
+                                        uint16_t hdr_msg_version = (header_plain[2] << 8) | header_plain[3];
+                                        uint8_t hdr_key_len = header_plain[4];
+                                        
+                                        ESP_LOGI(TAG, "      MsgHeader contentLen: %u", hdr_content_len);
+                                        ESP_LOGI(TAG, "      MsgHeader version: %u", hdr_msg_version);
+                                        ESP_LOGI(TAG, "      MsgHeader DH key len: %u (expect 68 = SPKI)", hdr_key_len);
+                                        
+                                        if (hdr_key_len == 68) {
+                                            // SPKI header at [5..16], raw X448 key at [17..72]
+                                            ESP_LOGI(TAG, "      Peer DH SPKI: %02x%02x%02x%02x...",
+                                                     header_plain[5], header_plain[6], header_plain[7], header_plain[8]);
+                                            ESP_LOGI(TAG, "      Peer DH Key (X448): ");
+                                            printf("         ");
+                                            for (int i = 17; i < 73; i++) printf("%02x", header_plain[i]);
+                                            printf("\n");
+                                        }
+                                        
+                                        uint32_t hdr_pn = (header_plain[73] << 24) | (header_plain[74] << 16) |
+                                                          (header_plain[75] << 8)  | header_plain[76];
+                                        uint32_t hdr_ns = (header_plain[77] << 24) | (header_plain[78] << 16) |
+                                                          (header_plain[79] << 8)  | header_plain[80];
+                                        ESP_LOGI(TAG, "      PN (prev chain): %u", hdr_pn);
+                                        ESP_LOGI(TAG, "      Ns (msg number): %u", hdr_ns);
+                                        
+                                        ESP_LOGI(TAG, "      Full MsgHeader (88 bytes):");
+                                        printf("         ");
+                                        for (int i = 0; i < 88; i++) {
+                                            printf("%02x", header_plain[i]);
+                                            if ((i+1) % 32 == 0) printf("\n         ");
+                                        }
+                                        printf("\n");
+                                        
+                                        ESP_LOGI(TAG, "      🎯 Next: Phase 2b — Full Body Decrypt!");
+                                    } else {
+                                        ESP_LOGE(TAG, "      ╔═══════════════════════════════════════════════════════╗");
+                                        ESP_LOGE(TAG, "      ║  ❌ ALL 8 HEADER DECRYPT ATTEMPTS FAILED              ║");
+                                        ESP_LOGE(TAG, "      ╚═══════════════════════════════════════════════════════╝");
+                                        ESP_LOGE(TAG, "      Possible causes:");
+                                        ESP_LOGE(TAG, "      1. X3DH DH computation wrong (byte order?)");
+                                        ESP_LOGE(TAG, "      2. HKDF info string wrong");
+                                        ESP_LOGE(TAG, "      3. HKDF output assignment wrong (hk/nhk/rk)");
+                                        ESP_LOGE(TAG, "      4. rcAD key order wrong");
+                                        ESP_LOGE(TAG, "      5. 16-byte IV not compatible (standard GCM uses 12)");
+                                        ESP_LOGE(TAG, "      6. X3DH keys from PEER side differ (asymmetric X3DH)");
+                                        ESP_LOGE(TAG, "      Need to compare X3DH intermediate values with Python!");
+                                    }
+                                }
+                                // ================================================================
+                                // END PHASE 2a
+                                // ================================================================
+                            }
+                            
+                        } else if (priv_tag == '_') {  // PHEmpty
+                            ESP_LOGI(TAG, "      PHEmpty — kein Auth Key, AgentMsgEnvelope folgt ab offset 1");
+                        } else {
+                            ESP_LOGE(TAG, "      UNBEKANNTER PrivHeader: 0x%02x '%c'",
+                                     priv_tag, (priv_tag >= 0x20 && priv_tag < 0x7f) ? priv_tag : '?');
                         }
+                        // ================================================================
+                        // END SESSION 19 PARSING
+                        // ================================================================
                         
                     } else {
                         ESP_LOGE(TAG, "      ❌ E2E DECRYPT FAILED (ret=%d)", decrypt_ret);
