@@ -748,7 +748,7 @@ int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
 // ============== Decrypt Body (Phase 2b — Session 20) ==============
 // Called after header decrypt succeeded in main.c Phase 2a.
 // Performs DH Ratchet Step (recv + send) → Chain KDF → AES-GCM Body Decrypt → unPad.
-// Currently: LOGS all intermediate values, does NOT update ratchet state.
+// Session 21: State update ACTIVE — writes new keys/counters to ratchet_state.
 
 int ratchet_decrypt_body(const uint8_t *peer_new_pub,
                          uint32_t msg_pn, uint32_t msg_ns,
@@ -956,19 +956,49 @@ int ratchet_decrypt_body(const uint8_t *peer_new_pub,
     }
 
     // ================================================================
-    // SCHRITT 6: State Update — NUR LOGGEN!
+    // SCHRITT 6: State Update — AKTIV!
     // ================================================================
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "   === SCHRITT 6: State Update (LOG ONLY — not applied) ===");
-    ESP_LOGI(TAG, "   Would update:");
+    ESP_LOGI(TAG, "   === SCHRITT 6: State Update (ACTIVE) ===");
+    ESP_LOGI(TAG, "   Updating ratchet state:");
     ESP_LOGI(TAG, "     root_key        → new_root_key_2");
     ESP_LOGI(TAG, "     chain_key_recv  → next_chain_key");
     ESP_LOGI(TAG, "     chain_key_send  → send_chain_key");
     ESP_LOGI(TAG, "     header_key_recv → new_nhk_recv (for NEXT msg)");
+    ESP_LOGI(TAG, "     header_key_send → new_nhk_send (for NEXT msg)");
     ESP_LOGI(TAG, "     dh_self         → new_dh_self");
     ESP_LOGI(TAG, "     dh_peer         → peer_new_pub");
     ESP_LOGI(TAG, "     msg_num_recv    → %u", msg_ns + 1);
-    ESP_LOGW(TAG, "   ⚠️ STATE NOT UPDATED — enable after body decrypt confirmed!");
+    ESP_LOGI(TAG, "     msg_num_send    → 0 (reset after DH ratchet)");
+
+    // Log old values for debugging
+    printf("   OLD root_key:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
+    printf("   OLD dh_self.pub:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("...\n");
+    printf("   OLD hk_recv:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
+    printf("   OLD hk_send:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
+
+    // Apply state updates
+    memcpy(ratchet_state.root_key, new_root_key_2, 32);
+    memcpy(ratchet_state.chain_key_recv, next_chain_key, 32);
+    memcpy(ratchet_state.chain_key_send, send_chain_key, 32);
+    memcpy(ratchet_state.header_key_recv, new_nhk_recv, 32);
+    memcpy(ratchet_state.header_key_send, new_nhk_send, 32);
+    memcpy(ratchet_state.dh_self.private_key, new_dh_self.private_key, 56);
+    memcpy(ratchet_state.dh_self.public_key, new_dh_self.public_key, 56);
+    memcpy(ratchet_state.dh_peer, peer_new_pub, 56);
+    ratchet_state.msg_num_recv = msg_ns + 1;
+    ratchet_state.prev_chain_len = ratchet_state.msg_num_send;  // Save old send count for PN
+    ratchet_state.msg_num_send = 0;  // Reset nach DH Ratchet
+
+    // Log new values for verification
+    printf("   NEW root_key:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
+    printf("   NEW dh_self.pub:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("...\n");
+    printf("   NEW hk_recv:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
+    printf("   NEW hk_send:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
+    printf("   NEW ck_recv:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_recv[i]); printf("...\n");
+    printf("   NEW ck_send:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_send[i]); printf("...\n");
+    ESP_LOGI(TAG, "   ✅ State updated! msg_num_recv=%u, msg_num_send=%u, prev_chain_len=%u",
+             ratchet_state.msg_num_recv, ratchet_state.msg_num_send, ratchet_state.prev_chain_len);
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔═══════════════════════════════════════════════════════╗");
