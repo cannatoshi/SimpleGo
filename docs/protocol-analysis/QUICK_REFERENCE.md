@@ -2,31 +2,34 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-05 - Session 19 (Double Ratchet Header Decrypt SUCCESS!)**
+**Updated: 2026-02-06 - Session 20 (Body Decrypt SUCCESS! Peer Profile Read!)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 19 - DOUBLE RATCHET HEADER DECRYPT SUCCESS!
-====================================================
+SESSION 20 - BODY DECRYPT SUCCESS! PEER PROFILE READ ON ESP32!
+================================================================
 
-Three new layers discovered:
-  1. unPad Layer — [2B len][content][padding 0x23...]
-  2. ClientMessage Layer — PrivHeader + AgentMsgEnvelope
-  3. EncRatchetMessage Layer — Double Ratchet Header-Decrypt
+Complete crypto chain working end-to-end:
+  TLS 1.3 → SMP Transport → Server Decrypt → E2E Decrypt → unPad
+  → ClientMessage → EncRatchetMessage → Header Decrypt (AES-GCM)
+  → DH Ratchet Step (2× rootKdf) → Chain KDF → Body Decrypt (AES-GCM)
+  → unPad → AgentConnInfo 'I' → Zstd Decompress → Peer Profile JSON
 
-MsgHeader fully parsed:
-  - msgMaxVersion: 3 (Peer supports PQ)
-  - DH Key: 68 bytes X448 SPKI
-  - PN: 0, Ns: 0 (first message)
+Peer profile read: "displayName": "cannatoshi" on an ESP32!
 
-Key insight: nhk (HKDF[32-63]) = header_key_recv
+Bug #19: FIXED! Root cause: debug self-decrypt in smp_peer.c:347
 
-Bug #19: header_key_recv overwritten (workaround: saved_nhk)
+New discoveries:
+  - DH Ratchet Step = 2× rootKdf (recv chain + send chain)
+  - iv1 = Body IV, iv2 = Header IV (correction!)
+  - ConnInfo: 'I' = AgentConnInfo (profile), 'D' = AgentConnInfoReply
+  - Zstd compression: 'X' marker, '1'=compressed, '0'=passthrough
+  - XInfo Profile JSON: event "x.info", version range "1-16"
 
-Next: Fix Bug #19, DH Ratchet Step, Body Decrypt
+Next: HELLO processing, Ratchet State Persistence, Bidirectional Messaging
 ```
 
 ---
@@ -39,10 +42,12 @@ Next: Fix Bug #19, DH Ratchet Step, Body Decrypt
 4. [Wire Formats](#4-wire-formats)
 5. [HKDF Chain](#5-hkdf-chain)
 6. [Verified Byte-Map](#6-verified-byte-map)
-7. [Decryption Chain](#7-complete-decryption-chain)
+7. [Complete Decryption Chain](#7-complete-decryption-chain)
 8. [Crypto Functions](#8-crypto-functions)
 9. [Working Code State](#9-working-code-state)
 10. [Evgeny Quotes](#10-evgeny-quotes)
+11. [Session 19 Key Insights Summary](#11-session-19-key-insights-summary)
+12. [Session 20 Key Insights Summary](#12-session-20-key-insights-summary)
 
 ---
 
@@ -69,8 +74,8 @@ Next: Fix Bug #19, DH Ratchet Step, Body Decrypt
 | Poly1305 MAC | 16 | Authentication tag |
 | AES-GCM AuthTag | 16 | Authentication tag |
 | AES-GCM IV | **16** | NOT 12! SimpleX uses 16-byte IV |
-| Payload AAD | **235** | NO prefix! |
-| rcAD | 112 | our_key1 \|\| peer_key1 |
+| Payload AAD | **235** | NO prefix! (112 + 123) |
+| rcAD | 112 | our_key1 \|\| peer_key1 (raw X448, no ASN.1) |
 
 ---
 
@@ -110,9 +115,9 @@ From Protocol.hs:1093-1098:
 
 ---
 
-## 4. Wire Formats (Verified Session 19)
+## 4. Wire Formats (Verified Session 19-20)
 
-### 4.1 unPad Layer (NEW!)
+### 4.1 unPad Layer (Session 19)
 
 ```
 [0..1]           originalLength (Word16 Big-Endian)
@@ -180,9 +185,57 @@ Ns                4 bytes          Word32 BE (message number in chain)
 Padding           fill to 88       0x23 ('#')
 ```
 
+### 4.7 ConnInfo Tags (Session 20 — NEW!)
+
+| Tag | Hex | Constructor | Who Sends | Content |
+|-----|-----|-------------|-----------|---------|
+| `'I'` | 0x49 | AgentConnInfo | Any sender on Reply Queue | Profile only |
+| `'D'` | 0x44 | AgentConnInfoReply | Joiner on Contact Queue | SMP Queues + Profile |
+
+```
+AgentConnInfo:      'I' <Tail connInfo>
+AgentConnInfoReply: 'D' <smpQueues> <Tail connInfo>
+```
+
+### 4.8 Compressed ConnInfo Format (Session 20 — NEW!)
+
+```
+ConnInfo = 'I' <compressed_batch>
+
+compressed_batch:
+  'X' (0x58)                    — Compressed marker
+  <Word16 BE count>             — NonEmpty list count
+  For each item:
+    '0' <Tail data>             — Passthrough (≤180 bytes, no compression)
+    '1' <Word16 BE len> <data>  — Zstd compressed
+
+Zstd Frame Magic: 28 b5 2f fd (little-endian: 0xFD2FB528)
+Max decompressed: 65,536 bytes
+Standard Zstd Level 3, no dictionary
+```
+
+### 4.9 XInfo Profile JSON (Session 20 — NEW!)
+
+```json
+{
+  "v": "1-16",           // Chat protocol version range
+  "event": "x.info",     // XInfo Profile event type
+  "params": {
+    "profile": {
+      "displayName": "...",
+      "fullName": "...",
+      "shortDescr": "...",
+      "image": "data:image/jpg;base64,...",
+      "contactLink": "https://...",
+      "preferences": { ... }
+    }
+  }
+}
+```
+
 ---
 
-## 5. HKDF Chain (Verified Session 19)
+## 5. HKDF Chain (Verified Session 19-20)
 
 ### 5.1 HKDF #1: X3DH Initial
 
@@ -196,49 +249,77 @@ Output: 96 bytes
   [64-95]  sk  = root_key (input for Root KDF)
 ```
 
-### 5.2 HKDF #2/#4: Root KDF
+### 5.2 HKDF #2: Root KDF Recv (Session 20 — VERIFIED!)
 
 ```
-Salt:   sk (32 bytes, Root Key)
-IKM:    DH(Peer_ratchet_pub, Our_sk2) [56 bytes X448]
+Salt:   sk (32 bytes, Root Key from X3DH)
+IKM:    DH(peer_new_pub, our_old_priv) [56 bytes X448]
 Info:   "SimpleXRootRatchet"
 Output: 96 bytes
-  [0-31]   rk'  = new root_key
-  [32-63]  ck   = chain_key_recv
+  [0-31]   rk1  = new_root_key_1 (input for Root KDF Send)
+  [32-63]  ck   = recv_chain_key
   [64-95]  nhk' = next_header_key_recv
 ```
 
-### 5.3 HKDF #3/#6: Chain KDF
+### 5.3 HKDF #3: Root KDF Send (Session 20 — NEW!)
+
+```
+Salt:   rk1 (32 bytes, from HKDF #2)
+IKM:    DH(peer_new_pub, our_NEW_priv) [56 bytes X448]
+Info:   "SimpleXRootRatchet"
+Output: 96 bytes
+  [0-31]   rk2  = new_root_key_2 (final root key)
+  [32-63]  ck   = send_chain_key
+  [64-95]  nhk' = next_header_key_send
+```
+
+### 5.4 HKDF #4: Chain KDF Recv (Session 20 — VERIFIED!)
 
 ```
 Salt:   "" (empty!)
-IKM:    ck (32 bytes, Chain Key)
+IKM:    ck (32 bytes, recv_chain_key from HKDF #2)
 Info:   "SimpleXChainRatchet"
 Output: 96 bytes
   [0-31]   ck'  = next chain_key
   [32-63]  mk   = message_key (for body decrypt)
-  [64-79]  iv1  = header_iv
-  [80-95]  iv2  = message_iv
+  [64-79]  iv1  = BODY IV (NOT header!)
+  [80-95]  iv2  = header IV (ignored during decrypt)
 ```
 
-### 5.4 Key Assignment Summary
+### 5.5 Key Assignment Summary (Updated Session 20)
 
-| HKDF | Output | Bytes | Name | Usage |
-|------|--------|-------|------|-------|
-| X3DH | Block 1 | [0-31] | hk | Peer decrypts our headers |
-| X3DH | Block 2 | [32-63] | **nhk** | **WE decrypt peer's headers** |
-| X3DH | Block 3 | [64-95] | sk | Input for Root KDF |
-| Root | Block 1 | [0-31] | rk' | New root key |
-| Root | Block 2 | [32-63] | ck | Chain key for receive |
-| Root | Block 3 | [64-95] | nhk' | Next header key |
-| Chain | Block 1 | [0-31] | ck' | Next chain key |
-| Chain | Block 2 | [32-63] | mk | Message key |
-| Chain | Block 3a | [64-79] | iv1 | Header IV |
-| Chain | Block 3b | [80-95] | iv2 | Message IV |
+| HKDF # | Output | Bytes | Name | Usage | Verified |
+|--------|--------|-------|------|-------|----------|
+| X3DH #1 | Block 1 | [0-31] | hk | Peer decrypts our headers | S19 |
+| X3DH #1 | Block 2 | [32-63] | nhk | WE decrypt peer's headers | S19 |
+| X3DH #1 | Block 3 | [64-95] | sk | Input for Root KDF | S19 |
+| Root #2 | Block 1 | [0-31] | rk1 | Input for Root KDF Send | S20 |
+| Root #2 | Block 2 | [32-63] | ck_recv | Recv chain key | S20 |
+| Root #2 | Block 3 | [64-95] | nhk_recv | Next header key recv | S20 |
+| Root #3 | Block 1 | [0-31] | rk2 | New root key (final) | S20 |
+| Root #3 | Block 2 | [32-63] | ck_send | Send chain key | S20 |
+| Root #3 | Block 3 | [64-95] | nhk_send | Next header key send | S20 |
+| Chain #4 | Block 1 | [0-31] | ck' | Next recv chain key | S20 |
+| Chain #4 | Block 2 | [32-63] | mk | Message key (body decrypt) | S20 |
+| Chain #4 | Block 3a | [64-79] | iv1 | **Body IV** (NOT header!) | S20 |
+| Chain #4 | Block 3b | [80-95] | iv2 | Header IV (ignored in decrypt) | S20 |
+
+### 5.6 iv1/iv2 Clarification (Session 20 CORRECTION)
+
+```
+ENCRYPT uses both:
+  iv1 → body encryption IV
+  iv2 → header encryption IV
+
+DECRYPT uses only iv1:
+  iv1 → body decryption IV
+  Header IV comes from ehIV in the wire format (EncMessageHeader)
+  iv2 is IGNORED during decrypt
+```
 
 ---
 
-## 6. Verified Byte-Map (Reply Queue AgentConfirmation, Session 19)
+## 6. Verified Byte-Map (Updated Session 20)
 
 ### 6.1 Level 1: E2E Plaintext (15904 Bytes)
 
@@ -281,9 +362,34 @@ Ns                0 (Message #0)                  ✅
 Padding           0x23 ('#')                      ✅
 ```
 
+### 6.4 Level 4: Body Decrypt Intermediate Values (Session 20 — NEW!)
+
+```
+root_key:        b0d3fd0e76379553d10718617a973bc69a289c8381ff608f7d1057f292df90dd
+dh_secret_recv:  9a66056fff2882bb4690a098ca000b8ac69a0283790ffbfbbb630c20ba3061b1...
+new_root_key_1:  82190a059a10b8097355b6a612a1ef21a18b0f46c5ed4c8e066f9c97b90d1e97
+recv_chain_key:  747dcc01aa665f0d85295950fdbc4b2fa398cd90615a8f9259efd62ba6318ef5
+message_key:     ea8461db5d92ce9f70474bae4d241bca2a99d87cac4ccd48d0af177019b8d44d
+iv_body:         a187e7d0636a7e54902a607b05dfbdd8
+```
+
+### 6.5 Level 5: ConnInfo Parse (Session 20 — NEW!)
+
+```
+Offset  Hex    Field                         Status
+[0]     49     'I' — AgentConnInfo Tag       ✅
+[1]     58     'X' — Compressed marker       ✅
+[2]     01     NonEmpty count: 1             ✅
+[3]     31     '1' — Zstd compressed         ✅
+[4-5]   22 b1  Zstd data length: 8881       ✅
+[6-8886]       Zstd compressed data          ✅
+
+After Zstd decompress: 12268 bytes JSON     ✅
+```
+
 ---
 
-## 7. Complete Decryption Chain (Updated Session 19)
+## 7. Complete Decryption Chain (Updated Session 20)
 
 ```
 Layer 0: TLS 1.3 (mbedTLS)                                    ✅ Working
@@ -308,20 +414,31 @@ Layer 4: EncRatchetMessage Parse                               ✅ Working (S19)
   ↓ emHeader: [version 2B][ehIV 16B][ehAuthTag 16B][ehBody len 1B][ehBody 88B]
   ↓
 Layer 5: Double Ratchet Header Decrypt                         ✅ Working (S19)
-  ↓ Key: saved_nhk (HKDF[32-63] from X3DH)
+  ↓ Key: header_key_recv (nhk from X3DH HKDF[32-63])
   ↓ IV: ehIV (16 bytes)
   ↓ AAD: rcAD (112 bytes = our_key1 || peer_key1)
   ↓ Output: MsgHeader (79 bytes content + 9 bytes header/padding)
   ↓
-Layer 6: Double Ratchet Body Decrypt                           ⏳ Next Step
-  ↓ Need: DH Ratchet Step → Root KDF → Chain KDF → message_key
-  ↓ Input: emBody (14832 bytes)
-  ↓ AAD: rcAD || emHeader (112 + 123 = 235 bytes)
+Layer 6: Double Ratchet Body Decrypt                           ✅ Working (S20)
+  ↓ DH Ratchet Step: 2× rootKdf → recv_chain_key
+  ↓ Chain KDF: → message_key + iv_body
+  ↓ AES-256-GCM: key=message_key, iv=iv_body, AAD=rcAD||emHeader
+  ↓ Output: 8889 bytes → unPad → 8887 bytes plaintext
   ↓
-Layer 7: ConnInfo Parse                                        ⏳ After L6
-  ↓ AgentConnInfoReply with peer's SMP Queues
+Layer 7: ConnInfo Parse                                        ✅ Working (S20)
+  ↓ Tag: 'I' = AgentConnInfo (peer profile)
+  ↓ 'X' compressed batch → Zstd decompress
+  ↓ Output: 12268 bytes JSON
   ↓
-Layer 8: Connection Established                                ⏳ Final Goal
+Layer 8: Peer Profile                                          ✅ Working (S20)
+  ↓ event: "x.info" — XInfo Profile
+  ↓ displayName: "cannatoshi"
+  ↓ Full profile with image, preferences, contact link
+  ↓
+Layer 9: Connection Established                                ⏳ Next Step
+  ↓ Need: Process HELLO message
+  ↓ Need: Send HELLO back
+  ↓ Need: Bidirectional messaging
 ```
 
 ---
@@ -331,7 +448,7 @@ Layer 8: Connection Established                                ⏳ Final Goal
 ### 8.1 Header Decrypt (Verified Session 19)
 
 ```c
-// Key: saved_nhk (HKDF[32-63] from X3DH)
+// Key: header_key_recv (nhk from X3DH HKDF[32-63])
 // IV: ehIV (16 bytes from EncMessageHeader)
 // AAD: rcAD (112 bytes = our_key1 || peer_key1)
 // Ciphertext: ehBody (88 bytes)
@@ -351,14 +468,47 @@ int ret = mbedtls_gcm_auth_decrypt(
 );
 ```
 
-### 8.2 Body Decrypt (Next Step)
+### 8.2 Body Decrypt (Verified Session 20)
 
 ```c
-// Key: message_key (from Chain KDF)
-// IV: iv2 (Chain KDF output [80-95])
-// AAD: rcAD || emHeader (112 + 123 = 235 bytes)
+// Step 1: DH Ratchet Recv
+// dh_secret = X448_DH(peer_new_pub, our_old_priv)
+// HKDF(salt=root_key, ikm=dh_secret, info="SimpleXRootRatchet")
+// → new_root_key_1, recv_chain_key, new_nhk_recv
+
+// Step 2: DH Ratchet Send
+// Generate new keypair (our_new_priv, our_new_pub)
+// dh_secret = X448_DH(peer_new_pub, our_new_priv)
+// HKDF(salt=new_root_key_1, ikm=dh_secret, info="SimpleXRootRatchet")
+// → new_root_key_2, send_chain_key, new_nhk_send
+
+// Step 3: Chain KDF
+// HKDF(salt="", ikm=recv_chain_key, info="SimpleXChainRatchet")
+// → next_recv_ck, message_key, iv_body, (iv_header ignored)
+
+// Step 4: AES-GCM Decrypt
+// Key: message_key (32 bytes from Chain KDF [32-63])
+// IV: iv_body (16 bytes from Chain KDF [64-79])
+// AAD: rcAD[112] || emHeader[123] = 235 bytes
 // Ciphertext: emBody (14832 bytes)
 // AuthTag: emAuthTag (16 bytes)
+
+int ret = mbedtls_gcm_auth_decrypt(
+    &gcm_ctx,
+    emBody_len,            // 14832 bytes
+    iv_body,               // 16-byte IV from Chain KDF
+    16,                    // IV length
+    payload_aad,           // 235-byte AAD (rcAD || emHeader)
+    235,                   // AAD length
+    emAuthTag,             // 16-byte auth tag
+    16,                    // tag length
+    emBody,                // ciphertext
+    decrypted              // output plaintext
+);
+
+// Step 5: unPad
+// msg_len = BE_uint16(decrypted[0..1])
+// plaintext = decrypted[2 .. 2+msg_len-1]
 ```
 
 ### 8.3 SimpleX Custom XSalsa20 (Session 16)
@@ -381,14 +531,22 @@ em_header[hp++] = 0x58;         // ehBody-len = 88 (1 BYTE!)
 output[p++] = 0x7B;             // emHeader len = 123
 ```
 
-### 9.2 Key Preservation (Bug #19 Workaround)
+### 9.2 Bug #19 Fix (Session 20)
 
 ```c
-// Save nhk immediately after X3DH HKDF
-uint8_t saved_nhk[32];
-memcpy(saved_nhk, &x3dh_output[32], 32);
+// REMOVED from smp_peer.c:343-359:
+// Debug self-decrypt test that called ratchet_decrypt() on own message
+// This corrupted header_key_recv, root_key, chain_key_recv, dh_peer
 
-// Use saved_nhk for header decrypt instead of header_key_recv
+// saved_nhk workaround in smp_ratchet.c kept as safety net but no longer needed
+```
+
+### 9.3 ratchet_decrypt_body() (Session 20 — NEW!)
+
+```c
+// ~300 lines in smp_ratchet.c
+// Implements: DH Ratchet Step (2× rootKdf) + Chain KDF + AES-GCM Decrypt + unPad
+// State update: LOG ONLY (not yet activated for production)
 ```
 
 ---
@@ -427,7 +585,22 @@ memcpy(saved_nhk, &x3dh_output[32], 32);
 
 ---
 
-*Quick Reference v13.0*  
-*Last updated: February 5, 2026 - Session 19*  
-*Status: Double Ratchet Header Decrypt SUCCESS!*  
-*Next: Fix Bug #19, DH Ratchet Step, Body Decrypt*
+## 12. Session 20 Key Insights Summary
+
+1. **Bug #19 Root Cause** — Debug self-decrypt test in smp_peer.c:347 corrupted ratchet state
+2. **DH Ratchet Step = TWO rootKdf calls** — recv chain + send chain, new keypair in between
+3. **iv1 = Body IV, iv2 = Header IV** — During decrypt, header IV comes from ehIV, not chainKdf
+4. **Body AAD = rcAD || emHeader (raw)** — 112 + 123 = 235 bytes, use exact wire bytes
+5. **ConnInfo tag 'I' = AgentConnInfo** — Profile only (Initiator/Reply Queue sender)
+6. **ConnInfo tag 'D' = AgentConnInfoReply** — SMP Queues + Profile (Joiner on Contact Queue)
+7. **Zstd compression** — 'X' marker, '1'=compressed, '0'=passthrough, max 65536 bytes
+8. **Zstd magic** — `28 b5 2f fd` (little-endian: 0xFD2FB528)
+9. **XInfo Profile** — event "x.info", JSON with displayName, image, preferences
+10. **Complete chain verified** — TLS → SMP → E2E → Ratchet → Zstd → JSON on ESP32
+
+---
+
+*Quick Reference v14.0*  
+*Last updated: February 6, 2026 - Session 20*  
+*Status: Body Decrypt SUCCESS! Peer Profile Read on ESP32!*  
+*Next: HELLO processing, Ratchet State Persistence, Bidirectional Messaging*

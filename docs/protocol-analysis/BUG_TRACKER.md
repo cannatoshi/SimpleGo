@@ -27,8 +27,8 @@ This document provides detailed documentation of all bugs discovered during Simp
 | 15 | Reply Queue HSalsa20 | 9 | FIXED |
 | 16 | A_CRYPTO header AAD | 9 | FIXED |
 | 17 | cmNonce instead of msgId | 10C | FIXED |
-| 18 | Reply Queue E2E | 12-18 | ✅ SOLVED |
-| **19** | **header_key_recv overwritten** | **19** | **FIXED** |
+| 18 | Reply Queue E2E | 12-18 | FIXED |
+| 19 | header_key_recv overwritten | 19-20 | FIXED |
 
 **Total: 19 bugs documented, 19 FIXED**
 
@@ -525,12 +525,12 @@ See Session 18 documentation for full 7-session debugging history.
 
 ---
 
-## Bug #19: header_key_recv Gets Overwritten (NEW - Session 19)
+## Bug #19: header_key_recv Gets Overwritten — ✅ SOLVED!
 
-**Session:** 19  
-**Component:** Double Ratchet key management  
+**Sessions:** 19, 20  
+**Component:** Double Ratchet key management → debug self-decrypt test  
 **Impact:** Medium - header decrypt fails without workaround  
-**Status:** **FIXED** (root cause found and removed)
+**Status:** ✅ **SOLVED in Session 20!**
 
 ### 19.1 Symptom
 
@@ -539,13 +539,13 @@ header_key_recv after X3DH = 1c08e86e... (saved_nhk, correct)
 header_key_recv at receipt = cf0c74d2... (wrong, overwritten)
 ```
 
-### 19.2 Discovery
+### 19.2 Discovery (Session 19)
 
 During Session 19 Double Ratchet header decrypt implementation, we discovered that
 `header_key_recv` (the key used to decrypt incoming message headers) is being
 overwritten somewhere between X3DH initialization and message receipt.
 
-### 19.3 Workaround
+### 19.3 Workaround (Session 19)
 
 Saving `nhk` immediately after X3DH HKDF calculation as `saved_nhk`:
 ```c
@@ -556,7 +556,7 @@ memcpy(saved_nhk, &x3dh_output[32], 32);  // nhk = HKDF output bytes 32-63
 aes_gcm_decrypt(ehBody, saved_nhk, ehIV, rcAD, ...);  // SUCCESS!
 ```
 
-### 19.4 Root Cause — FOUND
+### 19.4 Root Cause — FOUND (Session 20)
 
 **`smp_peer.c:347`** — Debug self-decrypt test calling `ratchet_decrypt()`.
 
@@ -573,10 +573,12 @@ and the function overwrites:
 - `ratchet_state.dh_peer` → corrupted (set to our own key)
 - `ratchet_state.msg_num_recv` → reset to 0
 
-### 19.5 Fix Applied
+### 19.5 Fix Applied (Session 20)
 
 Removed the debug self-decrypt test from `smp_peer.c:343-359`. The `saved_nhk`
 workaround in `smp_ratchet.c` is no longer needed but kept as safety net.
+
+Branch: `claude/fix-header-key-recv-bug-DNYeF` → merged to main.
 
 ### 19.6 Call Flow (for reference)
 
@@ -609,14 +611,15 @@ send_agent_confirmation():
 | Feb 1-3 | S16 | #18 Custom XSalsa20! |
 | Feb 4 | S17 | #18 Key Consistency Debug |
 | Feb 5 | S18 | #18 ✅ SOLVED! One-line fix! |
-| **Feb 5** | **S19** | **#19 header_key_recv overwritten** |
+| Feb 5 | S19 | #19 header_key_recv overwritten (workaround) |
+| **Feb 6** | **S20** | **#19 ✅ SOLVED! Root cause: debug self-decrypt** |
 
 ---
 
 ## Bug Categories
 
 ```
-19 Bugs Total (18 FIXED, 1 OPEN with workaround):
+19 Bugs Total (19 FIXED):
 - 7x Length Prefix issues (#1-6, #13)
 - 3x KDF/IV Order issues (#7, #8, #14)
 - 1x Byte Order issue (#9 - wolfSSL)
@@ -627,7 +630,7 @@ send_agent_confirmation():
 - 1x Header encryption issue (#16)
 - 1x Nonce source issue (#17 - cmNonce)
 - 1x Envelope length calculation issue (#18 - SMP padding)
-- 1x Key management issue (#19 - header_key_recv overwritten)
+- 1x Key management issue (#19 - debug self-decrypt side effects)
 ```
 
 ---
@@ -685,10 +688,16 @@ send_agent_confirmation():
 49. **Save keys immediately after derivation** - Prevents overwrite bugs like #19! (Session 19)
 50. **Always account for ALL wrapper layers when parsing** - 0x3a wasn't PrivHeader, it was unPad length! (Session 19)
 51. **Analysis first, implementation second** - Don't code until you understand the wire format! (Session 19)
+52. **Tests must NEVER modify production state** - Debug self-decrypt corrupted ratchet state! (Session 20)
+53. **Understand roles: Initiator='I', Joiner='D'** - ConnInfo tags differ by role in handshake! (Session 20)
+54. **Check for Zstd compression** - 'X'=0x58 marker, magic 28 b5 2f fd, '1'=compressed! (Session 20)
+55. **DH Ratchet Step = TWO rootKdf calls** - recv chain + send chain, new keypair in between! (Session 20)
+56. **iv1 = Body IV, iv2 = Header IV** - During decrypt, header IV comes from ehIV, not chainKdf! (Session 20)
+57. **Body AAD = rcAD || emHeader (raw bytes)** - Use exact wire bytes, don't re-serialize! (Session 20)
 
 ---
 
-*Bug Tracker v14.0*  
-*Last updated: February 5, 2026 - Session 19*  
-*Total bugs documented: 19 (18 fixed, 1 open with workaround)*  
-*51 lessons learned!*
+*Bug Tracker v15.0*  
+*Last updated: February 6, 2026 - Session 20*  
+*Total bugs documented: 19 (19 FIXED)*  
+*57 lessons learned!*
