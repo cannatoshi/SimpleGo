@@ -50,6 +50,8 @@ static struct {
     uint8_t server_key_hash[32];
     bool connected;
     bool initialized;
+    char last_host[64];   // Auftrag 24: saved for reconnect
+    int last_port;        // Auftrag 24: saved for reconnect
 } peer_state = {0};
 
 // ============== Peer Connection ==============
@@ -60,6 +62,10 @@ bool peer_connect(const char *host, int port) {
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "🔗 CONNECTING TO PEER SERVER...");
     ESP_LOGI(TAG, "   Host: %s:%d", host, port);
+
+    // Auftrag 24: Save for reconnect
+    strncpy(peer_state.last_host, host, sizeof(peer_state.last_host) - 1);
+    peer_state.last_port = port;
 
     // Initialize mbedTLS
     mbedtls_ssl_init(&peer_state.ssl);
@@ -484,6 +490,23 @@ bool send_agent_confirmation(contact_t *contact) {
     }
     printf("\n");
 
+    // ===== AUFTRAG 15a DIAGNOSE: CONFIRMATION =====
+    ESP_LOGI(TAG, "🔬 [CONFIRM] cbEncrypt Diagnose:");
+    ESP_LOGI(TAG, "   padded_len: %d", padded_len);
+    printf("   padded[0..31]: ");
+    for (int i = 0; i < 32; i++) printf("%02x ", padded[i]);
+    printf("\n");
+    printf("   padded[last 4]: ");
+    for (int i = padded_len - 4; i < padded_len; i++) printf("%02x ", padded[i]);
+    printf("\n");
+    printf("   DH peer_pub[0..7]:  ");
+    for (int i = 0; i < 8; i++) printf("%02x", pending_peer.dh_public[i]);
+    printf("\n");
+    printf("   DH our_priv[0..7]:  ");
+    for (int i = 0; i < 8; i++) printf("%02x", contact->rcv_dh_secret[i]);
+    printf("\n");
+    // ===== END DIAGNOSE =====
+
 // Jetzt crypto_box mit PADDED!
     uint8_t *encrypted = malloc(24 + E2E_ENC_CONFIRMATION_LENGTH + crypto_box_MACBYTES);
     if (!encrypted) {
@@ -550,7 +573,15 @@ bool send_agent_confirmation(contact_t *contact) {
 
     ESP_LOGI(TAG, "   📦 Client message: %d bytes (PubHeader + encrypted)", cmp);
 
-    // ========== Build SEND Command ==========
+    // ===== AUFTRAG 17: CONFIRM msgBody hex dump =====
+    ESP_LOGI(TAG, "🔬 [CONFIRM] msgBody (%d bytes):", cmp);
+    printf("   ");
+    for (int i = 0; i < 80 && i < cmp; i++) {
+        printf("%02x ", client_msg[i]);
+        if ((i+1) % 32 == 0) printf("\n   ");
+    }
+    printf("...\n");
+    // ===== END =====
     #define SEND_BUFFER_SIZE (E2E_ENC_CONFIRMATION_LENGTH + 200)
     uint8_t *send_body = malloc(SEND_BUFFER_SIZE);
     if (!send_body) {
@@ -672,8 +703,8 @@ bool send_agent_confirmation(contact_t *contact) {
                 if (pending_peer.has_dh && pending_peer.valid) {
                     uint8_t our_dh_private[32];
                     uint8_t our_dh_public[32];
-                    memcpy(our_dh_private, our_queue.rcv_dh_private, 32);
-                    memcpy(our_dh_public,  our_queue.rcv_dh_public,  32);
+                    memcpy(our_dh_private, contact->rcv_dh_secret, 32);   // Invitation DH (same as Confirmation!)
+                    memcpy(our_dh_public,  contact->rcv_dh_public,  32);  // Matching public key
 
                     bool hello_ok = complete_handshake(
                         &peer_state.ssl,
@@ -720,4 +751,55 @@ bool send_agent_confirmation(contact_t *contact) {
     free(e2e_params);
     free(block);
     return false;
+}
+
+// ============== Auftrag 24: Send HELLO from main.c ==============
+
+bool peer_send_hello(contact_t *contact) {
+    // Auftrag 24: Reconnect to peer if connection was closed
+    if (!peer_state.connected) {
+        if (peer_state.last_host[0] == '\0' || peer_state.last_port == 0) {
+            ESP_LOGE(TAG, "❌ peer_send_hello: no saved peer host/port!");
+            return false;
+        }
+        ESP_LOGI(TAG, "   🔄 Reconnecting to peer server %s:%d...", 
+                 peer_state.last_host, peer_state.last_port);
+        if (!peer_connect(peer_state.last_host, peer_state.last_port)) {
+            ESP_LOGE(TAG, "❌ peer_send_hello: reconnect failed!");
+            return false;
+        }
+        ESP_LOGI(TAG, "   ✅ Peer reconnected!");
+    }
+
+    if (!pending_peer.valid || !pending_peer.has_dh) {
+        ESP_LOGE(TAG, "❌ peer_send_hello: no pending peer data!");
+        return false;
+    }
+
+    uint8_t *block = heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
+    if (!block) {
+        ESP_LOGE(TAG, "❌ peer_send_hello: malloc failed!");
+        return false;
+    }
+
+    uint8_t our_dh_private[32];
+    uint8_t our_dh_public[32];
+    memcpy(our_dh_private, contact->rcv_dh_secret, 32);
+    memcpy(our_dh_public,  contact->rcv_dh_public,  32);
+
+    bool ok = send_hello_message(
+        &peer_state.ssl,
+        block,
+        peer_state.session_id,
+        pending_peer.queue_id,
+        pending_peer.queue_id_len,
+        pending_peer.dh_public,
+        our_dh_private,
+        our_dh_public,
+        ratchet_get_state(),
+        our_queue.rcv_auth_private
+    );
+
+    free(block);
+    return ok;
 }
