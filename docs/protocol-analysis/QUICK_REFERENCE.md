@@ -2,39 +2,42 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-07 - Session 21 (v3 Format Implemented, HELLO Debugging)**
+**Updated: 2026-02-07 - Session 22 (Reply Queue Flow Discovery, E2E v3, KEM Parser)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 21 - v3 FORMAT IMPLEMENTED, HELLO DEBUGGING
-=====================================================
+SESSION 22 - REPLY QUEUE FLOW DISCOVERED
+==========================================
 
-v3 EncRatchetMessage format byte-correct verified, Server accepts with OK.
-App still shows "Connecting..." — RSYNC crypto error on HELLO decrypt.
+5 bugs fixed (#27-#31):
+  - E2E version_min: 2→3 + KEM Nothing in Confirmation
+  - KEM Parser: Dynamic for SNTRUP761 (2310 bytes)
+  - Body Decrypt: Dynamic emHeader size calculation
+  - NHK Init/Promotion: Three-part fix for header key chain
+  - Try-Order: HKr first (SameRatchet), NHKr second (AdvanceRatchet)
 
-7 new bugs fixed (#20-#26):
-  - PrivHeader: HELLO = 0x00 (not '_')
-  - AgentVersion: AgentMessage = 1 (not 2)
-  - prevMsgHash: Word16 prefix required
-  - cbEncrypt: pad BEFORE encrypt
-  - DH Key: snd_dh for HELLO (not rcv_dh)
-  - PubHeader Nothing: '0' required
-  - v2/v3 format: encodeLarge switches at v≥3
+BREAKTHROUGH DISCOVERY:
+  Modern SimpleX (v2 + senderCanSecure) needs NO HELLO!
+  App expects AgentConnInfo on Reply Queue instead.
+  Reply Queue Info is in Tag 'D' AgentConnInfoReply (innermost layer).
 
-New architecture:
-  - 4 Header Keys: HKs/NHKs/HKr/NHKr with promotion
-  - SameRatchet vs AdvanceRatchet modes
-  - KEY Command (optional for unsecured queues)
+Post-Quantum:
+  SimpleX uses SNTRUP761 (not Kyber1024)
+  1158B pubkey, 1039B ciphertext, 32B shared secret
+  PQ-Graceful-Degradation: KEM Nothing → pure DH fallback
 
-Top suspects for Session 22:
-  1. HKs/NHKs Promotion after AdvanceRatchet
-  2. E2E Version in our Confirmation (v2 vs v3)
-  3. DH Key encoding in v3
+Missing for "Connected":
+  1. Parse Reply Queue Info from Confirmation
+  2. Second TLS connection to Reply Queue server
+  3. SMP Handshake on Reply Queue
+  4. SKEY on Reply Queue
+  5. AgentConnInfo on Reply Queue
+  6. App receives → CON → "Connected"
 
-Next: HKs/NHKs Promotion, E2E Version Clarification
+Next: Reply Queue Implementation (Session 23)
 ```
 
 ---
@@ -54,6 +57,7 @@ Next: HKs/NHKs Promotion, E2E Version Clarification
 11. [Session 19 Key Insights Summary](#11-session-19-key-insights-summary)
 12. [Session 20 Key Insights Summary](#12-session-20-key-insights-summary)
 13. [Session 21 Key Insights Summary](#13-session-21-key-insights-summary)
+14. [Session 22 Key Insights Summary](#14-session-22-key-insights-summary)
 
 ---
 
@@ -66,29 +70,33 @@ Next: HKs/NHKs Promotion, E2E Version Clarification
 | Agent (Message) | 1 | 0x00 0x01 | AgentMessage (HELLO etc.) — S21 |
 | E2E | 2 | 0x00 0x02 | |
 | RATCHET_VERSION | **3** | **0x00 0x03** | **Changed v2→v3 in S21!** |
+| **version_min (Confirmation)** | **3** | **0x00 0x03** | **Must match RATCHET_VERSION! — S22** |
 
 ---
 
 ## 2. Size Constants (VERIFIED)
 
-| Structure | v2 Size | v3 Size | Notes |
-|-----------|---------|---------|-------|
-| EncMessageHeader | 123 | **124** | v3: 2-byte prefixes add 1 byte — S21 |
-| MsgHeader | 88 | 88 | Same (KEM replaces 1 padding byte) |
-| MsgHeader content | 79 | **80** | v3: KEM Nothing adds 1 byte — S21 |
-| MsgHeader padding | 7 | **6** | v3: 1 less padding — S21 |
-| X448 SPKI | 68 | 68 | 12 header + 56 raw |
-| X25519 SPKI | 44 | 44 | 12 header + 32 raw |
-| cmNonce | 24 | 24 | In ClientMsgEnvelope |
-| Poly1305 MAC | 16 | 16 | Authentication tag |
-| AES-GCM AuthTag | 16 | 16 | Authentication tag |
-| AES-GCM IV | **16** | **16** | NOT 12! SimpleX uses 16-byte IV |
-| Payload AAD | 235 | **236** | v3: 112 + 124 = 236 — S21 |
-| rcAD | 112 | 112 | our_key1 \|\| peer_key1 (raw X448, no ASN.1) |
+| Structure | v2 Size | v3 Size | v3+PQ Size | Notes |
+|-----------|---------|---------|------------|-------|
+| EncMessageHeader | 123 | **124** | **~2346** | v3: 2-byte prefixes, v3+PQ: SNTRUP761 — S22 |
+| MsgHeader | 88 | 88 | variable | Same (KEM replaces padding), PQ adds KEM data |
+| MsgHeader content | 79 | **80** | variable | v3: KEM Nothing adds 1 byte — S21 |
+| MsgHeader padding | 7 | **6** | variable | v3: 1 less padding — S21 |
+| X448 SPKI | 68 | 68 | 68 | 12 header + 56 raw |
+| X25519 SPKI | 44 | 44 | 44 | 12 header + 32 raw |
+| cmNonce | 24 | 24 | 24 | In ClientMsgEnvelope |
+| Poly1305 MAC | 16 | 16 | 16 | Authentication tag |
+| AES-GCM AuthTag | 16 | 16 | 16 | Authentication tag |
+| AES-GCM IV | **16** | **16** | **16** | NOT 12! SimpleX uses 16-byte IV |
+| Payload AAD | 235 | **236** | **dynamic** | v3: 112 + 124 = 236, v3+PQ: varies — S22 |
+| rcAD | 112 | 112 | 112 | our_key1 \|\| peer_key1 (raw X448, no ASN.1) |
+| **SNTRUP761 PubKey** | - | - | **1158** | Post-Quantum KEM — S22 |
+| **SNTRUP761 Ciphertext** | - | - | **1039** | Post-Quantum KEM — S22 |
+| **SNTRUP761 Secret** | - | - | **32** | Post-Quantum shared secret — S22 |
 
 ---
 
-## 3. Encoding Reference (from Haskell Source, Verified Session 19-21)
+## 3. Encoding Reference (from Haskell Source, Verified Session 19-22)
 
 | Primitive | Encoding | Source |
 |-----------|----------|--------|
@@ -132,9 +140,22 @@ encodeLarge v bs
   | otherwise        = smpEncode (Str.length bs :: Word16) <> bs   -- 2 bytes max 65535
 ```
 
+### KEM Maybe Encoding (Session 22 — NEW!)
+
+```
+KEM in MsgHeader:
+  Nothing → '0' (0x30) — No PQ KEM active
+  Just (Proposed pk) → '1' + 'P' + length_prefix + pubkey_data
+  Just (Accepted ct) → '1' + 'A' + length_prefix + ciphertext_data
+
+SNTRUP761 sizes:
+  Proposed: '1' + 'P' + [2B len] + 1158 bytes pubkey
+  Accepted: '1' + 'A' + [2B len] + 1039 bytes ciphertext
+```
+
 ---
 
-## 4. Wire Formats (Verified Session 19-21)
+## 4. Wire Formats (Verified Session 19-22)
 
 ### 4.1 unPad Layer (Session 19)
 
@@ -179,15 +200,21 @@ HELLO Body:
   '0'             AckMode_Off      1 byte (0x30, ASCII '0')
 ```
 
-### 4.5 EncRatchetMessage v3 (Session 21 — UPDATED!)
+### 4.5 EncRatchetMessage v3 (Session 21-22 — UPDATED!)
 
 ```
 encodeEncRatchetMessage v msg =
   encodeLarge v emHeader <> smpEncode (emAuthTag, Tail emBody)
 
-Structure (v3, v >= 3):
+Structure (v3, v >= 3, without PQ):
   emHeader Len    2 bytes Word16 BE   = 124 (0x00 0x7C)
   emHeader        124 bytes           EncMessageHeader
+  emAuthTag       16 bytes raw        AES-GCM Auth Tag
+  emBody          Tail                rest (encrypted payload)
+
+Structure (v3 with PQ KEM):
+  emHeader Len    2 bytes Word16 BE   = ~2346 (variable)
+  emHeader        ~2346 bytes         EncMessageHeader with KEM
   emAuthTag       16 bytes raw        AES-GCM Auth Tag
   emBody          Tail                rest (encrypted payload)
 
@@ -198,15 +225,22 @@ Structure (v2, v < 3):
   emBody          Tail                rest (encrypted payload)
 ```
 
-### 4.6 EncMessageHeader v3 (Session 21 — UPDATED!)
+### 4.6 EncMessageHeader v3 (Session 21-22 — UPDATED!)
 
 ```
-Structure (v3, 124 bytes):
+Structure (v3 without PQ, 124 bytes):
   ehVersion       2 bytes          Word16 BE = 3
   ehIV            16 bytes raw     AES-256-GCM IV
   ehAuthTag       16 bytes raw     Header Auth Tag
   ehBody Len      2 bytes Word16   = 88 (0x00 0x58)
   ehBody          88 bytes         encrypted MsgHeader
+
+Structure (v3 with PQ, ~2346 bytes):
+  ehVersion       2 bytes          Word16 BE = 3
+  ehIV            16 bytes raw     AES-256-GCM IV
+  ehAuthTag       16 bytes raw     Header Auth Tag
+  ehBody Len      2 bytes Word16   = variable (with KEM data)
+  ehBody          variable         encrypted MsgHeader (larger with KEM)
 
 Structure (v2, 123 bytes):
   ehVersion       2 bytes          Word16 BE = 2
@@ -216,10 +250,10 @@ Structure (v2, 123 bytes):
   ehBody          88 bytes         encrypted MsgHeader
 ```
 
-### 4.7 MsgHeader v3 (Session 21 — UPDATED!)
+### 4.7 MsgHeader v3 (Session 21-22 — UPDATED!)
 
 ```
-v3 MsgHeader (padded to 88 bytes):
+v3 MsgHeader WITHOUT PQ (padded to 88 bytes):
   [Word16 BE]     contentLen = 80
   [Word16 BE]     msgMaxVersion = 2
   [1 byte]        DH key length = 68
@@ -228,6 +262,16 @@ v3 MsgHeader (padded to 88 bytes):
   [Word32 BE]     msgPN
   [Word32 BE]     msgNs
   [6 bytes]       '#' padding (6× instead of 7× in v2)
+
+v3 MsgHeader WITH PQ (variable size):
+  [Word16 BE]     contentLen = variable
+  [Word16 BE]     msgMaxVersion
+  [1 byte]        DH key length = 68
+  [68 bytes]      msgDHRs SPKI
+  [1+ bytes]      KEM Just: '1' + state_tag + len_prefix + data
+  [Word32 BE]     msgPN
+  [Word32 BE]     msgNs
+  [variable]      '#' padding
 
 v2 MsgHeader (padded to 88 bytes):
   [Word16 BE]     contentLen = 79
@@ -263,7 +307,7 @@ Max decompressed: 65,536 bytes
 Standard Zstd Level 3, no dictionary
 ```
 
-### 4.10 KEY Command (Session 21 — NEW!)
+### 4.10 KEY Command (Session 21)
 
 ```
 KEY Body:  [corrId][recipientId] KEY [peer_sender_auth_key 44B SPKI]
@@ -278,9 +322,32 @@ Source of sender_auth_key:
 Status: Functional but NOT REQUIRED (Reply Queues unsecured)
 ```
 
+### 4.11 SMPQueueInfo Wire Format (Session 22 — NEW!)
+
+```
+[1B count] [SMPQueueInfo:]
+  [2B clientVersion] [SMPServer:] [1B+N senderId] [1B+44 DH X25519 SPKI] [1B QueueMode 'M']
+
+SMPServer:
+  [1B host count] [1B+N hostname] [space] [port_string] [1B+N keyHash]
+
+Example:
+  01                              — count: 1 queue
+  00 08                           — clientVersion: 8
+  02                              — host count: 2
+    0D 73 6D 70 31 2E ...         — hostname: "smp1.simplex.im"
+    20 35 32 32 33                — space + port: " 5223"
+    20 XX XX XX ...               — keyHash: 32 bytes
+  08 AA BB CC DD EE FF GG HH      — senderId: 8 bytes
+  2C 30 2A 30 05 ...              — DH key: 44 bytes X25519 SPKI
+  4D                              — queueMode: 'M' = Messaging
+
+Location: Inside Tag 'D' AgentConnInfoReply (innermost ratchet layer)
+```
+
 ---
 
-## 5. HKDF Chain (Verified Session 19-20)
+## 5. HKDF Chain (Verified Session 19-22)
 
 ### 5.1 HKDF #1: X3DH Initial
 
@@ -331,7 +398,7 @@ Output: 96 bytes
   [80-95]  iv2  = header IV (ignored during decrypt)
 ```
 
-### 5.5 4 Header Key Architecture (Session 21 — NEW!)
+### 5.5 4 Header Key Architecture (Session 21-22 — UPDATED!)
 
 | Key | Full Name | Usage |
 |-----|-----------|-------|
@@ -340,30 +407,46 @@ Output: 96 bytes
 | HKr | header_key_recv | Current: decrypt incoming headers |
 | NHKr | next_header_key_recv | Next: will become HKr after peer's DH ratchet |
 
-**Initial Assignment from X3DH:**
+**Initial Assignment from X3DH (CORRECTED Session 22):**
 ```
 HKs  = hk     (HKDF[0-31])   — used for our first send
-NHKs = (none, set after first recv AdvanceRatchet)
+NHKs = MUST BE STORED IN STATE! (not local variable) — S22 Bug #30
 HKr  = (none, NHKr promotes on first recv)
 NHKr = nhk    (HKDF[32-63])  — promotes to HKr on first recv
+       ↑ This is NHKr, NOT HKr directly! — S22 Bug #30
 ```
 
-**Promotion on AdvanceRatchet:**
+**Promotion on AdvanceRatchet (CORRECTED Session 22):**
 ```
-Receiving: HKr ← NHKr, then rootKdf → new NHKr
-Sending:   HKs ← NHKs, then rootKdf → new NHKs
+Receiving: 
+  1. HKr ← NHKr (promote old next to current)
+  2. rootKdf → new NHKr (derive new next)
+
+Sending:
+  1. HKs ← NHKs (promote old next to current)  — S22 Bug #30
+  2. rootKdf → new NHKs (derive new next)      — S22 Bug #30
+  
+NOT: HKs ← KDF output directly (WRONG!)
 ```
 
-### 5.6 SameRatchet vs AdvanceRatchet (Session 21 — NEW!)
+### 5.6 SameRatchet vs AdvanceRatchet (Session 21-22 — UPDATED!)
 
 | Mode | Trigger | DH Step? | Operations |
 |------|---------|----------|------------|
 | SameRatchet | Same DH key (dh_changed=false) | NO | chainKdf only → mk, ivs |
 | AdvanceRatchet | New DH key (dh_changed=true) | YES | 2× rootKdf + chainKdf |
 
+**Header Decrypt Try-Order (CORRECTED Session 22 — Bug #31):**
+```
+1. Try HKr (SameRatchet) — if success, use SameRatchet mode
+2. Try NHKr (AdvanceRatchet) — if success, promote NHKr→HKr, trigger AdvanceRatchet
+
+WRONG: Only trying HKr, using NHKr only as debug fallback
+```
+
 ---
 
-## 6. Verified Byte-Map (Updated Session 20)
+## 6. Verified Byte-Map (Updated Session 22)
 
 ### 6.1 Level 1: E2E Plaintext (15904 Bytes)
 
@@ -382,7 +465,7 @@ Offset  Hex         Field                         Status
 
 ```
 Offset  Hex         Field                         Status
-[52]    7B          emHeader Length: 123          ✅ (v2, v3=00 7C)
+[52]    7B          emHeader Length: 123          ✅ (v2, v3=00 7C, v3+PQ=variable)
 [53-175]            emHeader (EncMessageHeader):
   [53-54] XX XX       ehVersion: 2                ✅
   [55-70] ...         ehIV (16 Bytes)             ✅
@@ -397,11 +480,11 @@ Offset  Hex         Field                         Status
 
 ```
 Field             Value                           Status
-contentLen        79 (v2) / 80 (v3)              ✅
+contentLen        79 (v2) / 80 (v3) / var (PQ)   ✅
 msgMaxVersion     3 (Peer supports PQ)            ✅
 DH Key Len        68 (X448 SPKI)                  ✅
 Peer DH Key       c3d0cb637a26c2c8... (56B raw)   ✅
-KEM               Nothing ('0') — v3 only         ✅ S21
+KEM               Nothing ('0') or Just (PQ)     ✅ S21-22
 PN                0 (first message)               ✅
 Ns                0 (Message #0)                  ✅
 Padding           0x23 ('#')                      ✅
@@ -432,9 +515,23 @@ Offset  Hex    Field                         Status
 After Zstd decompress: 12268 bytes JSON     ✅
 ```
 
+### 6.6 Level 5b: AgentConnInfoReply 'D' (Session 22 — NEW!)
+
+```
+Tag 'D' = AgentConnInfoReply (from Joiner on Contact Queue)
+Contains: SMPQueueInfo (Reply Queue) + Profile
+
+Structure (after ratchet decrypt):
+[0]     44     'D' — AgentConnInfoReply Tag
+[1...]         SMPQueueInfo (see 4.11)
+[...]          ConnInfo Profile (compressed or not)
+
+This is where we get Reply Queue Info for "Connected" status!
+```
+
 ---
 
-## 7. Complete Decryption/Send Chain (Updated Session 21)
+## 7. Complete Decryption/Send Chain (Updated Session 22)
 
 ```
 RECEIVE CHAIN (all working):
@@ -448,48 +545,54 @@ Layer 2.5: unPad                                               ✅ Working (S19)
   ↓
 Layer 3: ClientMessage Parse                                   ✅ Working (S19)
   ↓
-Layer 4: EncRatchetMessage Parse                               ✅ Working (S19, v3 S21)
+Layer 4: EncRatchetMessage Parse (dynamic KEM)                 ✅ Working (S22)
   ↓
-Layer 5: Double Ratchet Header Decrypt                         ✅ Working (S19)
+Layer 5: Double Ratchet Header Decrypt (Try-Order fixed)       ✅ Working (S22)
   ↓
-Layer 6: Double Ratchet Body Decrypt                           ✅ Working (S20)
+Layer 6: Double Ratchet Body Decrypt (dynamic offsets)         ✅ Working (S22)
   ↓
 Layer 7: ConnInfo Parse + Zstd                                 ✅ Working (S20)
   ↓
 Layer 8: Peer Profile JSON                                     ✅ Working (S20)
 
-SEND CHAIN (HELLO):
-Layer 9: HELLO Send                                            ⚠️ Server OK, App RSYNC
-  ↓ v3 format implemented (S21)
-  ↓ 7 format bugs fixed (#20-#26)
-  ↓ KEY command optional
-  ↓ App can't decrypt → RSYNC crypto error
+SEND CHAIN (Modern Protocol — Reply Queue Flow):
+Layer 9a: HELLO Send (NOT NEEDED in modern protocol!)          ✅ Server OK
   ↓
-Layer 10: HELLO Receive                                        ⏳ Blocked
+Layer 9b: Reply Queue Info Parse from Tag 'D'                  ❌ MISSING
   ↓
-Layer 11: Connection Established                               ⏳ Final Goal
+Layer 9c: Reply Queue TLS Connect                              ❌ MISSING
+  ↓
+Layer 9d: Reply Queue SMP Handshake                            ❌ MISSING
+  ↓
+Layer 9e: SKEY on Reply Queue                                  ❌ MISSING
+  ↓
+Layer 9f: AgentConnInfo on Reply Queue                         ❌ MISSING
+  ↓
+Layer 10: App receives → CON                                   ⏳ Blocked
+  ↓
+Layer 11: Connection Established ("Connected")                 ⏳ Final Goal
 ```
 
 ---
 
 ## 8. Crypto Functions
 
-### 8.1 Header Decrypt (Verified Session 19)
+### 8.1 Header Decrypt (Verified Session 19-22)
 
 ```c
-// Key: HKr (promoted from NHKr on AdvanceRatchet)
+// Key: HKr (or NHKr for AdvanceRatchet) — try in order! S22 Bug #31
 // IV: ehIV (16 bytes from EncMessageHeader)
 // AAD: rcAD (112 bytes = our_key1 || peer_key1)
-// Ciphertext: ehBody (88 bytes)
+// Ciphertext: ehBody (88 bytes without PQ, variable with PQ)
 // AuthTag: ehAuthTag (16 bytes)
 ```
 
-### 8.2 Body Decrypt (Verified Session 20)
+### 8.2 Body Decrypt (Verified Session 20-22)
 
 ```c
 // Key: message_key (32 bytes from Chain KDF [32-63])
 // IV: iv_body (16 bytes from Chain KDF [64-79])
-// AAD: rcAD[112] || emHeader[123 or 124] = 235 or 236 bytes
+// AAD: rcAD[112] || emHeader[dynamic] = 235/236/variable bytes — S22 Bug #29
 // Ciphertext: emBody
 // AuthTag: emAuthTag (16 bytes)
 ```
@@ -501,21 +604,81 @@ Standard libsodium: HSalsa20(dh_secret, nonce[0:16])
 SimpleX:            HSalsa20(dh_secret, zeros[16])  ← ZEROS!
 ```
 
+### 8.4 Dynamic emHeader Size Calculation (Session 22 — NEW!)
+
+```c
+// Read ehVersion to determine size
+uint16_t ehVersion = (encrypted[0] << 8) | encrypted[1];
+size_t emHeader_size;
+if (ehVersion >= 3) {
+    // v3: 2-byte length prefix
+    emHeader_size = (encrypted[2] << 8) | encrypted[3];
+    emHeader_size += 4;  // Include version(2) + prefix(2)
+} else {
+    // v2: 1-byte length prefix
+    emHeader_size = encrypted[2] + 3;  // Include version(2) + prefix(1)
+}
+```
+
 ---
 
 ## 9. Working Code State
 
-### 9.1 smp_ratchet.c (Updated Session 21)
+### 9.1 smp_ratchet.c (Updated Session 22)
 
 ```c
 #define RATCHET_VERSION         3              // Changed from 2 in S21!
-uint8_t em_header[124];                        // 124 bytes in v3 (was 123)
+uint8_t em_header[124];                        // 124 bytes in v3 without PQ
 em_header[hp++] = 0x00; em_header[hp++] = 0x58; // ehBody-len = 88 (2 BYTES in v3!)
 output[p++] = 0x00; output[p++] = 0x7C;        // emHeader len = 124 (2 BYTES in v3!)
 // MsgHeader includes KEM Nothing: msg_header[p++] = '0';
+
+// Dynamic KEM parsing (S22)
+uint8_t kem_tag = decrypted_header[kem_offset];
+if (kem_tag == '0') { /* KEM Nothing */ }
+else if (kem_tag == '1') { /* KEM Just — read state_tag and skip data */ }
 ```
 
-### 9.2 HELLO Format (Session 21 — NEW!)
+### 9.2 smp_x448.c (Updated Session 22)
+
+```c
+// In e2e_encode_params():
+buf[p++] = 0x00;
+buf[p++] = 0x03;  // version_min = 3 (MUST match RATCHET_VERSION!)
+// After key2:
+buf[p++] = 0x30;  // KEM Nothing ('0' = 0x30)
+```
+
+### 9.3 Header Key Init/Promotion (Session 22 — Bug #30)
+
+```c
+// In ratchet_init_sender():
+memcpy(ratchet_state.next_header_key_send, hkdf_output + 64, 32);  // SAVE to state!
+
+// In ratchet_x3dh_sender():
+memcpy(ratchet_state.next_header_key_recv, nhk, 32);  // NHKr (not HKr!)
+
+// After DH Ratchet Step - PROMOTION:
+memcpy(ratchet_state.header_key_send, ratchet_state.next_header_key_send, 32);
+memcpy(ratchet_state.next_header_key_send, kdf_output + 64, 32);
+```
+
+### 9.4 Header Decrypt Try-Order (Session 22 — Bug #31)
+
+```c
+// Try HKr first (SameRatchet)
+if (try_header_decrypt(header_key_recv, ...)) {
+    decrypt_mode = SAME_RATCHET;
+}
+// Try NHKr second (AdvanceRatchet)
+else if (try_header_decrypt(next_header_key_recv, ...)) {
+    decrypt_mode = ADVANCE_RATCHET;
+    memcpy(ratchet_state.header_key_recv, ratchet_state.next_header_key_recv, 32);
+    // Trigger full DH ratchet step...
+}
+```
+
+### 9.5 HELLO Format (Session 21)
 
 ```c
 // PrivHeader: 0x00 (no PrivHeader for regular messages)
@@ -595,7 +758,24 @@ output[p++] = 0x00; output[p++] = 0x7C;        // emHeader len = 124 (2 BYTES in
 
 ---
 
-*Quick Reference v15.0*  
-*Last updated: February 7, 2026 - Session 21*  
-*Status: v3 Format Implemented, App RSYNC on HELLO*  
-*Next: HKs/NHKs Promotion, E2E Version Clarification*
+## 14. Session 22 Key Insights Summary
+
+1. **Modern SimpleX needs NO HELLO** — v2 + senderCanSecure uses Reply Queue flow
+2. **AgentConnInfo on Reply Queue** — not HELLO on Contact Queue
+3. **Reply Queue Info in Tag 'D'** — AgentConnInfoReply (innermost layer)
+4. **SNTRUP761 for PQ KEM** — not Kyber1024 (1158B pk, 1039B ct, 32B ss)
+5. **PQ-Graceful-Degradation** — KEM Nothing → pure DH fallback, no error
+6. **version_min MUST match RATCHET_VERSION** — in E2ERatchetParams (Bug #27)
+7. **KEM Parser dynamic** — v3+PQ headers up to 2346 bytes (Bug #28)
+8. **emHeader size dynamic** — don't hardcode offsets (Bug #29)
+9. **NHKs must be stored in state** — not local variable (Bug #30)
+10. **nhk from X3DH = NHKr** — promotes to HKr, not direct HKr (Bug #30)
+11. **NHKs→HKs promotion chain** — two-step, not direct assignment (Bug #30)
+12. **Header decrypt try-order** — HKr first, NHKr second (Bug #31)
+
+---
+
+*Quick Reference v16.0*  
+*Last updated: February 7, 2026 - Session 22*  
+*Status: Reply Queue Flow Discovered, 5 bugs fixed*  
+*Next: Reply Queue Implementation (Parse, Connect, SKEY, AgentConnInfo)*

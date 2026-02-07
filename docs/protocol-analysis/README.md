@@ -6,42 +6,36 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## Current Status (2026-02-07 Session 21)
+## Current Status (2026-02-07 Session 22)
 
 ```
-SESSION 21 - v3 FORMAT IMPLEMENTED, HELLO DEBUGGING
-=====================================================
+SESSION 22 - REPLY QUEUE FLOW DISCOVERED
+==========================================
 
-HELLO FORMAT DEBUGGING:
-  7 bugs fixed (#20-#26) in HELLO wire format:
-    - PrivHeader: HELLO = 0x00 (not '_')
-    - AgentVersion: AgentMessage = 1 (not 2)
-    - prevMsgHash: Word16 prefix required
-    - cbEncrypt: pad BEFORE encrypt
-    - DH Key: snd_dh for HELLO (not rcv_dh)
-    - PubHeader Nothing: '0' required
-    - v2/v3 format: encodeLarge switches at v≥3
+5 BUGS FIXED (#27-#31):
+  #27: E2E version_min: 2→3 + KEM Nothing (App breaks silence!)
+  #28: KEM Parser: Dynamic for SNTRUP761 (up to 2346 bytes)
+  #29: Body Decrypt: Dynamic emHeader size calculation
+  #30: HKs/NHKs Init + Promotion: Three-part header key fix
+  #31: Try-Order: HKr (SameRatchet), NHKr (AdvanceRatchet)
 
-v3 ENCRATCHETMESSAGE FORMAT:
-  - RATCHET_VERSION: 2 → 3
-  - emHeader: 123 → 124 bytes (2-byte prefix)
-  - ehBody prefix: 1 → 2 bytes
-  - MsgHeader: +KEM Nothing ('0'), contentLen 79→80
-  - Server accepts with OK ✅
+BREAKTHROUGH DISCOVERY:
+  Modern SimpleX (v2 + senderCanSecure) needs NO HELLO!
+  App expects AgentConnInfo on Reply Queue instead.
+  Reply Queue Info is inside Tag 'D' AgentConnInfoReply.
 
-NEW ARCHITECTURE:
-  - 4 Header Keys: HKs/NHKs/HKr/NHKr with promotion
-  - SameRatchet vs AdvanceRatchet modes
-  - KEY Command implemented (optional for unsecured queues)
+POST-QUANTUM:
+  SimpleX uses SNTRUP761 (not Kyber1024)
+  1158B pubkey, 1039B ciphertext, 32B shared secret
+  PQ-Graceful-Degradation: KEM Nothing → pure DH fallback
 
-BLOCKER:
-  App still shows "Connecting..." — RSYNC crypto error on HELLO decrypt
-  Server accepts everything, App can't decrypt
-
-TOP SUSPECTS FOR SESSION 22:
-  1. HKs/NHKs Promotion after AdvanceRatchet
-  2. E2E Version in our Confirmation (v2 vs v3)
-  3. DH Key encoding in v3
+MISSING FOR "CONNECTED":
+  1. Parse Reply Queue Info from Confirmation (Tag 'D')
+  2. Second TLS connection to Reply Queue server
+  3. SMP Handshake on Reply Queue
+  4. SKEY on Reply Queue
+  5. AgentConnInfo on Reply Queue
+  6. App receives → CON → "Connected"
 
 ALL LAYERS THROUGH LAYER 8 (receive):
   ✅ Layer 0: TLS 1.3
@@ -49,16 +43,15 @@ ALL LAYERS THROUGH LAYER 8 (receive):
   ✅ Layer 2: E2E Decrypt (S18)
   ✅ Layer 2.5: unPad (S19)
   ✅ Layer 3: ClientMessage Parse (S19)
-  ✅ Layer 4: EncRatchetMessage Parse (S19, v3 S21)
-  ✅ Layer 5: Double Ratchet Header Decrypt (S19)
-  ✅ Layer 6: Double Ratchet Body Decrypt (S20)
+  ✅ Layer 4: EncRatchetMessage Parse (S19, dynamic KEM S22)
+  ✅ Layer 5: Double Ratchet Header Decrypt (S19, Try-Order S22)
+  ✅ Layer 6: Double Ratchet Body Decrypt (S20, dynamic offsets S22)
   ✅ Layer 7: ConnInfo Parse + Zstd (S20)
   ✅ Layer 8: Peer Profile JSON (S20)
-  ⚠️ Layer 9: HELLO Send (Server OK, App RSYNC) (S21)
-  ⏳ Layer 10: HELLO Receive
-  ⏳ Layer 11: Connection Established
+  ❌ Layer 9b-9f: Reply Queue Flow (MISSING)
+  ⏳ Layer 10-11: CON → Connected
 
-NEXT: HKs/NHKs Promotion, E2E Version Clarification
+NEXT: Reply Queue Implementation (Session 23)
 ```
 
 ---
@@ -103,11 +96,12 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [17_PART15_SESSION_18.md](17_PART15_SESSION_18.md) | ~600 | 🎉 BUG #18 SOLVED! E2E Decrypt SUCCESS |
 | [18_PART16_SESSION_19.md](18_PART16_SESSION_19.md) | ~550 | Header Decrypt SUCCESS! |
 | [19_PART17_SESSION_20.md](19_PART17_SESSION_20.md) | ~600 | Body Decrypt SUCCESS! Peer Profile! |
-| [20_PART18_SESSION_21.md](20_PART18_SESSION_21.md) | ~700 | **v3 Format + HELLO Debugging** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1600 | Complete bug documentation (26 bugs, 71 lessons) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~900 | Constants, wire formats, verified values |
+| [20_PART18_SESSION_21.md](20_PART18_SESSION_21.md) | ~700 | v3 Format + HELLO Debugging |
+| [21_PART19_SESSION_22.md](21_PART19_SESSION_22.md) | ~650 | **Reply Queue Flow Discovery** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1800 | Complete bug documentation (31 bugs, 83 lessons) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1000 | Constants, wire formats, verified values |
 
-**Total: ~28,000+ lines of detailed protocol analysis**
+**Total: ~30,000+ lines of detailed protocol analysis**
 
 ---
 
@@ -133,7 +127,53 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | 18 | Feb 5 | 🎉 BUG #18 SOLVED! E2E Decrypt SUCCESS! | #18 ✅ SOLVED |
 | 19 | Feb 5 | Header Decrypt SUCCESS! MsgHeader Parsed | #19 found |
 | 20 | Feb 6 | 🎉 Body Decrypt! Peer Profile on ESP32! | #19 ✅ SOLVED |
-| **21** | **Feb 6-7** | **v3 Format + HELLO Debugging (7 bugs!)** | **#20-#26** |
+| 21 | Feb 6-7 | v3 Format + HELLO Debugging (7 bugs!) | #20-#26 |
+| **22** | **Feb 7** | **🎯 Reply Queue Flow Discovery (5 bugs!)** | **#27-#31** |
+
+---
+
+## Session 22 Key Achievements
+
+### 1. Five Bugs Fixed (#27-#31)
+
+| Bug | Component | Fix |
+|-----|-----------|-----|
+| #27 | E2E version_min | 2 → 3 + KEM Nothing (App breaks silence!) |
+| #28 | KEM Parser | Dynamic for SNTRUP761 (up to 2346 bytes) |
+| #29 | Body Decrypt Pointer | Dynamic emHeader size calculation |
+| #30 | HKs/NHKs Init + Promotion | Three-part header key chain fix |
+| #31 | Header Decrypt Try-Order | HKr first, NHKr second for AdvanceRatchet |
+
+### 2. Breakthrough Protocol Discovery
+
+**Modern SimpleX (v2 + `senderCanSecure = True`) does NOT need HELLO!**
+
+The modern protocol expects AgentConnInfo on the Reply Queue instead.
+
+```
+Modern Protocol Flow:
+  1. ESP32 creates Invitation           ✅ Working
+  2. App sends AgentConfirmation        ✅ Working
+  3. ESP32 extracts Reply Queue Info    ❌ MISSING
+  4. ESP32 connects to Reply Queue      ❌ MISSING
+  5. ESP32 sends SKEY on Reply Queue    ❌ MISSING
+  6. ESP32 sends AgentConnInfo          ❌ MISSING
+  7. App receives → CON → "Connected"   ❌ Blocked
+```
+
+### 3. Post-Quantum KEM
+
+SimpleX uses **SNTRUP761** (not Kyber1024):
+- Public Key: 1158 bytes
+- Ciphertext: 1039 bytes
+- Shared Secret: 32 bytes
+
+PQ-Graceful-Degradation: v3 + KEM Nothing → pure DH fallback (no error).
+
+### 4. Reply Queue Info Location
+
+The `smpReplyQueues` are inside Tag `'D'` (AgentConnInfoReply) at the innermost
+ratchet-decrypted layer. We already decrypt them but only parse the profile.
 
 ---
 
@@ -167,15 +207,6 @@ v3 changes from v2:
 - **4 Header Keys:** HKs/NHKs/HKr/NHKr with promotion
 - **SameRatchet vs AdvanceRatchet** modes
 - **KEY Command** implemented (optional for unsecured queues)
-
-### 4. RSYNC Identified
-
-`chatItemNotFoundByContactId` = RSYNC (Ratchet Sync) = crypto decrypt failure.
-App receives our HELLO but can't decrypt it → RSYNC event.
-
-### 5. Remaining Blocker
-
-App still "Connecting..." — suspects: HKs/NHKs promotion, E2E version mismatch, DH key encoding.
 
 ---
 
@@ -232,7 +263,8 @@ TLS 1.3 → SMP Transport → Server Decrypt → E2E Decrypt → unPad
 | #17 | cmNonce instead of msgId | [Part 7](09_PART7_SESSION_10.md) |
 | #18 | Reply Queue E2E — SOLVED! | [Part 15](17_PART15_SESSION_18.md) |
 | #19 | header_key_recv — SOLVED! | [Part 16](18_PART16_SESSION_19.md) + [Part 17](19_PART17_SESSION_20.md) |
-| **#20-#26** | **HELLO format + v3** | [**Part 18**](20_PART18_SESSION_21.md) |
+| #20-#26 | HELLO format + v3 | [Part 18](20_PART18_SESSION_21.md) |
+| **#27-#31** | **E2E v3, KEM, NHK, Try-Order** | [**Part 19**](21_PART19_SESSION_22.md) |
 
 ### By Topic
 
@@ -246,7 +278,8 @@ TLS 1.3 → SMP Transport → Server Decrypt → E2E Decrypt → unPad
 | Double Ratchet Header | [Part 16](18_PART16_SESSION_19.md) |
 | Double Ratchet Body | [Part 17](19_PART17_SESSION_20.md) |
 | ConnInfo + Zstd | [Part 17](19_PART17_SESSION_20.md) |
-| HELLO + v3 Format | [**Part 18**](20_PART18_SESSION_21.md) |
+| HELLO + v3 Format | [Part 18](20_PART18_SESSION_21.md) |
+| Reply Queue Flow | [**Part 19**](21_PART19_SESSION_22.md) |
 | All Bugs | [BUG_TRACKER](BUG_TRACKER.md) |
 | Quick Reference | [QUICK_REFERENCE](QUICK_REFERENCE.md) |
 
@@ -258,4 +291,4 @@ This documentation is part of SimpleGo, licensed under AGPL-3.0.
 
 ---
 
-*Last updated: February 7, 2026 - Session 21 (v3 Format + HELLO Debugging)*
+*Last updated: February 7, 2026 - Session 22 (Reply Queue Flow Discovery)*

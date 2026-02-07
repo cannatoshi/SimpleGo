@@ -1,6 +1,6 @@
 # Bug Tracker
 
-## Complete Documentation of All 26 Bugs
+## Complete Documentation of All 31 Bugs
 
 This document provides detailed documentation of all bugs discovered during SimpleGo development, including the incorrect code, correct code, and root cause analysis.
 
@@ -29,15 +29,20 @@ This document provides detailed documentation of all bugs discovered during Simp
 | 17 | cmNonce instead of msgId | 10C | FIXED |
 | 18 | Reply Queue E2E | 12-18 | FIXED |
 | 19 | header_key_recv overwritten | 19-20 | FIXED |
-| **20** | **PrivHeader for HELLO** | **21** | **FIXED** |
-| **21** | **AgentVersion for AgentMessage** | **21** | **FIXED** |
-| **22** | **prevMsgHash encoding** | **21** | **FIXED** |
-| **23** | **cbEncrypt padding** | **21** | **FIXED** |
-| **24** | **DH Key for HELLO** | **21** | **FIXED** |
-| **25** | **PubHeader Nothing encoding** | **21** | **FIXED** |
-| **26** | **v2/v3 EncRatchetMessage format** | **21** | **FIXED** |
+| 20 | PrivHeader for HELLO | 21 | FIXED |
+| 21 | AgentVersion for AgentMessage | 21 | FIXED |
+| 22 | prevMsgHash encoding | 21 | FIXED |
+| 23 | cbEncrypt padding | 21 | FIXED |
+| 24 | DH Key for HELLO | 21 | FIXED |
+| 25 | PubHeader Nothing encoding | 21 | FIXED |
+| 26 | v2/v3 EncRatchetMessage format | 21 | FIXED |
+| **27** | **E2E Version Mismatch** | **22** | **FIXED** |
+| **28** | **KEM Parser Crash** | **22** | **FIXED** |
+| **29** | **Body Decrypt Pointer-Arithmetik** | **22** | **FIXED** |
+| **30** | **HKs/NHKs Init + Promotion** | **22** | **FIXED** |
+| **31** | **Phase 2a Try-Order** | **22** | **FIXED** |
 
-**Total: 26 bugs documented, 26 FIXED**
+**Total: 31 bugs documented, 31 FIXED**
 
 ---
 
@@ -747,13 +752,241 @@ em_header[hp++] = 0x7C;         // emHeader len = 124 (2 bytes Word16 BE)
 em_header[hp++] = 0x00;
 em_header[hp++] = 0x58;         // ehBody len = 88 (2 bytes Word16 BE)
 #define EM_HEADER_SIZE 124
-// KEM Nothing: msg_header[p++] = '0';  // 0x30
+// KEM Nothing: msg_header[p++] = '0';
 ```
 
 ### Root Cause
 
 `encodeLarge` switches at v≥3: 1-byte (Word8) → 2-byte (Word16 BE) prefix.
 Also MsgHeader must include KEM Nothing field in v3.
+
+---
+
+## Bug #27: E2E Version Mismatch (SESSION 22)
+
+**Session:** 22  
+**Component:** `smp_x448.c` E2ERatchetParams encoding  
+**Impact:** Critical - App breaks silence after fix!
+
+### The Discovery
+
+`smp_x448.c` sent `version_min = 2` in the AgentConfirmation, but `smp_ratchet.c`
+encrypted HELLO in v3 format. The version mismatch caused the App to expect v2
+format but receive v3.
+
+### Incorrect Code
+```c
+// In e2e_encode_params():
+buf[p++] = 0x00;
+buf[p++] = 0x02;  // version_min = 2
+// No KEM Nothing-Byte after key2
+```
+
+### Correct Code
+```c
+// In e2e_encode_params():
+buf[p++] = 0x00;
+buf[p++] = 0x03;  // version_min = 3
+// After key2:
+buf[p++] = 0x30;  // KEM Nothing ('0' = 0x30)
+```
+
+### Root Cause
+
+`smp_x448.c` was not updated in Session 21 when v3 was implemented in `smp_ratchet.c`.
+The `version_min` in E2ERatchetParams must match `RATCHET_VERSION` used for encryption.
+
+---
+
+## Bug #28: KEM Parser Crash (SESSION 22)
+
+**Session:** 22  
+**Component:** `smp_ratchet.c` MsgHeader parser  
+**Impact:** Critical - Parser crash on PQ responses
+
+### The Discovery
+
+App responds with v3 + SNTRUP761 KEM (2310 bytes) instead of 88-byte header.
+Parser had fixed offsets → read garbage → crash.
+
+### Incorrect Code
+```c
+// Fixed offset calculation
+int dh_key_offset = 4;  // contentLen(2) + msgMaxVersion(2)
+int pn_offset = dh_key_offset + 1 + dh_key_len;  // No KEM handling
+```
+
+### Correct Code
+```c
+// Dynamic KEM handling
+int kem_offset = dh_key_offset + 1 + dh_key_len;
+uint8_t kem_tag = decrypted_header[kem_offset];
+if (kem_tag == '0') {  // Nothing
+    pn_offset = kem_offset + 1;
+} else if (kem_tag == '1') {  // Just
+    uint8_t state_tag = decrypted_header[kem_offset + 1];
+    if (state_tag == 'P' || state_tag == 'A') {
+        // Read length prefix, skip KEM data
+        uint16_t kem_len = (decrypted_header[kem_offset + 2] << 8) | 
+                            decrypted_header[kem_offset + 3];
+        pn_offset = kem_offset + 4 + kem_len;
+    }
+}
+```
+
+### Root Cause
+
+MsgHeader parser expected 88-byte header without KEM field. v3+PQ headers can be
+2346 bytes with SNTRUP761 (1158B pubkey + 1039B ciphertext + overhead).
+
+---
+
+## Bug #29: Body Decrypt Pointer-Arithmetik (SESSION 22)
+
+**Session:** 22  
+**Component:** `main.c` body decrypt offset calculation  
+**Impact:** Critical - 2GB malloc fail on body decrypt
+
+### The Discovery
+
+emHeader is now 2346 bytes (v3+PQ) instead of 123 bytes (v2), but pointer
+calculation for emAuthTag/emBody was hardcoded → garbage offsets → 2GB malloc fail.
+
+### Incorrect Code
+```c
+#define EM_HEADER_SIZE 124  // Hardcoded
+uint8_t *emAuthTag = &encrypted[EM_HEADER_SIZE];
+uint8_t *emBody = &encrypted[EM_HEADER_SIZE + 16];
+```
+
+### Correct Code
+```c
+// Read ehVersion to determine size
+uint16_t ehVersion = (encrypted[0] << 8) | encrypted[1];
+size_t emHeader_size;
+if (ehVersion >= 3) {
+    // v3: 2-byte length prefix
+    emHeader_size = (encrypted[2] << 8) | encrypted[3];
+    emHeader_size += 4;  // Include prefix itself
+} else {
+    // v2: 1-byte length prefix
+    emHeader_size = encrypted[2] + 3;
+}
+uint8_t *emAuthTag = &encrypted[emHeader_size];
+uint8_t *emBody = &encrypted[emHeader_size + 16];
+```
+
+### Root Cause
+
+Header sizes vary dramatically:
+- v2: 123 bytes
+- v3: 124 bytes
+- v3+PQ: 2346 bytes (with SNTRUP761)
+
+All offset calculations must be dynamic based on actual header content.
+
+---
+
+## Bug #30: HKs/NHKs Init + Promotion (SESSION 22)
+
+**Session:** 22  
+**Component:** `smp_ratchet.c` header key management  
+**Impact:** Critical - Header key chain broken from init to promotion
+
+### The Discovery
+
+Three connected problems in header key handling:
+
+**Problem 30a:** `next_header_key_send` was never stored in ratchet state (local variable only).
+
+**Problem 30b:** `ratchet_x3dh_sender()` stored `nhk` (= rcvNextHK = NHKr) incorrectly
+in `header_key_recv` instead of `next_header_key_recv`.
+
+**Problem 30c:** After DH Ratchet Step, KDF output was set directly as HKs instead
+of proper NHKs→HKs promotion.
+
+### Incorrect Code
+```c
+// In ratchet_init_sender():
+uint8_t next_header_key_send[32];  // Local variable, never saved!
+// ...
+// In ratchet_x3dh_sender():
+memcpy(ratchet_state.header_key_recv, nhk, 32);  // WRONG! nhk is NHKr
+// ...
+// After DH Ratchet Step:
+memcpy(ratchet_state.header_key_send, kdf_output + 64, 32);  // Direct, no promotion
+```
+
+### Correct Code
+```c
+// In ratchet_init_sender():
+memcpy(ratchet_state.next_header_key_send, hkdf_output + 64, 32);  // SAVE to state!
+// ...
+// In ratchet_x3dh_sender():
+memcpy(ratchet_state.next_header_key_recv, nhk, 32);  // NHKr, will promote to HKr
+// ...
+// After DH Ratchet Step - PROMOTION:
+memcpy(ratchet_state.header_key_send, ratchet_state.next_header_key_send, 32);  // NHKs→HKs
+memcpy(ratchet_state.next_header_key_send, kdf_output + 64, 32);  // New NHKs from KDF
+```
+
+### Root Cause
+
+The 4 Header Key architecture requires:
+- HKs/NHKs for sending (current/next)
+- HKr/NHKr for receiving (current/next)
+
+Promotion: `HKs ← NHKs` then `NHKs ← KDF output` (not direct assignment).
+Initial: `nhk` from X3DH is NHKr, promotes to HKr on first AdvanceRatchet.
+
+---
+
+## Bug #31: Phase 2a Try-Order (SESSION 22)
+
+**Session:** 22  
+**Component:** `main.c` header decrypt try sequence  
+**Impact:** Critical - AdvanceRatchet never triggered
+
+### The Discovery
+
+Header decrypt tried `next_header_key_recv` only via debug fallback (`saved_nhk`),
+not as a regular try → AdvanceRatchet was never triggered → ratchet state stuck.
+
+### Incorrect Code
+```c
+// Only tried HKr
+if (try_header_decrypt(header_key_recv, ...)) {
+    // SameRatchet
+} else {
+    // Debug fallback using saved_nhk (not proper flow)
+    if (try_header_decrypt(saved_nhk, ...)) {
+        // This worked but didn't trigger AdvanceRatchet!
+    }
+}
+```
+
+### Correct Code
+```c
+// Try HKr first (SameRatchet)
+if (try_header_decrypt(header_key_recv, ...)) {
+    decrypt_mode = SAME_RATCHET;
+}
+// Try NHKr second (AdvanceRatchet)
+else if (try_header_decrypt(next_header_key_recv, ...)) {
+    decrypt_mode = ADVANCE_RATCHET;
+    // Promote: HKr ← NHKr
+    memcpy(ratchet_state.header_key_recv, ratchet_state.next_header_key_recv, 32);
+    // Trigger full DH ratchet step...
+}
+```
+
+### Root Cause
+
+Double Ratchet requires trying keys in order:
+1. HKr (SameRatchet) — same DH key, just chain forward
+2. NHKr (AdvanceRatchet) — new DH key, full ratchet step
+
+If NHKr succeeds, it triggers AdvanceRatchet and promotes NHKr→HKr.
 
 ---
 
@@ -776,14 +1009,15 @@ Also MsgHeader must include KEM Nothing field in v3.
 | Feb 5 | S18 | #18 ✅ SOLVED! One-line fix! |
 | Feb 5 | S19 | #19 header_key_recv overwritten (workaround) |
 | Feb 6 | S20 | #19 ✅ SOLVED! Root cause: debug self-decrypt |
-| **Feb 6-7** | **S21** | **#20-#26 HELLO format + v3 format (7 bugs!)** |
+| Feb 6-7 | S21 | #20-#26 HELLO format + v3 format (7 bugs!) |
+| **Feb 7** | **S22** | **#27-#31 E2E version, KEM parser, NHK promotion (5 bugs!)** |
 
 ---
 
 ## Bug Categories
 
 ```
-26 Bugs Total (26 FIXED):
+31 Bugs Total (31 FIXED):
 - 7x Length Prefix issues (#1-6, #13)
 - 3x KDF/IV Order issues (#7, #8, #14)
 - 1x Byte Order issue (#9 - wolfSSL)
@@ -802,6 +1036,11 @@ Also MsgHeader must include KEM Nothing field in v3.
 - 1x Key selection issue (#24 - rcv_dh vs snd_dh)
 - 1x Maybe field issue (#25 - PubHeader Nothing)
 - 1x Format version issue (#26 - v2/v3 encodeLarge)
+- 1x Version mismatch issue (#27 - E2E version_min vs RATCHET_VERSION)
+- 1x Dynamic parsing issue (#28 - KEM parser for variable header sizes)
+- 1x Pointer arithmetic issue (#29 - dynamic emHeader size calculation)
+- 1x Key storage/promotion issue (#30 - HKs/NHKs init and promotion chain)
+- 1x Try-order issue (#31 - header decrypt sequence for AdvanceRatchet)
 ```
 
 ---
@@ -879,10 +1118,22 @@ Also MsgHeader must include KEM Nothing field in v3.
 69. **v2/v3 encodeLarge switch at v≥3** - 1-byte → 2-byte prefix, affects header sizes! (Session 21)
 70. **Version from E2ERatchetParams, not hardcoded** - Confirmation determines peer's expected format! (Session 21)
 71. **Confirmation can work v2, HELLO expected v3** - Version mismatch between message types! (Session 21)
+72. **Modern SimpleX (v2 + senderCanSecure) needs NO HELLO** - Use Reply Queue flow instead! (Session 22)
+73. **AgentConnInfo on Reply Queue, not HELLO on Contact Queue** - Different protocol flow! (Session 22)
+74. **smpReplyQueues in Tag 'D' AgentConnInfoReply** - Innermost layer of AgentConfirmation! (Session 22)
+75. **SNTRUP761 for PQ KEM, not Kyber1024** - 1158B pubkey, 1039B ciphertext, 32B secret! (Session 22)
+76. **PQ-Graceful-Degradation: KEM Nothing → pure DH** - No error on fallback! (Session 22)
+77. **E2E version_min MUST match RATCHET_VERSION** - Mismatch causes format confusion! (Session 22)
+78. **KEM Parser must be dynamic** - v3+PQ headers up to 2346 bytes! (Session 22)
+79. **emHeader size dynamic based on ehVersion** - Don't hardcode offset calculations! (Session 22)
+80. **NHKs must be stored in state at init** - Local variable loses value! (Session 22)
+81. **nhk from X3DH = NHKr, not HKr directly** - Promotes to HKr on first AdvanceRatchet! (Session 22)
+82. **NHKs→HKs promotion THEN KDF→NHKs** - Two-step promotion, not direct assignment! (Session 22)
+83. **Header decrypt try-order: HKr, then NHKr** - Wrong order prevents AdvanceRatchet! (Session 22)
 
 ---
 
-*Bug Tracker v16.0*  
-*Last updated: February 7, 2026 - Session 21*  
-*Total bugs documented: 26 (26 FIXED)*  
-*71 lessons learned!*
+*Bug Tracker v17.0*  
+*Last updated: February 7, 2026 - Session 22*  
+*Total bugs documented: 31 (31 FIXED)*  
+*83 lessons learned!*
