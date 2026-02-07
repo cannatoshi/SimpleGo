@@ -1,23 +1,27 @@
 /**
  * SimpleGo - smp_ratchet.c
- * Double Ratchet Encryption - CORRECT Version 2 Wire Format (non-PQ)
- * v0.1.22-alpha - Updated 2026-02-03
+ * Double Ratchet Encryption - Version 3 Wire Format (non-PQ)
+ * v0.1.22-alpha - Updated 2026-02-07
  * 
  * CRITICAL FIX: rcAD = initiator_pub || responder_pub (ABSOLUTE order!)
  * We are RESPONDER (we respond to peer's invitation)
  * Peer is INITIATOR (they sent the invitation)
  * Therefore: rcAD = peer_key1 || our_key1 (NOT our || peer!)
  * 
- * EncRatchetMessage (v2):
- *   [1B emHeader-len (0x7B = 123)][123B emHeader][16B payload AuthTag][Tail encrypted_payload]
+ * EncRatchetMessage (v3):
+ *   [2B emHeader-len (0x007C = 124)][124B emHeader][16B payload AuthTag][Tail encrypted_payload]
  * 
- * emHeader (EncMessageHeader v2):
- *   [2B ehVersion][16B ehIV direct][16B ehAuthTag direct][1B ehBody-len (0x58)][88B encrypted MsgHeader]
- *   Total: 2 + 16 + 16 + 1 + 88 = 123 bytes
+ * emHeader (EncMessageHeader v3):
+ *   [2B ehVersion][16B ehIV direct][16B ehAuthTag direct][2B ehBody-len (0x0058)][88B encrypted MsgHeader]
+ *   Total: 2 + 16 + 16 + 2 + 88 = 124 bytes
+ * 
+ * MsgHeader (v3, non-PQ):
+ *   [2B Word16 content=80][2B msgMaxVersion=3][1B DH-len=68][68B SPKI][1B KEM='0'=Nothing][4B PN][4B Ns][6B '#' padding]
+ *   Total: 2 + 80 + 6 = 88 bytes
  * 
  * AAD (Associated Data) für BEIDE AES-GCM-Operationen:
  *   Header: rcAD (112 bytes) 
- *   Payload: rcAD (112 bytes) + emHeader (123 bytes) = 235 bytes
+ *   Payload: rcAD (112 bytes) + emHeader (124 bytes) = 236 bytes
  *   rcAD = initiator_key1_public (56) || responder_key1_public (56)
  */
 
@@ -34,8 +38,8 @@
 static const char *TAG = "SMP_RATCH";
 
 // Constants
-#define RATCHET_VERSION         2
-#define MSG_HEADER_CONTENT_LEN  80   // Actual used bytes before padding
+#define RATCHET_VERSION         3    // v3: 2-byte Large length prefixes, KEM Nothing field
+#define MSG_HEADER_CONTENT_LEN  80   // v3: 80 bytes (v2 was 79, +1 for KEM Nothing)
 #define MSG_HEADER_PADDED_LEN   88   // Padded to 88 bytes
 #define GCM_IV_LEN              16
 #define GCM_TAG_LEN             16
@@ -282,14 +286,14 @@ static void build_msg_header(uint8_t *header, const uint8_t *dh_public,
     memset(header, 0, MSG_HEADER_PADDED_LEN);
     int p = 0;
 
-    // Word16 BE length prefix (content = 79 bytes)
+    // Word16 BE length prefix (content = 80 bytes for v3)
     // SimpleX Crypto.hs pad(): [2B Word16 len][content][# padding]
     header[p++] = 0x00;
-    header[p++] = 79;  // 0x4F
+    header[p++] = 80;  // 0x50 (v3: 80, was v2: 79)
 
     // msgMaxVersion (Word16 BE)
     header[p++] = 0x00;
-    header[p++] = RATCHET_VERSION;
+    header[p++] = RATCHET_VERSION;  // 3
 
     // msgDHRs - ByteString with 1-BYTE length prefix!
     header[p++] = 68;    // SPKI length = 68 (1 BYTE only!)
@@ -298,6 +302,9 @@ static void build_msg_header(uint8_t *header, const uint8_t *dh_public,
     static const uint8_t X448_SPKI_HEADER[12] = {0x30,0x42,0x30,0x05,0x06,0x03,0x2b,0x65,0x6f,0x03,0x39,0x00};
     memcpy(&header[p], X448_SPKI_HEADER, 12); p += 12;
     memcpy(&header[p], dh_public, 56); p += 56;
+
+    // v3: msgKEM = Nothing = ASCII '0' (0x30)
+    header[p++] = 0x30;  // '0' = Nothing (no PQ KEM)
 
     // msgPN (Word32 BE)
     header[p++] = (pn >> 24) & 0xFF;
@@ -311,11 +318,10 @@ static void build_msg_header(uint8_t *header, const uint8_t *dh_public,
     header[p++] = (ns >> 8)  & 0xFF;
     header[p++] = ns & 0xFF;
 
-    // p = 81 now (2 + 79)
-    // '#' padding to reach 88 bytes
+    // p = 82 now (2 prefix + 80 content)
+    // '#' padding to reach 88 bytes (6 bytes for v3, was 7 for v2)
     memset(&header[p], '#', 88 - p);
-    // Layout: [2B Word16=79][content][###]
-    // But in code, it's [2B len][version][len][SPKI][PN][Ns][#]
+    // Layout: [2B Word16=80][2B ver][1B len][68B SPKI][1B KEM][4B PN][4B Ns][6B '#'] = 88
 }
 
 // ============== Encrypt Message ==============
@@ -346,16 +352,17 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
                      ratchet_state.prev_chain_len, ratchet_state.msg_num_send);
     
     // DEBUG: Show MsgHeader structure
-    // Layout: [2B Word16=79][2B version][1B len][68B SPKI][4B msgPN][4B msgNs][7B '#'] = 88
+    // Layout: [2B Word16=80][2B version][1B len][68B SPKI][1B KEM='0'][4B msgPN][4B msgNs][6B '#'] = 88
     ESP_LOGI(TAG, "📋 MsgHeader debug:");
-    ESP_LOGI(TAG, "   Word16 len: %02x %02x", msg_header[0], msg_header[1]);
+    ESP_LOGI(TAG, "   Word16 len: %02x %02x (=%d)", msg_header[0], msg_header[1], (msg_header[0]<<8)|msg_header[1]);
     ESP_LOGI(TAG, "   msgMaxVersion: %02x %02x", msg_header[2], msg_header[3]);
     ESP_LOGI(TAG, "   msgDHRs len: %02x (=%d)", msg_header[4], msg_header[4]);
     ESP_LOGI(TAG, "   SPKI header: %02x %02x %02x %02x...", msg_header[5], msg_header[6], msg_header[7], msg_header[8]);
     ESP_LOGI(TAG, "   X448 key: %02x %02x %02x %02x...", msg_header[17], msg_header[18], msg_header[19], msg_header[20]);
-    ESP_LOGI(TAG, "   msgPN: %02x%02x%02x%02x (offset 73)", msg_header[73], msg_header[74], msg_header[75], msg_header[76]);
-    ESP_LOGI(TAG, "   msgNs: %02x%02x%02x%02x (offset 77)", msg_header[77], msg_header[78], msg_header[79], msg_header[80]);
-    ESP_LOGI(TAG, "   padding: %02x (offset 81)", msg_header[81]);
+    ESP_LOGI(TAG, "   KEM: %02x '%c' (offset 73)", msg_header[73], msg_header[73]);
+    ESP_LOGI(TAG, "   msgPN: %02x%02x%02x%02x (offset 74)", msg_header[74], msg_header[75], msg_header[76], msg_header[77]);
+    ESP_LOGI(TAG, "   msgNs: %02x%02x%02x%02x (offset 78)", msg_header[78], msg_header[79], msg_header[80], msg_header[81]);
+    ESP_LOGI(TAG, "   padding: %02x (offset 82)", msg_header[82]);
     
     // FULL HEX DUMP
     ESP_LOGI(TAG, "📋 MsgHeader FULL (88 bytes):");
@@ -407,28 +414,27 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     for (int i = 0; i < 88; i++) printf("%02x", encrypted_header[i]);
     printf("\"\n");
     // ===== END DEBUG =====
-    // 5. Build emHeader (123 bytes for Version 2!)
-    // Version 2 uses 1-byte length prefixes (standard ByteString encoding)
-    // Version 3+ would use 2-byte (Large encoding)
-    uint8_t em_header[123];
+    // 5. Build emHeader (124 bytes for Version 3!)
+    // Version 3 uses 2-byte length prefixes (Large encoding, pqRatchetE2EEncryptVersion)
+    uint8_t em_header[124];
     int hp = 0;
-    em_header[hp++] = 0x00; em_header[hp++] = RATCHET_VERSION;          // ehVersion (Word16 BE)
+    em_header[hp++] = 0x00; em_header[hp++] = RATCHET_VERSION;          // ehVersion (Word16 BE) = 3
     memcpy(&em_header[hp], header_iv, 16); hp += 16;                    // ehIV direct (no length prefix)
     memcpy(&em_header[hp], header_tag, 16); hp += 16;                   // ehAuthTag direct (no length prefix)
-    em_header[hp++] = 0x58;                                             // ehBody-len = 88 (1 BYTE for v2!)
+    em_header[hp++] = 0x00; em_header[hp++] = 0x58;                     // ehBody-len = 88 (2 BYTES for v3! Large encoding)
     memcpy(&em_header[hp], encrypted_header, 88); hp += 88;
 
     // DEBUG: Show emHeader structure
-    ESP_LOGI(TAG, "📋 emHeader debug:");
-    ESP_LOGI(TAG, "   ehVersion: %02x %02x", em_header[0], em_header[1]);
+    ESP_LOGI(TAG, "📋 emHeader debug (v3, 124 bytes):");
+    ESP_LOGI(TAG, "   ehVersion: %02x %02x (=%d)", em_header[0], em_header[1], (em_header[0]<<8)|em_header[1]);
     ESP_LOGI(TAG, "   ehIV: %02x%02x%02x%02x...", em_header[2], em_header[3], em_header[4], em_header[5]);
     ESP_LOGI(TAG, "   ehAuthTag: %02x%02x%02x%02x...", em_header[18], em_header[19], em_header[20], em_header[21]);
-    ESP_LOGI(TAG, "   ehBody len: %02x (=%d)", em_header[34], em_header[34]);
+    ESP_LOGI(TAG, "   ehBody len: %02x %02x (=%d, Large encoding)", em_header[34], em_header[35], (em_header[34]<<8)|em_header[35]);
 
     // 6. Build AAD for payload: rcAD + emHeader
-    uint8_t payload_aad[235];  // 112 + 123 = 235
+    uint8_t payload_aad[236];  // 112 + 124 = 236 (v3)
     memcpy(payload_aad, ratchet_state.assoc_data, 112);
-    memcpy(payload_aad + 112, em_header, 123);
+    memcpy(payload_aad + 112, em_header, 124);
     
     // 6.5 PAD PLAINTEXT TO padded_msg_len BYTES
     uint8_t *padded_payload = malloc(padded_msg_len);
@@ -441,12 +447,15 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     memcpy(&padded_payload[2], plaintext, pt_len);
     memset(&padded_payload[2 + pt_len], '#', padded_msg_len - 2 - pt_len);
 
-    // DEBUG: Show padded payload
-    ESP_LOGI(TAG, "📋 Padded payload:");
-    ESP_LOGI(TAG, "   Length prefix: %02x %02x (= %zu)", padded_payload[0], padded_payload[1], pt_len);
-    ESP_LOGI(TAG, "   First data bytes: %02x %02x %02x %02x...", 
-             padded_payload[2], padded_payload[3], padded_payload[4], padded_payload[5]);
-    ESP_LOGI(TAG, "   Padding starts at: %zu, padded_msg_len: %zu", 2 + pt_len, padded_msg_len);
+    // ===== AUFTRAG 18c: Layer 5 — Inner Padded Payload =====
+    ESP_LOGI(TAG, "🔬 [L5] Inner Padded Payload: %zu bytes", padded_msg_len);
+    printf("   L5 first 16: ");
+    for (int i = 0; i < 16; i++) printf("%02x ", padded_payload[i]);
+    printf("\n");
+    printf("   L5 last 4:   ");
+    for (size_t i = padded_msg_len - 4; i < padded_msg_len; i++) printf("%02x ", padded_payload[i]);
+    printf("\n");
+    // ===== END =====
 
     // 7. Encrypt payload
     uint8_t *encrypted_payload = malloc(padded_msg_len);
@@ -456,7 +465,7 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     }
     uint8_t payload_tag[GCM_TAG_LEN];
     if (aes_gcm_encrypt(message_key, msg_iv, GCM_IV_LEN,
-                        payload_aad, 235,
+                        payload_aad, 236,
                         padded_payload, padded_msg_len,
                         encrypted_payload, payload_tag) != 0) {
         free(padded_payload);
@@ -465,20 +474,21 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     }
 
     // 8. Build final output
-    // Format: [1B emHeader-len][123B emHeader][16B payload-tag][N encrypted-payload]
+    // Format: [2B emHeader-len (Word16 BE)][124B emHeader][16B payload-tag][N encrypted-payload]
     int op = 0;
-    output[op++] = 123;  // emHeader length prefix (0x7B)
-    memcpy(&output[op], em_header, 123); op += 123;
+    output[op++] = 0x00;   // emHeader length prefix high byte (v3: Word16 = Large)
+    output[op++] = 124;    // emHeader length prefix low byte (0x7C)
+    memcpy(&output[op], em_header, 124); op += 124;
     memcpy(&output[op], payload_tag, 16); op += 16;
     memcpy(&output[op], encrypted_payload, padded_msg_len); op += padded_msg_len;
     *out_len = op;
 
-    // DEBUG: Show final structure
-    ESP_LOGI(TAG, "📋 Final EncRatchetMessage:");
-    ESP_LOGI(TAG, "   Total: %zu bytes", *out_len);
-    ESP_LOGI(TAG, "   emHeader-len: %02x (=%d)", output[0], output[0]);
-    ESP_LOGI(TAG, "   payload-tag at offset 124: %02x%02x%02x%02x...", 
-             output[124], output[125], output[126], output[127]);
+    // ===== AUFTRAG 18c: Layer 4 — EncRatchetMessage =====
+    ESP_LOGI(TAG, "🔬 [L4] EncRatchetMessage: %zu bytes", *out_len);
+    printf("   L4 first 32: ");
+    for (size_t i = 0; i < 32 && i < *out_len; i++) printf("%02x ", output[i]);
+    printf("\n");
+    // ===== END =====
 
     ratchet_state.msg_num_send++;
     free(padded_payload);
@@ -496,11 +506,13 @@ int ratchet_self_decrypt_test(const uint8_t *ciphertext, size_t ct_len,
     
     // Parse the structure we just created
     int p = 0;
-    if (ciphertext[0] != 0x7b) {
-        ESP_LOGE(TAG, "   ❌ Expected 0x7b, got 0x%02x", ciphertext[0]);
+    // v3: 2-byte emHeader length prefix (Word16 BE = 0x007C = 124)
+    uint16_t em_hdr_len = (ciphertext[0] << 8) | ciphertext[1];
+    if (em_hdr_len != 124) {
+        ESP_LOGE(TAG, "   ❌ Expected emHeader len 124 (0x007C), got %u (0x%04x)", em_hdr_len, em_hdr_len);
         return -1;
     }
-    p = 1;  // Skip length byte
+    p = 2;  // Skip 2-byte length prefix
     
     // Parse emHeader
     uint16_t version = (ciphertext[p] << 8) | ciphertext[p + 1]; p += 2;
@@ -508,7 +520,8 @@ int ratchet_self_decrypt_test(const uint8_t *ciphertext, size_t ct_len,
     memcpy(header_iv, &ciphertext[p], 16); p += 16;
     uint8_t header_tag[16];
     memcpy(header_tag, &ciphertext[p], 16); p += 16;
-    uint8_t eh_body_len = ciphertext[p++];
+    // v3: 2-byte ehBody length prefix (Word16 BE)
+    uint16_t eh_body_len = (ciphertext[p] << 8) | ciphertext[p + 1]; p += 2;
     const uint8_t *encrypted_header = &ciphertext[p];
     
     ESP_LOGI(TAG, "   Version: %d, ehBody len: %d", version, eh_body_len);
@@ -544,21 +557,24 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
     ESP_LOGI(TAG, "🔓 Decrypting message (%zu bytes)...", ct_len);
     
     int p = 0;
-    uint8_t em_header_len;
+    uint16_t em_header_len;
 
-    if (ciphertext[0] == 0x7b) {
-        // Standard v2 format: first byte is length prefix (123)
+    // v3 format: 2-byte emHeader length prefix (Word16 BE)
+    em_header_len = (ciphertext[0] << 8) | ciphertext[1];
+    p = 2;
+    
+    if (em_header_len == 124) {
+        ESP_LOGI(TAG, "   ✓ v3 format (2-byte prefix, emHeader=124)");
+    } else if (em_header_len == 123) {
+        // Handle v2 where first byte was 0x7B (123) and second byte is start of emHeader
+        ESP_LOGI(TAG, "   ⚠️ Detected v2 format (0x7B prefix) — reparsing");
         em_header_len = 123;
         p = 1;
-        ESP_LOGI(TAG, "   ✓ Standard v2 format (0x7b prefix)");
     } else {
-        // Assume encrypted v2 - treat first 123 bytes as emHeader content
-        ESP_LOGI(TAG, "   ⚠️ First byte is 0x%02x (not 0x7b) - trying without length prefix", ciphertext[0]);
-        em_header_len = 123;
-        p = 0;
+        ESP_LOGW(TAG, "   ⚠️ Unexpected emHeader len: %u (0x%04x) — trying as v3", em_header_len, em_header_len);
     }
 
-    ESP_LOGI(TAG, "   emHeader length: %d, starting at offset %d", em_header_len, p);
+    ESP_LOGI(TAG, "   emHeader length: %u, starting at offset %d", em_header_len, p);
     
     const uint8_t *em_header = &ciphertext[p];
     p += em_header_len;
@@ -574,8 +590,15 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
     uint8_t header_tag[16];
     memcpy(header_tag, &em_header[hp], 16); hp += 16;
     
-    uint8_t eh_body_len = em_header[hp++];
-    ESP_LOGI(TAG, "   ehBody length: %d", eh_body_len);
+    uint16_t eh_body_len;
+    if (version >= 3) {
+        // v3: 2-byte ehBody length (Word16 BE, Large encoding)
+        eh_body_len = (em_header[hp] << 8) | em_header[hp + 1]; hp += 2;
+    } else {
+        // v2: 1-byte ehBody length
+        eh_body_len = em_header[hp++];
+    }
+    ESP_LOGI(TAG, "   ehBody length: %d (v%d format)", eh_body_len, version);
     
     const uint8_t *encrypted_header = &em_header[hp];
     
@@ -641,6 +664,20 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
     uint8_t peer_new_dh[56];
     memcpy(peer_new_dh, &decrypted_header[mhp + 12], 56);
     mhp += 68;
+    
+    // v3: Skip KEM field (1 byte: '0'=Nothing or '1'+data=Just)
+    if (msg_version >= 3) {
+        uint8_t kem_tag = decrypted_header[mhp];
+        ESP_LOGI(TAG, "   KEM tag: 0x%02x '%c' %s", kem_tag, kem_tag,
+                 kem_tag == 0x30 ? "(Nothing)" : "(Just - PQ!)");
+        if (kem_tag == 0x30) {
+            mhp += 1;  // Nothing = 1 byte
+        } else if (kem_tag == 0x31) {
+            ESP_LOGW(TAG, "   ⚠️ KEM = Just (PQ mode) — not implemented!");
+            // Would need to skip the KEM data here
+            return -1;
+        }
+    }
     
     uint32_t msg_pn = (decrypted_header[mhp] << 24) | (decrypted_header[mhp+1] << 16) |
                       (decrypted_header[mhp+2] << 8) | decrypted_header[mhp+3];
@@ -750,7 +787,8 @@ int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
 // Performs DH Ratchet Step (recv + send) → Chain KDF → AES-GCM Body Decrypt → unPad.
 // Session 21: State update ACTIVE — writes new keys/counters to ratchet_state.
 
-int ratchet_decrypt_body(const uint8_t *peer_new_pub,
+int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
+                         const uint8_t *peer_new_pub,
                          uint32_t msg_pn, uint32_t msg_ns,
                          const uint8_t *em_header_raw, size_t em_header_len,
                          const uint8_t *em_auth_tag,
@@ -872,7 +910,7 @@ int ratchet_decrypt_body(const uint8_t *peer_new_pub,
 
     // ================================================================
     // SCHRITT 4: AES-256-GCM Body Decrypt
-    // Key=message_key, IV=iv_body(16B), AAD=rcAD(112)||emHeader_raw(123)
+    // Key=message_key, IV=iv_body(16B), AAD=rcAD(112)||emHeader_raw(124 v3 / 123 v2)
     // Tag=em_auth_tag, CT=em_body
     // ================================================================
     ESP_LOGI(TAG, "");

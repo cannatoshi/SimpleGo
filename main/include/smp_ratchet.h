@@ -31,8 +31,12 @@ typedef struct {
     uint8_t root_key[RATCHET_KEY_LEN];
     
     // Header keys (for encrypting/decrypting message headers)
-    uint8_t header_key_send[RATCHET_KEY_LEN];
-    uint8_t header_key_recv[RATCHET_KEY_LEN];
+    uint8_t header_key_send[RATCHET_KEY_LEN];       // HKs - active send header key
+    uint8_t header_key_recv[RATCHET_KEY_LEN];        // HKr - active recv header key
+    
+    // Next header keys (promoted to active on DH ratchet step)
+    uint8_t next_header_key_send[RATCHET_KEY_LEN];   // NHKs (Haskell: rcNHKs)
+    uint8_t next_header_key_recv[RATCHET_KEY_LEN];    // NHKr (Haskell: rcNHKr)
     
     // Chain keys (for deriving message keys)
     uint8_t chain_key_send[RATCHET_KEY_LEN];
@@ -58,6 +62,13 @@ typedef struct {
     uint8_t assoc_data[112];         // 56 + 56 bytes = initiator || responder
 
 } ratchet_state_t;
+
+// ============== Decrypt Mode (SameRatchet vs AdvanceRatchet) ==============
+
+typedef enum {
+    RATCHET_MODE_ADVANCE,    // New DH key from peer → full DH ratchet step (recv + send)
+    RATCHET_MODE_SAME        // Same DH key → chain step only, no DH, no new keypair
+} ratchet_decrypt_mode_t;
 
 // ============== X3DH Key Agreement ==============
 
@@ -93,22 +104,32 @@ bool ratchet_init_sender(const uint8_t *peer_dh_public,
 /**
  * Encrypt a message using the Double Ratchet
  * 
- * Output format (Version 2, non-PQ):
- *   [0]       emHeader-len = 0x7B (123)
- *   [1-123]   emHeader (123 bytes)
- *   [124-139] payload AuthTag (16 bytes)
- *   [140-...] encrypted payload
+ * Output format (Version 3, non-PQ):
+ *   [0-1]     emHeader-len = 0x007C (124, Word16 BE)
+ *   [2-125]   emHeader (124 bytes)
+ *   [126-141] payload AuthTag (16 bytes)
+ *   [142-...] encrypted payload
  * 
- * emHeader structure:
- *   [0-1]     ehVersion (Word16 BE) = 2
+ * emHeader structure (v3):
+ *   [0-1]     ehVersion (Word16 BE) = 3
  *   [2-17]    ehIV (16 bytes)
  *   [18-33]   ehAuthTag (16 bytes)
- *   [34]      ehBody-len = 0x58 (88)
- *   [35-122]  ehBody (88 bytes encrypted MsgHeader)
+ *   [34-35]   ehBody-len = 0x0058 (88, Word16 BE Large encoding)
+ *   [36-123]  ehBody (88 bytes encrypted MsgHeader)
+ * 
+ * MsgHeader (v3, non-PQ, padded to 88 bytes):
+ *   [0-1]     Word16 content length = 80
+ *   [2-3]     msgMaxVersion = 3 (Word16 BE)
+ *   [4]       DH key length = 68
+ *   [5-72]    msgDHRs (X448 SPKI, 68 bytes)
+ *   [73]      msgKEM = '0' (0x30 = Nothing)
+ *   [74-77]   msgPN (Word32 BE)
+ *   [78-81]   msgNs (Word32 BE)
+ *   [82-87]   '#' padding (6 bytes)
  * 
  * @param plaintext       Input data to encrypt
  * @param pt_len          Length of plaintext
- * @param output          Output buffer (must be large enough: pt_len + ~150 bytes)
+ * @param output          Output buffer (must be large enough: pt_len + ~160 bytes)
  * @param out_len         Output: actual length written
  * @param padded_msg_len  Target padded message length
  * @return 0 on success, negative on error
@@ -141,16 +162,19 @@ int ratchet_self_decrypt_test(const uint8_t *ciphertext, size_t ct_len,
  * Decrypt the body of an incoming EncRatchetMessage (Phase 2b)
  * 
  * Called AFTER header has been successfully decrypted and MsgHeader parsed.
- * Performs: DH Ratchet Step (recv + send) → Chain KDF → AES-GCM Body Decrypt → unPad
  * 
- * NOTE: Currently logs all intermediate values but does NOT update ratchet state.
- *       State update will be enabled after verification.
+ * ADVANCE mode: Full DH Ratchet (recv + send) → Chain KDF → AES-GCM → unPad
+ *   Used when peer's DH key is NEW (header decrypted with NHKr)
  * 
- * @param peer_new_pub     Peer's new DH public key from MsgHeader (56 bytes, raw X448)
+ * SAME mode: Chain KDF only → AES-GCM → unPad  
+ *   Used when peer's DH key is SAME (header decrypted with HKr)
+ * 
+ * @param mode             RATCHET_MODE_ADVANCE or RATCHET_MODE_SAME
+ * @param peer_new_pub     Peer's DH public key from MsgHeader (56 bytes, raw X448)
  * @param msg_pn           PN (previous chain length) from MsgHeader
  * @param msg_ns           Ns (message number) from MsgHeader
  * @param em_header_raw    Raw emHeader bytes as received (for AAD, NOT decrypted)
- * @param em_header_len    Length of emHeader (123)
+ * @param em_header_len    Length of emHeader (124 for v3, 123 for v2)
  * @param em_auth_tag      emAuthTag (16 bytes)
  * @param em_body          Encrypted body (emBody)
  * @param em_body_len      Length of emBody
@@ -158,7 +182,8 @@ int ratchet_self_decrypt_test(const uint8_t *ciphertext, size_t ct_len,
  * @param pt_len           Output: actual plaintext length after unPad
  * @return 0 on success, negative on error
  */
-int ratchet_decrypt_body(const uint8_t *peer_new_pub,
+int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
+                         const uint8_t *peer_new_pub,
                          uint32_t msg_pn, uint32_t msg_ns,
                          const uint8_t *em_header_raw, size_t em_header_len,
                          const uint8_t *em_auth_tag,
