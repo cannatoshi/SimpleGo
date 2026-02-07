@@ -37,6 +37,9 @@
 #include "smp_contacts.h"
 #include "smp_parser.h"
 #include "smp_peer.h"
+
+// Auftrag 24: Forward declaration for HELLO after KEY
+extern bool peer_send_hello(contact_t *contact);
 #include "smp_x448.h"
 #include "smp_queue.h"
 #include "simplex_crypto.h"  // SimpleX custom XSalsa20-Poly1305
@@ -108,6 +111,10 @@ static void smp_connect(void) {
 
     uint8_t session_id[32];
     uint8_t ca_hash[32];
+
+    // Auftrag 23: Peer's sender auth key from received Confirmation
+    uint8_t peer_sender_auth_key[44];  // Ed25519 SPKI from App's PrivHeader 'K'
+    bool has_peer_sender_auth = false;
 
     uint8_t *block = (uint8_t *)heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
     if (!block) {
@@ -945,6 +952,15 @@ static void smp_connect(void) {
                             ESP_LOGI(TAG, "      PHConfirmation: Auth Key len=%u", key_len);
                             ESP_LOG_BUFFER_HEX("Auth Key (Ed25519 SPKI)", &client_msg[2], key_len);
                             
+                            // Auftrag 23: SAVE sender auth key for KEY command
+                            if (key_len == 44) {
+                                memcpy(peer_sender_auth_key, &client_msg[2], 44);
+                                has_peer_sender_auth = true;
+                                ESP_LOGI(TAG, "      ✅ Sender auth key SAVED for KEY command!");
+                            } else {
+                                ESP_LOGW(TAG, "      ⚠️ Unexpected key_len=%u (expected 44)", key_len);
+                            }
+                            
                             size_t cm_offset = 2 + key_len;  // Nach dem Auth Key
                             
                             // === SCHRITT 3: AgentConfirmation parsen ===
@@ -976,14 +992,15 @@ static void smp_connect(void) {
                             }
                             
                             // === SCHRITT 4: EncRatchetMessage parsen ===
-                            uint8_t em_header_len = client_msg[cm_offset];  // 1-byte len (v<3)
-                            cm_offset += 1;
+                            // v3: 2-byte emHeader length prefix (Word16 BE, Large encoding)
+                            uint16_t em_header_len = (client_msg[cm_offset] << 8) | client_msg[cm_offset + 1];
+                            cm_offset += 2;
                             
                             ESP_LOGI(TAG, "      === EncRatchetMessage ===");
-                            ESP_LOGI(TAG, "      emHeader Länge: %u (erwartet 123 = 0x7B)", em_header_len);
+                            ESP_LOGI(TAG, "      emHeader Länge: %u (erwartet 124 = 0x007C für v3)", em_header_len);
                             
-                            if (em_header_len != 123) {
-                                ESP_LOGW(TAG, "      ⚠️ emHeader Länge != 123! Möglicherweise v3+ PQ-Mode (2-Byte Längen)?");
+                            if (em_header_len != 124 && em_header_len != 123) {
+                                ESP_LOGW(TAG, "      ⚠️ emHeader Länge weder 124 (v3) noch 123 (v2)!");
                             }
                             
                             // EncMessageHeader innerhalb emHeader:
@@ -992,13 +1009,25 @@ static void smp_connect(void) {
                             ESP_LOGI(TAG, "      ehVersion (E2E Ratchet): %u", eh_version);
                             
                             if (eh_version >= 3) {
-                                ESP_LOGE(TAG, "      ⛔ ehVersion >= 3 — PQ-Mode! Parsing ändert sich! STOPP.");
+                                // v3: 2-byte ehBody length (Word16 BE, Large encoding)
+                                ESP_LOGI(TAG, "      ✓ ehVersion = %u (v3 format)", eh_version);
                             } else {
+                                ESP_LOGI(TAG, "      ✓ ehVersion = %u (v2 format)", eh_version);
+                            }
+                            {
                                 ESP_LOG_BUFFER_HEX("ehIV (16 bytes)", &em_header[2], 16);
                                 ESP_LOG_BUFFER_HEX("ehAuthTag (16 bytes)", &em_header[18], 16);
-                                uint8_t eh_body_len = em_header[34];
-                                ESP_LOGI(TAG, "      ehBody Länge: %u (erwartet 88 = 0x58)", eh_body_len);
-                                ESP_LOG_BUFFER_HEX("ehBody (encrypted MsgHeader)", &em_header[35],
+                                uint16_t eh_body_len;
+                                int eh_body_offset;
+                                if (eh_version >= 3) {
+                                    eh_body_len = (em_header[34] << 8) | em_header[35];
+                                    eh_body_offset = 36;  // After 2-byte length prefix
+                                } else {
+                                    eh_body_len = em_header[34];
+                                    eh_body_offset = 35;  // After 1-byte length prefix
+                                }
+                                ESP_LOGI(TAG, "      ehBody Länge: %u (erwartet 88), offset=%d", eh_body_len, eh_body_offset);
+                                ESP_LOG_BUFFER_HEX("ehBody (encrypted MsgHeader)", &em_header[eh_body_offset],
                                                     eh_body_len > 88 ? 88 : eh_body_len);
                                 
                                 cm_offset += em_header_len;  // Skip gesamten emHeader
@@ -1095,7 +1124,7 @@ static void smp_connect(void) {
                                     
                                     uint8_t *eh_iv_ptr     = &em_header[2];    // 16 bytes
                                     uint8_t *eh_tag_ptr    = &em_header[18];   // 16 bytes
-                                    uint8_t *eh_body_ptr   = &em_header[35];   // eh_body_len bytes
+                                    uint8_t *eh_body_ptr   = &em_header[eh_body_offset];   // eh_body_len bytes
                                     
                                     ESP_LOGI(TAG, "      ehIV:  %02x%02x%02x%02x%02x%02x%02x%02x...",
                                              eh_iv_ptr[0], eh_iv_ptr[1], eh_iv_ptr[2], eh_iv_ptr[3],
@@ -1273,10 +1302,22 @@ static void smp_connect(void) {
                                             printf("\n");
                                         }
                                         
-                                        uint32_t hdr_pn = (header_plain[73] << 24) | (header_plain[74] << 16) |
-                                                          (header_plain[75] << 8)  | header_plain[76];
-                                        uint32_t hdr_ns = (header_plain[77] << 24) | (header_plain[78] << 16) |
-                                                          (header_plain[79] << 8)  | header_plain[80];
+                                        // v3: KEM byte at offset 73, then PN at 74, Ns at 78
+                                        // v2: no KEM byte, PN at 73, Ns at 77
+                                        int pn_offset;
+                                        if (hdr_msg_version >= 3) {
+                                            uint8_t kem_byte = header_plain[73];
+                                            ESP_LOGI(TAG, "      KEM: 0x%02x '%c' %s (offset 73)",
+                                                     kem_byte, kem_byte, kem_byte == 0x30 ? "(Nothing)" : "(Just - PQ!)");
+                                            pn_offset = 74;  // After KEM byte
+                                        } else {
+                                            pn_offset = 73;  // No KEM byte in v2
+                                        }
+                                        
+                                        uint32_t hdr_pn = (header_plain[pn_offset] << 24) | (header_plain[pn_offset+1] << 16) |
+                                                          (header_plain[pn_offset+2] << 8)  | header_plain[pn_offset+3];
+                                        uint32_t hdr_ns = (header_plain[pn_offset+4] << 24) | (header_plain[pn_offset+5] << 16) |
+                                                          (header_plain[pn_offset+6] << 8)  | header_plain[pn_offset+7];
                                         ESP_LOGI(TAG, "      PN (prev chain): %u", hdr_pn);
                                         ESP_LOGI(TAG, "      Ns (msg number): %u", hdr_ns);
                                         
@@ -1320,6 +1361,7 @@ static void smp_connect(void) {
                                             if (body_plain) {
                                                 size_t body_plain_len = 0;
                                                 int body_ret = ratchet_decrypt_body(
+                                                    RATCHET_MODE_SAME,
                                                     peer_dh_from_header,
                                                     hdr_pn, hdr_ns,
                                                     em_header, (size_t)em_header_len,
@@ -1473,6 +1515,25 @@ static void smp_connect(void) {
                                 // END PHASE 2a
                                 // ================================================================
                             }
+                            
+                            // ================================================================
+                            // AUFTRAG 25b: HELLO without KEY (TEST)
+                            // KEY skipped to test if it's needed
+                            // ================================================================
+                            {
+                                ESP_LOGI(TAG, "");
+                                ESP_LOGI(TAG, "   📤 Sending HELLO (WITHOUT KEY - test!)...");
+                                
+                                contact_t *hello_contact = &contacts_db.contacts[0];
+                                if (peer_send_hello(hello_contact)) {
+                                    ESP_LOGI(TAG, "   ✅ HELLO sent! Waiting for peer HELLO...");
+                                } else {
+                                    ESP_LOGE(TAG, "   ❌ HELLO send failed!");
+                                }
+                            }
+                            // ================================================================
+                            // END AUFTRAG 25b
+                            // ================================================================
                             
                         } else if (priv_tag == '_') {  // PHEmpty
                             ESP_LOGI(TAG, "      PHEmpty — kein Auth Key, AgentMsgEnvelope folgt ab offset 1");
