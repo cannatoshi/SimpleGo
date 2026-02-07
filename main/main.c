@@ -921,13 +921,22 @@ static void smp_connect(void) {
                         ESP_LOGI(TAG, "      |  🎉 E2E LAYER 2 DECRYPT SUCCESS!            |");
                         ESP_LOGI(TAG, "      +----------------------------------------------+");
                         ESP_LOGI(TAG, "      Decrypted %d bytes!", e2e_plain_len);
-                        ESP_LOGI(TAG, "      First 64 bytes:");
-                        printf("         ");
-                        for (int i = 0; i < 64 && i < e2e_plain_len; i++) {
-                            printf("%02x ", e2e_plain[i]);
-                            if ((i + 1) % 16 == 0) printf("\n         ");
+                        // Auftrag 38b: Hex+ASCII dump after E2E decrypt (256 bytes)
+                        {
+                            size_t dump_len = e2e_plain_len < 256 ? e2e_plain_len : 256;
+                            ESP_LOGI(TAG, "      📋 E2E decrypted dump (%zu of %d bytes):", dump_len, e2e_plain_len);
+                            for (size_t di = 0; di < dump_len; di += 16) {
+                                char hex[64] = {0};
+                                char asc[20] = {0};
+                                int hx = 0;
+                                for (size_t dj = 0; dj < 16 && (di+dj) < dump_len; dj++) {
+                                    uint8_t b = e2e_plain[di+dj];
+                                    hx += sprintf(&hex[hx], "%02x ", b);
+                                    asc[dj] = (b >= 0x20 && b < 0x7f) ? (char)b : '.';
+                                }
+                                ESP_LOGI(TAG, "        +%04zu: %-48s |%s|", di, hex, asc);
+                            }
                         }
-                        printf("\n");
                         
                         // ================================================================
                         // 🐰 SESSION 19: AgentConfirmation Full Parse
@@ -992,6 +1001,24 @@ static void smp_connect(void) {
                             }
                             
                             // === SCHRITT 4: EncRatchetMessage parsen ===
+                            // Auftrag 38b: Dump EncRatchetMessage area before parsing
+                            {
+                                size_t remaining = original_len - cm_offset;
+                                size_t dump_len = remaining < 256 ? remaining : 256;
+                                ESP_LOGI(TAG, "      📋 EncRatchetMessage raw at cm_offset=%d (%zu of %zu bytes):",
+                                         cm_offset, dump_len, remaining);
+                                for (size_t di = 0; di < dump_len; di += 16) {
+                                    char hex[64] = {0};
+                                    char asc[20] = {0};
+                                    int hx = 0;
+                                    for (size_t dj = 0; dj < 16 && (di+dj) < dump_len; dj++) {
+                                        uint8_t b = client_msg[cm_offset + di + dj];
+                                        hx += sprintf(&hex[hx], "%02x ", b);
+                                        asc[dj] = (b >= 0x20 && b < 0x7f) ? (char)b : '.';
+                                    }
+                                    ESP_LOGI(TAG, "        +%04zu: %-48s |%s|", di, hex, asc);
+                                }
+                            }
                             // v3: 2-byte emHeader length prefix (Word16 BE, Large encoding)
                             uint16_t em_header_len = (client_msg[cm_offset] << 8) | client_msg[cm_offset + 1];
                             cm_offset += 2;
@@ -1137,18 +1164,28 @@ static void smp_connect(void) {
                                              eh_body_ptr[0], eh_body_ptr[1], eh_body_ptr[2], eh_body_ptr[3]);
                                     
                                     // Prepare swapped rcAD (peer_key1 || our_key1)
-                                    uint8_t rcAD_swapped[112];
-                                    memcpy(rcAD_swapped, rs->assoc_data + 56, 56);  // second → first
-                                    memcpy(rcAD_swapped + 56, rs->assoc_data, 56);  // first → second
+                                    // rcAD_swapped moved into fallback block below
                                     
-                                    uint8_t header_plain[128];
+                                    // ================================================================
+                                    // FIX 1: Dynamic buffer for header_plain
+                                    // ehBody can be 88 (non-PQ) or 2310+ (PQ with Kyber1024)
+                                    // ================================================================
+                                    uint8_t *header_plain = malloc(eh_body_len + 16);  // +16 safety margin
+                                    if (!header_plain) {
+                                        ESP_LOGE(TAG, "      ❌ malloc header_plain (%u bytes) failed!", eh_body_len);
+                                        // Don't use break here - we're in a deeply nested block
+                                        // Just skip the header decrypt section
+                                        goto skip_header_decrypt;
+                                    }
+                                    
                                     mbedtls_gcm_context gcm;
                                     int hdr_ret;
                                     bool header_decrypted = false;
-                                    
-                                    // ---- Try 1: header_key_recv + normal rcAD ----
+                                    int decrypt_mode = -1;  // 0=SameRatchet(HKr), 1=AdvanceRatchet(NHKr)
+
+                                    // ---- Try 1: header_key_recv + rcAD → SameRatchet ----
                                     ESP_LOGI(TAG, "");
-                                    ESP_LOGI(TAG, "      [Try 1] header_key_recv + rcAD (our||peer)");
+                                    ESP_LOGI(TAG, "      [Try 1] header_key_recv (HKr) + rcAD → SameRatchet");
                                     mbedtls_gcm_init(&gcm);
                                     mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, rs->header_key_recv, 256);
                                     hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
@@ -1156,125 +1193,86 @@ static void smp_connect(void) {
                                                 eh_tag_ptr, 16, eh_body_ptr, header_plain);
                                     mbedtls_gcm_free(&gcm);
                                     ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
-                                    if (hdr_ret == 0) header_decrypted = true;
-                                    
-                                    // ---- Try 2: header_key_send + normal rcAD ----
+                                    if (hdr_ret == 0) { header_decrypted = true; decrypt_mode = 0; }
+
+                                    // ---- Try 2: next_header_key_recv + rcAD → AdvanceRatchet ----
                                     if (!header_decrypted) {
-                                        ESP_LOGI(TAG, "      [Try 2] header_key_send + rcAD (our||peer)");
+                                        ESP_LOGI(TAG, "      [Try 2] next_header_key_recv (NHKr) + rcAD → AdvanceRatchet");
+                                        mbedtls_gcm_init(&gcm);
+                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, rs->next_header_key_recv, 256);
+                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
+                                                    eh_iv_ptr, 16, rs->assoc_data, 112,
+                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
+                                        mbedtls_gcm_free(&gcm);
+                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
+                                        if (hdr_ret == 0) { header_decrypted = true; decrypt_mode = 1; }
+                                    }
+
+                                    // ---- Debug Fallbacks (Tries 3-6) — should NOT be needed ----
+                                    if (!header_decrypted) {
+                                        ESP_LOGW(TAG, "      ⚠️ Normal keys failed — trying debug fallbacks...");
+
+                                        // Try 3: header_key_send + normal rcAD
+                                        ESP_LOGI(TAG, "      [Try 3] header_key_send + rcAD");
                                         mbedtls_gcm_init(&gcm);
                                         mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, rs->header_key_send, 256);
                                         hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
                                                     eh_iv_ptr, 16, rs->assoc_data, 112,
                                                     eh_tag_ptr, 16, eh_body_ptr, header_plain);
                                         mbedtls_gcm_free(&gcm);
-                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
-                                        if (hdr_ret == 0) header_decrypted = true;
+                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌");
+                                        if (hdr_ret == 0) { header_decrypted = true; decrypt_mode = 1; }
                                     }
-                                    
-                                    // ---- Try 3: header_key_recv + SWAPPED rcAD ----
+
                                     if (!header_decrypted) {
-                                        ESP_LOGI(TAG, "      [Try 3] header_key_recv + rcAD SWAPPED (peer||our)");
-                                        mbedtls_gcm_init(&gcm);
-                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, rs->header_key_recv, 256);
-                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
-                                                    eh_iv_ptr, 16, rcAD_swapped, 112,
-                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
-                                        mbedtls_gcm_free(&gcm);
-                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
-                                        if (hdr_ret == 0) header_decrypted = true;
+                                        // Tries 4-6: SWAPPED rcAD variants
+                                        uint8_t rcAD_swapped[112];
+                                        memcpy(rcAD_swapped, rs->assoc_data + 56, 56);
+                                        memcpy(rcAD_swapped + 56, rs->assoc_data, 56);
+
+                                        const uint8_t *fallback_keys[] = { rs->header_key_recv, rs->next_header_key_recv, rs->header_key_send };
+                                        const char *fallback_names[] = { "HKr+swapped", "NHKr+swapped", "HKs+swapped" };
+                                        for (int fi = 0; fi < 3 && !header_decrypted; fi++) {
+                                            ESP_LOGI(TAG, "      [Try %d] %s", fi + 4, fallback_names[fi]);
+                                            mbedtls_gcm_init(&gcm);
+                                            mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, fallback_keys[fi], 256);
+                                            hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
+                                                        eh_iv_ptr, 16, rcAD_swapped, 112,
+                                                        eh_tag_ptr, 16, eh_body_ptr, header_plain);
+                                            mbedtls_gcm_free(&gcm);
+                                            ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌");
+                                            if (hdr_ret == 0) { header_decrypted = true; decrypt_mode = 1; }
+                                        }
                                     }
-                                    
-                                    // ---- Try 4: header_key_send + SWAPPED rcAD ----
-                                    if (!header_decrypted) {
-                                        ESP_LOGI(TAG, "      [Try 4] header_key_send + rcAD SWAPPED (peer||our)");
-                                        mbedtls_gcm_init(&gcm);
-                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, rs->header_key_send, 256);
-                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
-                                                    eh_iv_ptr, 16, rcAD_swapped, 112,
-                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
-                                        mbedtls_gcm_free(&gcm);
-                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
-                                        if (hdr_ret == 0) header_decrypted = true;
-                                    }
-                                    
-                                    // ---- Tries 5-8: SAVED original X3DH keys ----
+
+                                    // Saved X3DH keys as last resort
                                     const uint8_t *orig_hk = ratchet_get_saved_hk();
                                     const uint8_t *orig_nhk = ratchet_get_saved_nhk();
-                                    
-                                    if (orig_hk && orig_nhk && !header_decrypted) {
-                                        ESP_LOGI(TAG, "");
-                                        ESP_LOGI(TAG, "      === Trying SAVED X3DH keys ===");
-                                        ESP_LOGI(TAG, "      saved_hk:  %02x%02x%02x%02x%02x%02x%02x%02x...",
-                                                 orig_hk[0], orig_hk[1], orig_hk[2], orig_hk[3],
-                                                 orig_hk[4], orig_hk[5], orig_hk[6], orig_hk[7]);
-                                        ESP_LOGI(TAG, "      saved_nhk: %02x%02x%02x%02x%02x%02x%02x%02x...",
-                                                 orig_nhk[0], orig_nhk[1], orig_nhk[2], orig_nhk[3],
-                                                 orig_nhk[4], orig_nhk[5], orig_nhk[6], orig_nhk[7]);
-                                        ESP_LOGI(TAG, "      curr hk_s: %02x%02x%02x%02x...",
-                                                 rs->header_key_send[0], rs->header_key_send[1],
-                                                 rs->header_key_send[2], rs->header_key_send[3]);
-                                        ESP_LOGI(TAG, "      curr hk_r: %02x%02x%02x%02x...",
-                                                 rs->header_key_recv[0], rs->header_key_recv[1],
-                                                 rs->header_key_recv[2], rs->header_key_recv[3]);
-                                        bool hk_changed = (memcmp(orig_hk, rs->header_key_send, 32) != 0);
-                                        bool nhk_changed = (memcmp(orig_nhk, rs->header_key_recv, 32) != 0);
-                                        ESP_LOGW(TAG, "      hk changed since X3DH: %s", hk_changed ? "YES ⚠️" : "no");
-                                        ESP_LOGW(TAG, "      nhk changed since X3DH: %s", nhk_changed ? "YES ⚠️" : "no");
-                                        
-                                        // ---- Try 5: saved_nhk + normal rcAD ----
-                                        ESP_LOGI(TAG, "      [Try 5] saved_nhk + rcAD (our||peer)");
-                                        mbedtls_gcm_init(&gcm);
-                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, orig_nhk, 256);
-                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
-                                                    eh_iv_ptr, 16, rs->assoc_data, 112,
-                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
-                                        mbedtls_gcm_free(&gcm);
-                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
-                                        if (hdr_ret == 0) header_decrypted = true;
+                                    if (!header_decrypted && orig_hk && orig_nhk) {
+                                        ESP_LOGW(TAG, "      === Last resort: SAVED X3DH keys ===");
+                                        const uint8_t *saved_keys[] = { orig_nhk, orig_hk };
+                                        const char *saved_names[] = { "saved_nhk+rcAD", "saved_hk+rcAD" };
+                                        for (int si = 0; si < 2 && !header_decrypted; si++) {
+                                            ESP_LOGI(TAG, "      [Try %d] %s", si + 7, saved_names[si]);
+                                            mbedtls_gcm_init(&gcm);
+                                            mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, saved_keys[si], 256);
+                                            hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
+                                                        eh_iv_ptr, 16, rs->assoc_data, 112,
+                                                        eh_tag_ptr, 16, eh_body_ptr, header_plain);
+                                            mbedtls_gcm_free(&gcm);
+                                            ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌");
+                                            if (hdr_ret == 0) { header_decrypted = true; decrypt_mode = 1; }
+                                        }
                                     }
-                                    
-                                    if (orig_hk && orig_nhk && !header_decrypted) {
-                                        // ---- Try 6: saved_hk + normal rcAD ----
-                                        ESP_LOGI(TAG, "      [Try 6] saved_hk + rcAD (our||peer)");
-                                        mbedtls_gcm_init(&gcm);
-                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, orig_hk, 256);
-                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
-                                                    eh_iv_ptr, 16, rs->assoc_data, 112,
-                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
-                                        mbedtls_gcm_free(&gcm);
-                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
-                                        if (hdr_ret == 0) header_decrypted = true;
+
+                                    if (!header_decrypted) {
+                                        ESP_LOGE(TAG, "      ❌ Header decrypt FAILED with ALL keys!");
                                     }
-                                    
-                                    if (orig_hk && orig_nhk && !header_decrypted) {
-                                        // ---- Try 7: saved_nhk + SWAPPED rcAD ----
-                                        ESP_LOGI(TAG, "      [Try 7] saved_nhk + rcAD SWAPPED (peer||our)");
-                                        mbedtls_gcm_init(&gcm);
-                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, orig_nhk, 256);
-                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
-                                                    eh_iv_ptr, 16, rcAD_swapped, 112,
-                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
-                                        mbedtls_gcm_free(&gcm);
-                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
-                                        if (hdr_ret == 0) header_decrypted = true;
-                                    }
-                                    
-                                    if (orig_hk && orig_nhk && !header_decrypted) {
-                                        // ---- Try 8: saved_hk + SWAPPED rcAD ----
-                                        ESP_LOGI(TAG, "      [Try 8] saved_hk + rcAD SWAPPED (peer||our)");
-                                        mbedtls_gcm_init(&gcm);
-                                        mbedtls_gcm_setkey(&gcm, MBEDTLS_CIPHER_ID_AES, orig_hk, 256);
-                                        hdr_ret = mbedtls_gcm_auth_decrypt(&gcm, eh_body_len,
-                                                    eh_iv_ptr, 16, rcAD_swapped, 112,
-                                                    eh_tag_ptr, 16, eh_body_ptr, header_plain);
-                                        mbedtls_gcm_free(&gcm);
-                                        ESP_LOGI(TAG, "      Result: %d %s", hdr_ret, hdr_ret == 0 ? "✅ SUCCESS!" : "❌ MAC mismatch");
-                                        if (hdr_ret == 0) header_decrypted = true;
-                                    }
-                                    
-                                    if (!orig_hk || !orig_nhk) {
-                                        ESP_LOGE(TAG, "      ⚠️ Saved X3DH keys NOT available — X3DH didn't run?");
-                                    }
+
+                                    // Log which mode was used
+                                    ESP_LOGI(TAG, "      decrypt_mode: %d (%s)", decrypt_mode,
+                                             decrypt_mode == 0 ? "SameRatchet" :
+                                             decrypt_mode == 1 ? "AdvanceRatchet" : "FAILED");
                                     
                                     // === Ergebnis ===
                                     ESP_LOGI(TAG, "");
@@ -1282,6 +1280,17 @@ static void smp_connect(void) {
                                         ESP_LOGI(TAG, "      ╔═══════════════════════════════════════════════════════╗");
                                         ESP_LOGI(TAG, "      ║  🎉 HEADER DECRYPT SUCCESS!                           ║");
                                         ESP_LOGI(TAG, "      ╚═══════════════════════════════════════════════════════╝");
+
+                                        // DEBUG 32b: Hex dump decrypted MsgHeader
+                                        ESP_LOGI(TAG, "      MsgHeader raw (first 128 of %u bytes):", eh_body_len);
+                                        for (int di = 0; di < 128 && di < (int)eh_body_len; di += 16) {
+                                            char hex[64] = {0};
+                                            int hx = 0;
+                                            for (int dj = 0; dj < 16 && (di+dj) < (int)eh_body_len; dj++) {
+                                                hx += sprintf(&hex[hx], "%02x ", header_plain[di+dj]);
+                                            }
+                                            ESP_LOGI(TAG, "        +%04d: %s", di, hex);
+                                        }
                                         
                                         // Parse MsgHeader
                                         uint16_t hdr_content_len = (header_plain[0] << 8) | header_plain[1];
@@ -1302,28 +1311,64 @@ static void smp_connect(void) {
                                             printf("\n");
                                         }
                                         
-                                        // v3: KEM byte at offset 73, then PN at 74, Ns at 78
-                                        // v2: no KEM byte, PN at 73, Ns at 77
-                                        int pn_offset;
+                                        // === v3 MsgHeader Parser (dynamic offsets, PQ-aware) ===
+                                        // Layout: [2B contentLen][2B version][1B keyLen][N key][KEM field][4B PN][4B Ns][padding]
+                                        int mhp = 5 + hdr_key_len;  // Skip: 2B contentLen + 2B version + 1B keyLen + key
+                                        ESP_LOGI(TAG, "      MsgHeader parse: after DH key, offset=%d", mhp);
+
                                         if (hdr_msg_version >= 3) {
-                                            uint8_t kem_byte = header_plain[73];
-                                            ESP_LOGI(TAG, "      KEM: 0x%02x '%c' %s (offset 73)",
-                                                     kem_byte, kem_byte, kem_byte == 0x30 ? "(Nothing)" : "(Just - PQ!)");
-                                            pn_offset = 74;  // After KEM byte
-                                        } else {
-                                            pn_offset = 73;  // No KEM byte in v2
+                                            uint8_t kem_byte = header_plain[mhp];
+                                            if (kem_byte == 0x30) {
+                                                // '0' = Nothing (no PQ) — 1 byte only
+                                                ESP_LOGI(TAG, "      KEM: 0x30 '0' (Nothing) at offset %d", mhp);
+                                                mhp += 1;
+                                            } else if (kem_byte == 0x31) {
+                                                // '1' = Just — PQ KEM data follows
+                                                mhp += 1;  // consume '1' tag
+                                                uint8_t kem_state = header_plain[mhp];
+                                                ESP_LOGI(TAG, "      KEM: Just, state=0x%02x '%c' at offset %d",
+                                                         kem_state, kem_state, mhp);
+                                                mhp += 1;  // consume state tag
+
+                                                if (kem_state == 0x50) {
+                                                    // 'P' = Proposed: 2B len + PK data
+                                                    uint16_t pk_len = (header_plain[mhp] << 8) | header_plain[mhp+1];
+                                                    mhp += 2;
+                                                    ESP_LOGI(TAG, "      KEM Proposed: skip %u bytes PK", pk_len);
+                                                    mhp += pk_len;
+                                                } else if (kem_state == 0x41) {
+                                                    // 'A' = Accepted: 2B len + CT, then 2B len + PK
+                                                    uint16_t ct_len_kem = (header_plain[mhp] << 8) | header_plain[mhp+1];
+                                                    mhp += 2;
+                                                    ESP_LOGI(TAG, "      KEM Accepted: skip %u bytes CT", ct_len_kem);
+                                                    mhp += ct_len_kem;
+                                                    uint16_t pk_len = (header_plain[mhp] << 8) | header_plain[mhp+1];
+                                                    mhp += 2;
+                                                    ESP_LOGI(TAG, "      KEM Accepted: skip %u bytes PK", pk_len);
+                                                    mhp += pk_len;
+                                                } else {
+                                                    ESP_LOGW(TAG, "      ⚠️ Unknown KEM state: 0x%02x — trying to continue", kem_state);
+                                                }
+                                            } else {
+                                                ESP_LOGW(TAG, "      ⚠️ Unknown KEM tag: 0x%02x at offset %d", kem_byte, mhp);
+                                                mhp += 1;  // skip unknown byte, hope for the best
+                                            }
                                         }
-                                        
-                                        uint32_t hdr_pn = (header_plain[pn_offset] << 24) | (header_plain[pn_offset+1] << 16) |
-                                                          (header_plain[pn_offset+2] << 8)  | header_plain[pn_offset+3];
-                                        uint32_t hdr_ns = (header_plain[pn_offset+4] << 24) | (header_plain[pn_offset+5] << 16) |
-                                                          (header_plain[pn_offset+6] << 8)  | header_plain[pn_offset+7];
+                                        // else: v2 has no KEM field, mhp already correct
+
+                                        ESP_LOGI(TAG, "      PN/Ns at offset %d", mhp);
+                                        uint32_t hdr_pn = (header_plain[mhp] << 24) | (header_plain[mhp+1] << 16) |
+                                                          (header_plain[mhp+2] << 8)  | header_plain[mhp+3];
+                                        mhp += 4;
+                                        uint32_t hdr_ns = (header_plain[mhp] << 24) | (header_plain[mhp+1] << 16) |
+                                                          (header_plain[mhp+2] << 8)  | header_plain[mhp+3];
+                                        mhp += 4;
                                         ESP_LOGI(TAG, "      PN (prev chain): %u", hdr_pn);
                                         ESP_LOGI(TAG, "      Ns (msg number): %u", hdr_ns);
                                         
-                                        ESP_LOGI(TAG, "      Full MsgHeader (88 bytes):");
+                                        ESP_LOGI(TAG, "      Full MsgHeader (first 88 bytes):");
                                         printf("         ");
-                                        for (int i = 0; i < 88; i++) {
+                                        for (int i = 0; i < 88 && i < (int)eh_body_len; i++) {
                                             printf("%02x", header_plain[i]);
                                             if ((i+1) % 32 == 0) printf("\n         ");
                                         }
@@ -1340,28 +1385,54 @@ static void smp_connect(void) {
                                             uint8_t peer_dh_from_header[56];
                                             memcpy(peer_dh_from_header, &header_plain[17], 56);
                                             
-                                            // Reconstruct pointers:
-                                            //   emAuthTag = em_header + em_header_len
-                                            //   emBody    = em_header + em_header_len + 16
-                                            //   emBody_len = original_len - (emBody offset in client_msg)
+                                            // ================================================================
+                                            // FIX 2: Reconstruct pointers dynamically with validation
+                                            // EncRatchetMessage = [2B prefix][emHeader][16B authTag][encrypted_body]
+                                            // em_header points AFTER 2B prefix, em_header_len = wire value
+                                            // ================================================================
                                             const uint8_t *body_em_auth_tag = em_header + em_header_len;
                                             const uint8_t *body_em_body = em_header + em_header_len + 16;
-                                            size_t body_em_body_len = original_len - (size_t)(body_em_body - client_msg);
+                                            
+                                            // Calculate offset and length relative to client_msg
+                                            size_t auth_tag_offset_in_msg = (size_t)(body_em_auth_tag - client_msg);
+                                            size_t body_offset_in_msg = (size_t)(body_em_body - client_msg);
+                                            
+                                            // Sanity check: body_offset must be within original_len
+                                            size_t body_em_body_len = 0;
+                                            if (body_offset_in_msg < original_len) {
+                                                body_em_body_len = original_len - body_offset_in_msg;
+                                            }
                                             
                                             ESP_LOGI(TAG, "");
                                             ESP_LOGI(TAG, "      📐 Body Decrypt Pointers:");
-                                            ESP_LOGI(TAG, "         em_header at client_msg+%d, len=%u",
+                                            ESP_LOGI(TAG, "         em_header at client_msg+%d, em_header_len=%u",
                                                      (int)(em_header - client_msg), em_header_len);
-                                            ESP_LOGI(TAG, "         emAuthTag at client_msg+%d",
-                                                     (int)(body_em_auth_tag - client_msg));
-                                            ESP_LOGI(TAG, "         emBody    at client_msg+%d, len=%zu",
-                                                     (int)(body_em_body - client_msg), body_em_body_len);
+                                            ESP_LOGI(TAG, "         emAuthTag at client_msg+%zu",
+                                                     auth_tag_offset_in_msg);
+                                            ESP_LOGI(TAG, "         emBody at client_msg+%zu, len=%zu",
+                                                     body_offset_in_msg, body_em_body_len);
+                                            ESP_LOGI(TAG, "         original_len=%u", original_len);
+                                            
+                                            // Validate pointers are within bounds
+                                            if (body_offset_in_msg >= original_len || body_em_body_len == 0) {
+                                                ESP_LOGE(TAG, "      ❌ emBody exceeds message bounds!");
+                                                ESP_LOGE(TAG, "         body_offset=%zu >= original_len=%u",
+                                                         body_offset_in_msg, original_len);
+                                                free(header_plain);
+                                                goto skip_header_decrypt;
+                                            }
+                                            
+                                            if (auth_tag_offset_in_msg + 16 > original_len) {
+                                                ESP_LOGE(TAG, "      ❌ emAuthTag exceeds message bounds!");
+                                                free(header_plain);
+                                                goto skip_header_decrypt;
+                                            }
                                             
                                             uint8_t *body_plain = malloc(body_em_body_len + 16);
                                             if (body_plain) {
                                                 size_t body_plain_len = 0;
                                                 int body_ret = ratchet_decrypt_body(
-                                                    RATCHET_MODE_SAME,
+                                                    decrypt_mode == 0 ? RATCHET_MODE_SAME : RATCHET_MODE_ADVANCE,
                                                     peer_dh_from_header,
                                                     hdr_pn, hdr_ns,
                                                     em_header, (size_t)em_header_len,
@@ -1380,16 +1451,22 @@ static void smp_connect(void) {
                                                              body_plain[0],
                                                              (body_plain[0] >= 0x20 && body_plain[0] < 0x7f) ? (char)body_plain[0] : '?');
                                                     
-                                                    // Dump first 64 bytes after tag
-                                                    ESP_LOGI(TAG, "      Payload after tag (first 64 bytes):");
-                                                    printf("         HEX: ");
-                                                    for (size_t i = 1; i < 65 && i < body_plain_len; i++) printf("%02x", body_plain[i]);
-                                                    printf("\n         ASCII: ");
-                                                    for (size_t i = 1; i < 65 && i < body_plain_len; i++) {
-                                                        char c = body_plain[i];
-                                                        printf("%c", (c >= 32 && c < 127) ? c : '.');
+                                                    // Auftrag 37b: Hex+ASCII dump first 256 bytes
+                                                    {
+                                                        size_t dump_len = body_plain_len < 256 ? body_plain_len : 256;
+                                                        ESP_LOGI(TAG, "      📋 Payload dump (%zu of %zu bytes):", dump_len, body_plain_len);
+                                                        for (size_t di = 0; di < dump_len; di += 16) {
+                                                            char hex[64] = {0};
+                                                            char asc[20] = {0};
+                                                            int hx = 0;
+                                                            for (size_t dj = 0; dj < 16 && (di+dj) < dump_len; dj++) {
+                                                                uint8_t b = body_plain[di+dj];
+                                                                hx += sprintf(&hex[hx], "%02x ", b);
+                                                                asc[dj] = (b >= 0x20 && b < 0x7f) ? (char)b : '.';
+                                                            }
+                                                            ESP_LOGI(TAG, "        +%04zu: %-48s |%s|", di, hex, asc);
+                                                        }
                                                     }
-                                                    printf("\n");
                                                     
                                                     // === Tag-specific handling ===
                                                     if (body_plain[0] == 'D') {
@@ -1491,7 +1568,7 @@ static void smp_connect(void) {
                                                 }
                                                 free(body_plain);
                                             } else {
-                                                ESP_LOGE(TAG, "      ❌ malloc for body_plain failed!");
+                                                ESP_LOGE(TAG, "      ❌ malloc for body_plain (%zu bytes) failed!", body_em_body_len);
                                             }
                                         }
                                         // ================================================================
@@ -1510,7 +1587,14 @@ static void smp_connect(void) {
                                         ESP_LOGE(TAG, "      6. X3DH keys from PEER side differ (asymmetric X3DH)");
                                         ESP_LOGE(TAG, "      Need to compare X3DH intermediate values with Python!");
                                     }
+                                    
+                                    // ================================================================
+                                    // FIX 1 continued: Free header_plain buffer
+                                    // ================================================================
+                                    free(header_plain);
                                 }
+                                
+                                skip_header_decrypt:
                                 // ================================================================
                                 // END PHASE 2a
                                 // ================================================================
