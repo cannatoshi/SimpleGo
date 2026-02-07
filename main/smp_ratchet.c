@@ -1,28 +1,16 @@
 /**
  * SimpleGo - smp_ratchet.c
  * Double Ratchet Encryption - Version 3 Wire Format (non-PQ)
- * v0.1.22-alpha - Updated 2026-02-07
+ * v0.1.23-alpha - Updated 2026-02-07
  * 
- * CRITICAL FIX: rcAD = initiator_pub || responder_pub (ABSOLUTE order!)
- * We are RESPONDER (we respond to peer's invitation)
- * Peer is INITIATOR (they sent the invitation)
- * Therefore: rcAD = peer_key1 || our_key1 (NOT our || peer!)
+ * SESSION 22 FIXES:
+ * - Fix 1: X3DH nhk → next_header_key_recv (NOT header_key_recv!)
+ * - Fix 2: ratchet_init_sender saves NHKs to next_header_key_send
+ * - Fix 3: ratchet_decrypt_body does proper HK←NHK promotion per Signal spec
  * 
- * EncRatchetMessage (v3):
- *   [2B emHeader-len (0x007C = 124)][124B emHeader][16B payload AuthTag][Tail encrypted_payload]
- * 
- * emHeader (EncMessageHeader v3):
- *   [2B ehVersion][16B ehIV direct][16B ehAuthTag direct][2B ehBody-len (0x0058)][88B encrypted MsgHeader]
- *   Total: 2 + 16 + 16 + 2 + 88 = 124 bytes
- * 
- * MsgHeader (v3, non-PQ):
- *   [2B Word16 content=80][2B msgMaxVersion=3][1B DH-len=68][68B SPKI][1B KEM='0'=Nothing][4B PN][4B Ns][6B '#' padding]
- *   Total: 2 + 80 + 6 = 88 bytes
- * 
- * AAD (Associated Data) für BEIDE AES-GCM-Operationen:
- *   Header: rcAD (112 bytes) 
- *   Payload: rcAD (112 bytes) + emHeader (124 bytes) = 236 bytes
- *   rcAD = initiator_key1_public (56) || responder_key1_public (56)
+ * Signal Double Ratchet with Header Encryption spec:
+ *   DHRatchetHE(): state.HKs = state.NHKs; state.HKr = state.NHKr;
+ *   Then NHKs/NHKr ← KDF output
  */
 
 #include "smp_ratchet.h"
@@ -38,20 +26,20 @@
 static const char *TAG = "SMP_RATCH";
 
 // Constants
-#define RATCHET_VERSION         3    // v3: 2-byte Large length prefixes, KEM Nothing field
-#define MSG_HEADER_CONTENT_LEN  80   // v3: 80 bytes (v2 was 79, +1 for KEM Nothing)
-#define MSG_HEADER_PADDED_LEN   88   // Padded to 88 bytes
+#define RATCHET_VERSION         3
+#define MSG_HEADER_CONTENT_LEN  80
+#define MSG_HEADER_PADDED_LEN   88
 #define GCM_IV_LEN              16
 #define GCM_TAG_LEN             16
-#define AAD_FULL_LEN            200  // 112 (rcAD) + 88 (plaintext MsgHeader)
+#define AAD_FULL_LEN            200
 
 // ============== Ratchet State ==============
 
 static ratchet_state_t ratchet_state = {0};
 
 // Saved X3DH keys (before ratchet_init_sender modifies them)
-static uint8_t saved_x3dh_hk[32] = {0};   // hk = HKDF[0-31]
-static uint8_t saved_x3dh_nhk[32] = {0};  // nhk = HKDF[32-63]
+static uint8_t saved_x3dh_hk[32] = {0};
+static uint8_t saved_x3dh_nhk[32] = {0};
 static bool saved_x3dh_valid = false;
 
 // ============== Helper Functions ==============
@@ -119,9 +107,9 @@ static void kdf_root(const uint8_t *root_key, const uint8_t *dh_out,
     hkdf_sha512(root_key, 32, dh_out, 56,
                 (const uint8_t *)"SimpleXRootRatchet", 18,
                 kdf_output, 96);
-    memcpy(new_root_key, kdf_output, 32);       // bytes 0-31 = NEW ROOT KEY
-    memcpy(chain_key, kdf_output + 32, 32);     // bytes 32-63 = chain key
-    memcpy(next_header_key, kdf_output + 64, 32); // bytes 64-95 = NEXT HEADER KEY
+    memcpy(new_root_key, kdf_output, 32);
+    memcpy(chain_key, kdf_output + 32, 32);
+    memcpy(next_header_key, kdf_output + 64, 32);
 }
 
 static void kdf_chain(const uint8_t *chain_key,
@@ -133,8 +121,8 @@ static void kdf_chain(const uint8_t *chain_key,
                 kdf_output, 96);
     memcpy(next_chain_key, kdf_output, 32);
     memcpy(message_key, kdf_output + 32, 32);
-    memcpy(msg_iv, kdf_output + 64, 16);     // iv1 = bytes 64-79 für MESSAGE
-    memcpy(header_iv, kdf_output + 80, 16);  // iv2 = bytes 80-95 für HEADER
+    memcpy(msg_iv, kdf_output + 64, 16);
+    memcpy(header_iv, kdf_output + 80, 16);
 }
 
 // ============== X3DH Key Agreement ==============
@@ -146,16 +134,11 @@ bool ratchet_x3dh_sender(const uint8_t *peer_key1,
     ESP_LOGI(TAG, "🔐 X3DH Key Agreement (sender)...");
     ESP_LOGI(TAG, "   Note: We are RESPONDER, peer is INITIATOR");
 
-    // X3DH DH computations (order verified against Haskell):
-    // DH1 = initiator_identity × responder_ephemeral = peer_key1 × our_key2
-    // DH2 = initiator_ephemeral × responder_identity = peer_key2 × our_key1  
-    // DH3 = initiator_ephemeral × responder_ephemeral = peer_key2 × our_key2
     uint8_t dh1[56], dh2[56], dh3[56];
-    if (!x448_dh(peer_key1, our_key2->private_key, dh1)) return false;  // DH1
-    if (!x448_dh(peer_key2, our_key1->private_key, dh2)) return false;  // DH2
-    if (!x448_dh(peer_key2, our_key2->private_key, dh3)) return false;  // DH3
+    if (!x448_dh(peer_key1, our_key2->private_key, dh1)) return false;
+    if (!x448_dh(peer_key2, our_key1->private_key, dh2)) return false;
+    if (!x448_dh(peer_key2, our_key2->private_key, dh3)) return false;
 
-    // DEBUG: Print FULL keys for Python comparison
     ESP_LOGI(TAG, "📋 FULL KEYS FOR PYTHON TEST:");
     printf("peer_key1_hex = \"");
     for(int i=0; i<56; i++) printf("%02x", peer_key1[i]);
@@ -176,53 +159,42 @@ bool ratchet_x3dh_sender(const uint8_t *peer_key1,
     for(int i=0; i<56; i++) printf("%02x", our_key2->private_key[i]);
     printf("\"\n");
 
-    // IKM = DH1 || DH2 || DH3 (168 bytes)
     uint8_t dh_combined[168];
     memcpy(dh_combined, dh1, 56);
     memcpy(dh_combined + 56, dh2, 56);
     memcpy(dh_combined + 112, dh3, 56);
 
-    // HKDF with Salt = 64 × 0x00, Info = "SimpleXX3DH"
     uint8_t salt[64] = {0};
     uint8_t kdf_output[96];
     hkdf_sha512(salt, 64, dh_combined, 168,
                 (const uint8_t *)"SimpleXX3DH", 11, kdf_output, 96);
 
-    // Output assignment (verified against Haskell):
-    // bytes 0-31:  hk (header key for sending)
-    // bytes 32-63: nhk (next header key / header key for receiving)
+    // ================================================================
+    // FIX 1: X3DH Output Assignment per Signal spec RatchetInitAliceHE()
+    // bytes 0-31:  hk → HKs (header_key_send) — active send header key
+    // bytes 32-63: nhk → NHKr (next_header_key_recv) — NOT active HKr!
     // bytes 64-95: root_key
-    memcpy(ratchet_state.header_key_send, kdf_output, 32);
-    memcpy(ratchet_state.header_key_recv, kdf_output + 32, 32);
+    // 
+    // Signal: "state.HKr = None; state.NHKr = shared_nhkb"
+    // header_key_recv stays 0x00 until first AdvanceRatchet
+    // ================================================================
+    memcpy(ratchet_state.header_key_send, kdf_output, 32);           // HKs = hk
+    memcpy(ratchet_state.next_header_key_recv, kdf_output + 32, 32); // NHKr = nhk (FIX 1!)
+    // header_key_recv stays 0x00 — no active HKr before first AdvanceRatchet
     memcpy(ratchet_state.root_key, kdf_output + 64, 32);
 
-    // DEBUG: Show X3DH intermediate values
     ESP_LOGI(TAG, "📋 X3DH Debug:");
     printf("   dh1: "); for(int i=0; i<8; i++) printf("%02x", dh1[i]); printf("...\n");
     printf("   dh2: "); for(int i=0; i<8; i++) printf("%02x", dh2[i]); printf("...\n");
     printf("   dh3: "); for(int i=0; i<8; i++) printf("%02x", dh3[i]); printf("...\n");
-    printf("   hk:  "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
-    printf("   nhk: "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
-    printf("   rk:  "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
+    printf("   hk (HKs):   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
+    printf("   nhk (NHKr): "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_recv[i]); printf("...\n");
+    printf("   rk:         "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
 
-    // ========================================================
-    // rcAD = our_key1 || peer_key1 (REVERTED to original)
-    // 
-    // Claude Code analysis said peer||our, but testing shows
-    // the App goes from "Connecting" back to "Request to connect"
-    // meaning it CANNOT decrypt our message with peer||our order.
-    // 
-    // Original order (our||peer) showed "Connecting" which means
-    // the App COULD at least partially process our message.
-    // 
-    // Theory: sk1/rk1 might mean "sender/receiver of this connection"
-    // not "initiator/responder of invitation"
-    // ========================================================
-    memcpy(ratchet_state.assoc_data, our_key1->public_key, 56);   // Our key first
-    memcpy(ratchet_state.assoc_data + 56, peer_key1, 56);          // Peer key second
+    memcpy(ratchet_state.assoc_data, our_key1->public_key, 56);
+    memcpy(ratchet_state.assoc_data + 56, peer_key1, 56);
 
-    // DEBUG: Show rcAD
-    ESP_LOGI(TAG, "📋 rcAD (REVERTED: our || peer):");
+    ESP_LOGI(TAG, "📋 rcAD (our || peer):");
     printf("   our_key1:  ");
     for (int i = 0; i < 16; i++) printf("%02x ", ratchet_state.assoc_data[i]);
     printf("...\n   peer_key1: ");
@@ -231,9 +203,8 @@ bool ratchet_x3dh_sender(const uint8_t *peer_key1,
 
     ESP_LOGI(TAG, "✅ X3DH complete - RootKey: %02x%02x...", ratchet_state.root_key[0], ratchet_state.root_key[1]);
     
-    // 🐰 SAVE original X3DH keys before ratchet_init_sender can modify them!
     memcpy(saved_x3dh_hk, ratchet_state.header_key_send, 32);
-    memcpy(saved_x3dh_nhk, ratchet_state.header_key_recv, 32);
+    memcpy(saved_x3dh_nhk, ratchet_state.next_header_key_recv, 32);
     saved_x3dh_valid = true;
     ESP_LOGI(TAG, "📌 Saved X3DH keys: hk=%02x%02x..., nhk=%02x%02x...",
              saved_x3dh_hk[0], saved_x3dh_hk[1], saved_x3dh_nhk[0], saved_x3dh_nhk[1]);
@@ -244,7 +215,6 @@ bool ratchet_x3dh_sender(const uint8_t *peer_key1,
 // ============== Ratchet Initialization ==============
 
 bool ratchet_init_sender(const uint8_t *peer_dh_public, const x448_keypair_t *our_key2) {
-    // DEBUG: Show inputs
     printf("ratchet_init_sender inputs:\n");
     printf("   peer_dh_public: "); for(int i=0; i<8; i++) printf("%02x", peer_dh_public[i]); printf("...\n");
     printf("   our_key2_pub:   "); for(int i=0; i<8; i++) printf("%02x", our_key2->public_key[i]); printf("...\n");
@@ -265,13 +235,19 @@ bool ratchet_init_sender(const uint8_t *peer_dh_public, const x448_keypair_t *ou
     kdf_root(ratchet_state.root_key, dh_out,
              new_root_key, ratchet_state.chain_key_send, next_header_key);
     memcpy(ratchet_state.root_key, new_root_key, 32);
+    
+    // ================================================================
+    // FIX 2: Save NHKs per Signal spec RatchetInitAliceHE()
+    // "state.RK, state.CKs, state.NHKs = KDF_RK_HE(...)"
+    // NHKs will be promoted to HKs on first AdvanceRatchet
+    // ================================================================
+    memcpy(ratchet_state.next_header_key_send, next_header_key, 32);  // FIX 2!
 
-    // DEBUG: Root KDF output (NACH kdf_root!)
     ESP_LOGI(TAG, "📋 Root KDF output:");
-    printf("   dh_out:    "); for(int i=0; i<8; i++) printf("%02x", dh_out[i]); printf("...\n");
-    printf("   new_rk:    "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
-    printf("   ck:        "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_send[i]); printf("...\n");
-    printf("   next_hk:   "); for(int i=0; i<8; i++) printf("%02x", next_header_key[i]); printf("...\n");
+    printf("   dh_out:         "); for(int i=0; i<8; i++) printf("%02x", dh_out[i]); printf("...\n");
+    printf("   new_rk:         "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
+    printf("   ck:             "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_send[i]); printf("...\n");
+    printf("   next_hk (NHKs): "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_send[i]); printf("...\n");
 
     ratchet_state.msg_num_send = 0;
     ratchet_state.prev_chain_len = 0;
@@ -286,42 +262,31 @@ static void build_msg_header(uint8_t *header, const uint8_t *dh_public,
     memset(header, 0, MSG_HEADER_PADDED_LEN);
     int p = 0;
 
-    // Word16 BE length prefix (content = 80 bytes for v3)
-    // SimpleX Crypto.hs pad(): [2B Word16 len][content][# padding]
     header[p++] = 0x00;
-    header[p++] = 80;  // 0x50 (v3: 80, was v2: 79)
+    header[p++] = 80;
 
-    // msgMaxVersion (Word16 BE)
     header[p++] = 0x00;
-    header[p++] = RATCHET_VERSION;  // 3
+    header[p++] = RATCHET_VERSION;
 
-    // msgDHRs - ByteString with 1-BYTE length prefix!
-    header[p++] = 68;    // SPKI length = 68 (1 BYTE only!)
+    header[p++] = 68;
 
-    // SPKI header + X448 key
     static const uint8_t X448_SPKI_HEADER[12] = {0x30,0x42,0x30,0x05,0x06,0x03,0x2b,0x65,0x6f,0x03,0x39,0x00};
     memcpy(&header[p], X448_SPKI_HEADER, 12); p += 12;
     memcpy(&header[p], dh_public, 56); p += 56;
 
-    // v3: msgKEM = Nothing = ASCII '0' (0x30)
-    header[p++] = 0x30;  // '0' = Nothing (no PQ KEM)
+    header[p++] = 0x30;
 
-    // msgPN (Word32 BE)
     header[p++] = (pn >> 24) & 0xFF;
     header[p++] = (pn >> 16) & 0xFF;
     header[p++] = (pn >> 8)  & 0xFF;
     header[p++] = pn & 0xFF;
 
-    // msgNs (Word32 BE)
     header[p++] = (ns >> 24) & 0xFF;
     header[p++] = (ns >> 16) & 0xFF;
     header[p++] = (ns >> 8)  & 0xFF;
     header[p++] = ns & 0xFF;
 
-    // p = 82 now (2 prefix + 80 content)
-    // '#' padding to reach 88 bytes (6 bytes for v3, was 7 for v2)
     memset(&header[p], '#', 88 - p);
-    // Layout: [2B Word16=80][2B ver][1B len][68B SPKI][1B KEM][4B PN][4B Ns][6B '#'] = 88
 }
 
 // ============== Encrypt Message ==============
@@ -332,11 +297,24 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     
     if (!ratchet_state.initialized) return -1;
 
+    // === Auftrag 35b: Pre-encrypt state dump ===
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "📤 === ENCRYPT STATE (msg_num_send=%u) ===", ratchet_state.msg_num_send);
+    printf("   HKs  (header_key_send):      "); for(int i=0; i<32; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("\n");
+    printf("   NHKs (next_header_key_send):  "); for(int i=0; i<32; i++) printf("%02x", ratchet_state.next_header_key_send[i]); printf("\n");
+    printf("   CKs  (chain_key_send):        "); for(int i=0; i<32; i++) printf("%02x", ratchet_state.chain_key_send[i]); printf("\n");
+    printf("   RK   (root_key):              "); for(int i=0; i<32; i++) printf("%02x", ratchet_state.root_key[i]); printf("\n");
+    printf("   DH self pub:                  "); for(int i=0; i<16; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("...\n");
+    printf("   DH peer:                      "); for(int i=0; i<16; i++) printf("%02x", ratchet_state.dh_peer[i]); printf("...\n");
+    ESP_LOGI(TAG, "   msg_num_send=%u, prev_chain_len=%u",
+             ratchet_state.msg_num_send, ratchet_state.prev_chain_len);
+    ESP_LOGI(TAG, "📤 ================================");
+
     // 1. Derive keys & IVs
+
     uint8_t message_key[32], next_chain_key[32], msg_iv[16], header_iv[16];
     kdf_chain(ratchet_state.chain_key_send, next_chain_key, message_key, msg_iv, header_iv);
     
-    // DEBUG: Show chainKdf outputs
     ESP_LOGI(TAG, "📋 chainKdf Debug:");
     printf("   chain_key_in:  "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_send[i]); printf("...\n");
     printf("   message_key:   "); for(int i=0; i<8; i++) printf("%02x", message_key[i]); printf("...\n");
@@ -346,13 +324,10 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     
     memcpy(ratchet_state.chain_key_send, next_chain_key, 32);
 
-    // 2. Build plaintext MsgHeader
     uint8_t msg_header[MSG_HEADER_PADDED_LEN];
     build_msg_header(msg_header, ratchet_state.dh_self.public_key,
                      ratchet_state.prev_chain_len, ratchet_state.msg_num_send);
     
-    // DEBUG: Show MsgHeader structure
-    // Layout: [2B Word16=80][2B version][1B len][68B SPKI][1B KEM='0'][4B msgPN][4B msgNs][6B '#'] = 88
     ESP_LOGI(TAG, "📋 MsgHeader debug:");
     ESP_LOGI(TAG, "   Word16 len: %02x %02x (=%d)", msg_header[0], msg_header[1], (msg_header[0]<<8)|msg_header[1]);
     ESP_LOGI(TAG, "   msgMaxVersion: %02x %02x", msg_header[2], msg_header[3]);
@@ -364,7 +339,6 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     ESP_LOGI(TAG, "   msgNs: %02x%02x%02x%02x (offset 78)", msg_header[78], msg_header[79], msg_header[80], msg_header[81]);
     ESP_LOGI(TAG, "   padding: %02x (offset 82)", msg_header[82]);
     
-    // FULL HEX DUMP
     ESP_LOGI(TAG, "📋 MsgHeader FULL (88 bytes):");
     printf("   ");
     for (int i = 0; i < 88; i++) {
@@ -373,13 +347,10 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     }
     printf("\n");
 
-    // 3. Build full AAD (rcAD + plaintext MsgHeader) – für BEIDE encryptions
     uint8_t aad_full[AAD_FULL_LEN];
     memcpy(aad_full, ratchet_state.assoc_data, 112);
     memcpy(aad_full + 112, msg_header, MSG_HEADER_PADDED_LEN);
 
-    // 4. Encrypt Header using rcAD (112 bytes) as AAD
-    // FIXED v0.1.22: rcAD is now correct (initiator || responder)
     uint8_t encrypted_header[MSG_HEADER_PADDED_LEN];
     uint8_t header_tag[GCM_TAG_LEN];
     if (aes_gcm_encrypt(ratchet_state.header_key_send, header_iv, GCM_IV_LEN,
@@ -388,66 +359,53 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
                         encrypted_header, header_tag) != 0) {
         return -1;
     }
-    // ===== AES-GCM DEBUG OUTPUT FOR PYTHON VERIFICATION =====
+
     ESP_LOGI(TAG, "📋 AES-GCM TEST DATA (msg %u):", ratchet_state.msg_num_send);
     printf("header_key = \"");
     for (int i = 0; i < 32; i++) printf("%02x", ratchet_state.header_key_send[i]);
     printf("\"\n");
-    
     printf("header_iv = \"");
     for (int i = 0; i < 16; i++) printf("%02x", header_iv[i]);
     printf("\"\n");
-    
     printf("rcAD = \"");
     for (int i = 0; i < 112; i++) printf("%02x", ratchet_state.assoc_data[i]);
     printf("\"\n");
-    
     printf("msg_header_plain = \"");
     for (int i = 0; i < 88; i++) printf("%02x", msg_header[i]);
     printf("\"\n");
-    
     printf("header_tag = \"");
     for (int i = 0; i < 16; i++) printf("%02x", header_tag[i]);
     printf("\"\n");
-    
     printf("encrypted_header = \"");
     for (int i = 0; i < 88; i++) printf("%02x", encrypted_header[i]);
     printf("\"\n");
-    // ===== END DEBUG =====
-    // 5. Build emHeader (124 bytes for Version 3!)
-    // Version 3 uses 2-byte length prefixes (Large encoding, pqRatchetE2EEncryptVersion)
+
     uint8_t em_header[124];
     int hp = 0;
-    em_header[hp++] = 0x00; em_header[hp++] = RATCHET_VERSION;          // ehVersion (Word16 BE) = 3
-    memcpy(&em_header[hp], header_iv, 16); hp += 16;                    // ehIV direct (no length prefix)
-    memcpy(&em_header[hp], header_tag, 16); hp += 16;                   // ehAuthTag direct (no length prefix)
-    em_header[hp++] = 0x00; em_header[hp++] = 0x58;                     // ehBody-len = 88 (2 BYTES for v3! Large encoding)
+    em_header[hp++] = 0x00; em_header[hp++] = RATCHET_VERSION;
+    memcpy(&em_header[hp], header_iv, 16); hp += 16;
+    memcpy(&em_header[hp], header_tag, 16); hp += 16;
+    em_header[hp++] = 0x00; em_header[hp++] = 0x58;
     memcpy(&em_header[hp], encrypted_header, 88); hp += 88;
 
-    // DEBUG: Show emHeader structure
     ESP_LOGI(TAG, "📋 emHeader debug (v3, 124 bytes):");
     ESP_LOGI(TAG, "   ehVersion: %02x %02x (=%d)", em_header[0], em_header[1], (em_header[0]<<8)|em_header[1]);
     ESP_LOGI(TAG, "   ehIV: %02x%02x%02x%02x...", em_header[2], em_header[3], em_header[4], em_header[5]);
     ESP_LOGI(TAG, "   ehAuthTag: %02x%02x%02x%02x...", em_header[18], em_header[19], em_header[20], em_header[21]);
     ESP_LOGI(TAG, "   ehBody len: %02x %02x (=%d, Large encoding)", em_header[34], em_header[35], (em_header[34]<<8)|em_header[35]);
 
-    // 6. Build AAD for payload: rcAD + emHeader
-    uint8_t payload_aad[236];  // 112 + 124 = 236 (v3)
+    uint8_t payload_aad[236];
     memcpy(payload_aad, ratchet_state.assoc_data, 112);
     memcpy(payload_aad + 112, em_header, 124);
     
-    // 6.5 PAD PLAINTEXT TO padded_msg_len BYTES
     uint8_t *padded_payload = malloc(padded_msg_len);
     if (!padded_payload) return -1;
     
-    // Padding format: [2-byte Word16 BE length][plaintext][###...###]
-    // SimpleX Crypto.hs pad() uses Word16 (2 bytes) for AES-GCM!
     padded_payload[0] = (pt_len >> 8) & 0xFF;
     padded_payload[1] = pt_len & 0xFF;
     memcpy(&padded_payload[2], plaintext, pt_len);
     memset(&padded_payload[2 + pt_len], '#', padded_msg_len - 2 - pt_len);
 
-    // ===== AUFTRAG 18c: Layer 5 — Inner Padded Payload =====
     ESP_LOGI(TAG, "🔬 [L5] Inner Padded Payload: %zu bytes", padded_msg_len);
     printf("   L5 first 16: ");
     for (int i = 0; i < 16; i++) printf("%02x ", padded_payload[i]);
@@ -455,9 +413,7 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     printf("   L5 last 4:   ");
     for (size_t i = padded_msg_len - 4; i < padded_msg_len; i++) printf("%02x ", padded_payload[i]);
     printf("\n");
-    // ===== END =====
 
-    // 7. Encrypt payload
     uint8_t *encrypted_payload = malloc(padded_msg_len);
     if (!encrypted_payload) {
         free(padded_payload);
@@ -473,22 +429,18 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
         return -1;
     }
 
-    // 8. Build final output
-    // Format: [2B emHeader-len (Word16 BE)][124B emHeader][16B payload-tag][N encrypted-payload]
     int op = 0;
-    output[op++] = 0x00;   // emHeader length prefix high byte (v3: Word16 = Large)
-    output[op++] = 124;    // emHeader length prefix low byte (0x7C)
+    output[op++] = 0x00;
+    output[op++] = 124;
     memcpy(&output[op], em_header, 124); op += 124;
     memcpy(&output[op], payload_tag, 16); op += 16;
     memcpy(&output[op], encrypted_payload, padded_msg_len); op += padded_msg_len;
     *out_len = op;
 
-    // ===== AUFTRAG 18c: Layer 4 — EncRatchetMessage =====
     ESP_LOGI(TAG, "🔬 [L4] EncRatchetMessage: %zu bytes", *out_len);
     printf("   L4 first 32: ");
     for (size_t i = 0; i < 32 && i < *out_len; i++) printf("%02x ", output[i]);
     printf("\n");
-    // ===== END =====
 
     ratchet_state.msg_num_send++;
     free(padded_payload);
@@ -504,36 +456,28 @@ int ratchet_self_decrypt_test(const uint8_t *ciphertext, size_t ct_len,
                               uint8_t *plaintext, size_t *pt_len) {
     ESP_LOGI(TAG, "🔬 Self-decrypt test (header only)...");
     
-    // Parse the structure we just created
     int p = 0;
-    // v3: 2-byte emHeader length prefix (Word16 BE = 0x007C = 124)
     uint16_t em_hdr_len = (ciphertext[0] << 8) | ciphertext[1];
     if (em_hdr_len != 124) {
         ESP_LOGE(TAG, "   ❌ Expected emHeader len 124 (0x007C), got %u (0x%04x)", em_hdr_len, em_hdr_len);
         return -1;
     }
-    p = 2;  // Skip 2-byte length prefix
+    p = 2;
     
-    // Parse emHeader
     uint16_t version = (ciphertext[p] << 8) | ciphertext[p + 1]; p += 2;
     uint8_t header_iv[16];
     memcpy(header_iv, &ciphertext[p], 16); p += 16;
     uint8_t header_tag[16];
     memcpy(header_tag, &ciphertext[p], 16); p += 16;
-    // v3: 2-byte ehBody length prefix (Word16 BE)
     uint16_t eh_body_len = (ciphertext[p] << 8) | ciphertext[p + 1]; p += 2;
     const uint8_t *encrypted_header = &ciphertext[p];
     
     ESP_LOGI(TAG, "   Version: %d, ehBody len: %d", version, eh_body_len);
     
-    // Try to decrypt header with header_key_send (same key we used to encrypt)
-    // This should work since we're testing our own message
     uint8_t decrypted_header[MSG_HEADER_PADDED_LEN];
     
-    // FIXED v0.1.22: Use rcAD directly (no reversal needed!)
-    // rcAD is now correctly initialized as initiator || responder
     if (aes_gcm_decrypt(ratchet_state.header_key_send, header_iv, GCM_IV_LEN,
-                        ratchet_state.assoc_data, 112,  // Use rcAD directly
+                        ratchet_state.assoc_data, 112,
                         encrypted_header, eh_body_len,
                         header_tag, decrypted_header) != 0) {
         ESP_LOGE(TAG, "❌ Self-decrypt FAILED!");
@@ -559,14 +503,12 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
     int p = 0;
     uint16_t em_header_len;
 
-    // v3 format: 2-byte emHeader length prefix (Word16 BE)
     em_header_len = (ciphertext[0] << 8) | ciphertext[1];
     p = 2;
     
     if (em_header_len == 124) {
         ESP_LOGI(TAG, "   ✓ v3 format (2-byte prefix, emHeader=124)");
     } else if (em_header_len == 123) {
-        // Handle v2 where first byte was 0x7B (123) and second byte is start of emHeader
         ESP_LOGI(TAG, "   ⚠️ Detected v2 format (0x7B prefix) — reparsing");
         em_header_len = 123;
         p = 1;
@@ -579,7 +521,6 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
     const uint8_t *em_header = &ciphertext[p];
     p += em_header_len;
     
-    // Parse EncMessageHeader
     int hp = 0;
     uint16_t version = (em_header[hp] << 8) | em_header[hp + 1]; hp += 2;
     ESP_LOGI(TAG, "   Version: %d", version);
@@ -592,28 +533,22 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
     
     uint16_t eh_body_len;
     if (version >= 3) {
-        // v3: 2-byte ehBody length (Word16 BE, Large encoding)
         eh_body_len = (em_header[hp] << 8) | em_header[hp + 1]; hp += 2;
     } else {
-        // v2: 1-byte ehBody length
         eh_body_len = em_header[hp++];
     }
     ESP_LOGI(TAG, "   ehBody length: %d (v%d format)", eh_body_len, version);
     
     const uint8_t *encrypted_header = &em_header[hp];
     
-    // Payload follows emHeader
     const uint8_t *payload_tag = &ciphertext[p]; p += 16;
     const uint8_t *encrypted_payload = &ciphertext[p];
     size_t payload_len = ct_len - p;
     
     ESP_LOGI(TAG, "   Payload length: %zu", payload_len);
     
-    // === Step 1: Decrypt Header ===
     uint8_t decrypted_header[MSG_HEADER_PADDED_LEN];
     
-    // FIXED v0.1.22: Use rcAD directly - it's already correct (initiator || responder)
-    // NO reversal needed! Both sender and receiver use the same rcAD!
     ESP_LOGI(TAG, "   rcAD (same for both directions): %02x%02x...||%02x%02x...",
              ratchet_state.assoc_data[0], ratchet_state.assoc_data[1],
              ratchet_state.assoc_data[56], ratchet_state.assoc_data[57]);
@@ -624,14 +559,14 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
              ratchet_state.header_key_recv[2], ratchet_state.header_key_recv[3]);
     
     if (aes_gcm_decrypt(ratchet_state.header_key_recv, header_iv, GCM_IV_LEN,
-                        ratchet_state.assoc_data, 112,  // Use rcAD directly (no reversal!)
+                        ratchet_state.assoc_data, 112,
                         encrypted_header, eh_body_len,
                         header_tag, decrypted_header) != 0) {
         ESP_LOGE(TAG, "   ❌ Header decryption failed with header_key_recv!");
         
         ESP_LOGI(TAG, "   Trying with header_key_send...");
         if (aes_gcm_decrypt(ratchet_state.header_key_send, header_iv, GCM_IV_LEN,
-                            ratchet_state.assoc_data, 112,  // Use rcAD directly
+                            ratchet_state.assoc_data, 112,
                             encrypted_header, eh_body_len,
                             header_tag, decrypted_header) != 0) {
             ESP_LOGE(TAG, "   ❌ Header decryption also failed with header_key_send!");
@@ -642,7 +577,6 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
         ESP_LOGI(TAG, "   ✅ Header decrypted with header_key_recv");
     }
     
-    // === Step 2: Parse MsgHeader ===
     ESP_LOGI(TAG, "   📋 Decrypted MsgHeader (first 20 bytes):");
     printf("      ");
     for (int i = 0; i < 20; i++) printf("%02x ", decrypted_header[i]);
@@ -660,21 +594,18 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
         return -1;
     }
     
-    // Extract peer's new DH public key (skip 12-byte SPKI header)
     uint8_t peer_new_dh[56];
     memcpy(peer_new_dh, &decrypted_header[mhp + 12], 56);
     mhp += 68;
     
-    // v3: Skip KEM field (1 byte: '0'=Nothing or '1'+data=Just)
     if (msg_version >= 3) {
         uint8_t kem_tag = decrypted_header[mhp];
         ESP_LOGI(TAG, "   KEM tag: 0x%02x '%c' %s", kem_tag, kem_tag,
                  kem_tag == 0x30 ? "(Nothing)" : "(Just - PQ!)");
         if (kem_tag == 0x30) {
-            mhp += 1;  // Nothing = 1 byte
+            mhp += 1;
         } else if (kem_tag == 0x31) {
             ESP_LOGW(TAG, "   ⚠️ KEM = Just (PQ mode) — not implemented!");
-            // Would need to skip the KEM data here
             return -1;
         }
     }
@@ -689,7 +620,6 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
     ESP_LOGI(TAG, "   Peer new DH: %02x%02x%02x%02x...",
              peer_new_dh[0], peer_new_dh[1], peer_new_dh[2], peer_new_dh[3]);
     
-    // === Step 3: DH Ratchet Step (if new DH key) ===
     bool dh_changed = (memcmp(peer_new_dh, ratchet_state.dh_peer, 56) != 0);
     
     if (dh_changed) {
@@ -718,7 +648,6 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
                  ratchet_state.chain_key_recv[2], ratchet_state.chain_key_recv[3]);
     }
     
-    // === Step 4: chainKdf to get message key ===
     uint8_t message_key[32], next_chain_key[32], msg_iv[16], unused_iv[16];
     uint8_t temp_ck[32];
     memcpy(temp_ck, ratchet_state.chain_key_recv, 32);
@@ -736,14 +665,12 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
     ESP_LOGI(TAG, "   message_key: %02x%02x%02x%02x...",
              message_key[0], message_key[1], message_key[2], message_key[3]);
     
-    // === Step 5: Decrypt Payload ===
-    // AAD = rcAD + emHeader
     uint8_t *payload_aad = malloc(112 + em_header_len);
     if (!payload_aad) {
         ESP_LOGE(TAG, "   ❌ malloc failed");
         return -1;
     }
-    memcpy(payload_aad, ratchet_state.assoc_data, 112);  // Use rcAD directly
+    memcpy(payload_aad, ratchet_state.assoc_data, 112);
     memcpy(payload_aad + 112, em_header, em_header_len);
     
     if (aes_gcm_decrypt(message_key, msg_iv, GCM_IV_LEN,
@@ -757,7 +684,6 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
     
     free(payload_aad);
     
-    // Unpad: first 2 bytes = actual length
     uint16_t actual_len = (plaintext[0] << 8) | plaintext[1];
     ESP_LOGI(TAG, "   Padded: %zu bytes, actual: %d bytes", payload_len, actual_len);
     
@@ -771,21 +697,15 @@ int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
     return 0;
 }
 
-// ============== Decrypt Incoming Message (from peer) ==============
+// ============== Decrypt Incoming Message ==============
 
 int ratchet_decrypt_incoming(const uint8_t *ciphertext, size_t ct_len,
                              uint8_t *plaintext, size_t *pt_len) {
-    // For incoming messages from peer, we use the same decrypt logic
-    // The rcAD is already correctly set as initiator || responder (absolute order)
-    // so both directions use the same rcAD
     ESP_LOGI(TAG, "🔓 Decrypting INCOMING message from peer (%zu bytes)...", ct_len);
     return ratchet_decrypt(ciphertext, ct_len, plaintext, pt_len);
 }
 
-// ============== Decrypt Body (Phase 2b — Session 20) ==============
-// Called after header decrypt succeeded in main.c Phase 2a.
-// Performs DH Ratchet Step (recv + send) → Chain KDF → AES-GCM Body Decrypt → unPad.
-// Session 21: State update ACTIVE — writes new keys/counters to ratchet_state.
+// ============== Decrypt Body (Phase 2b) ==============
 
 int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
                          const uint8_t *peer_new_pub,
@@ -800,7 +720,6 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     ESP_LOGI(TAG, "║  🐰 PHASE 2b: Ratchet Body Decrypt                    ║");
     ESP_LOGI(TAG, "╚═══════════════════════════════════════════════════════╝");
 
-    // === Log inputs ===
     ESP_LOGI(TAG, "   Inputs:");
     ESP_LOGI(TAG, "   peer_new_pub: %02x%02x%02x%02x%02x%02x%02x%02x...",
              peer_new_pub[0], peer_new_pub[1], peer_new_pub[2], peer_new_pub[3],
@@ -818,7 +737,6 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
              em_body[8], em_body[9], em_body[10], em_body[11],
              em_body[12], em_body[13], em_body[14], em_body[15]);
 
-    // === Log current ratchet state ===
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "   === Current Ratchet State (BEFORE body decrypt) ===");
     printf("   root_key:      "); for(int i=0; i<32; i++) printf("%02x", ratchet_state.root_key[i]); printf("\n");
@@ -826,11 +744,7 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     printf("   dh_self.pub:   "); for(int i=0; i<56; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("\n");
     printf("   dh_peer:       "); for(int i=0; i<56; i++) printf("%02x", ratchet_state.dh_peer[i]); printf("\n");
 
-    // ================================================================
     // SCHRITT 1: DH Ratchet Step — Receiving Chain
-    // X448 DH: peer_new_pub × our_old_priv → dh_secret_recv
-    // rootKdf #1: HKDF(salt=root_key, ikm=dh_secret_recv, info="SimpleXRootRatchet", 96)
-    // ================================================================
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "   === SCHRITT 1: DH Ratchet (Receiving Chain) ===");
 
@@ -849,11 +763,7 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     printf("   recv_chain_key: "); for(int i=0; i<32; i++) printf("%02x", recv_chain_key[i]); printf("\n");
     printf("   new_nhk_recv:   "); for(int i=0; i<32; i++) printf("%02x", new_nhk_recv[i]); printf("\n");
 
-    // ================================================================
-    // SCHRITT 2: DH Ratchet Step — Sending Chain (new keypair)
-    // Generate new X448 keypair → DH with peer_new_pub
-    // rootKdf #2: HKDF(salt=new_root_key_1, ikm=dh_secret_send, 96)
-    // ================================================================
+    // SCHRITT 2: DH Ratchet Step — Sending Chain
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "   === SCHRITT 2: DH Ratchet (Sending Chain) ===");
 
@@ -879,11 +789,7 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     printf("   send_chain_key: "); for(int i=0; i<32; i++) printf("%02x", send_chain_key[i]); printf("\n");
     printf("   new_nhk_send:   "); for(int i=0; i<32; i++) printf("%02x", new_nhk_send[i]); printf("\n");
 
-    // ================================================================
-    // SCHRITT 3: Chain KDF → message_key + iv
-    // HKDF(salt="", ikm=recv_chain_key, info="SimpleXChainRatchet", 96)
-    // Output: [0-31]=next_ck, [32-63]=message_key, [64-79]=iv1(msg), [80-95]=iv2(hdr)
-    // ================================================================
+    // SCHRITT 3: Chain KDF
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "   === SCHRITT 3: Chain KDF ===");
 
@@ -892,14 +798,12 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
 
     uint8_t message_key[32], next_chain_key[32], iv_body[16], iv_header[16];
 
-    // Skip forward if msg_ns > 0
     for (uint32_t i = 0; i < msg_ns; i++) {
         ESP_LOGI(TAG, "   Skipping chain step %u...", i);
         kdf_chain(temp_ck, next_chain_key, message_key, iv_body, iv_header);
         memcpy(temp_ck, next_chain_key, 32);
     }
 
-    // The actual chain step for this message
     kdf_chain(temp_ck, next_chain_key, message_key, iv_body, iv_header);
 
     ESP_LOGI(TAG, "   chainKdf output (for Ns=%u):", msg_ns);
@@ -908,11 +812,7 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     printf("   iv_header (16B): "); for(int i=0; i<16; i++) printf("%02x", iv_header[i]); printf("\n");
     printf("   next_chain_key:  "); for(int i=0; i<32; i++) printf("%02x", next_chain_key[i]); printf("\n");
 
-    // ================================================================
     // SCHRITT 4: AES-256-GCM Body Decrypt
-    // Key=message_key, IV=iv_body(16B), AAD=rcAD(112)||emHeader_raw(124 v3 / 123 v2)
-    // Tag=em_auth_tag, CT=em_body
-    // ================================================================
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "   === SCHRITT 4: AES-GCM Body Decrypt ===");
 
@@ -940,21 +840,10 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     if (ret != 0) {
         ESP_LOGE(TAG, "");
         ESP_LOGE(TAG, "   ❌ AES-GCM Body Decrypt FAILED! (ret=%d)", ret);
-        ESP_LOGE(TAG, "   Possible causes:");
-        ESP_LOGE(TAG, "     1. root_key corrupted by Bug #19 self-decrypt test");
-        ESP_LOGE(TAG, "     2. dh_self corrupted (ratchet_init_sender + ratchet_decrypt)");
-        ESP_LOGE(TAG, "     3. AAD: rcAD order or emHeader raw bytes wrong");
-        ESP_LOGE(TAG, "     4. Chain KDF: empty salt handling (NULL vs len=0)");
-        ESP_LOGE(TAG, "");
-        ESP_LOGE(TAG, "   ⚠️  Bug #19 reminder: smp_peer.c self-decrypt test calls");
-        ESP_LOGE(TAG, "   ratchet_decrypt() which modifies root_key, chain_keys, dh_self!");
         return -5;
     }
 
-    // ================================================================
     // SCHRITT 5: unPad
-    // First 2 bytes = Big-Endian actual content length
-    // ================================================================
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "   === SCHRITT 5: unPad ===");
 
@@ -970,7 +859,6 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     memmove(plaintext, plaintext + 2, actual_len);
     *pt_len = actual_len;
 
-    // Log plaintext
     ESP_LOGI(TAG, "   Plaintext (%zu bytes):", *pt_len);
     printf("      ");
     for (size_t i = 0; i < 64 && i < *pt_len; i++) {
@@ -994,45 +882,62 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     }
 
     // ================================================================
-    // SCHRITT 6: State Update — AKTIV!
+    // SCHRITT 6: State Update — FIX 3: Proper HK←NHK Promotion
+    // Signal spec DHRatchetHE():
+    //   state.HKs = state.NHKs
+    //   state.HKr = state.NHKr
+    //   ... then RK, CKr, NHKr = KDF(...)
+    //   ... then RK, CKs, NHKs = KDF(...)
     // ================================================================
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "   === SCHRITT 6: State Update (ACTIVE) ===");
-    ESP_LOGI(TAG, "   Updating ratchet state:");
+    ESP_LOGI(TAG, "   === SCHRITT 6: State Update (FIX 3: HK←NHK Promotion) ===");
+    ESP_LOGI(TAG, "   Updating ratchet state per Signal DHRatchetHE():");
     ESP_LOGI(TAG, "     root_key        → new_root_key_2");
     ESP_LOGI(TAG, "     chain_key_recv  → next_chain_key");
     ESP_LOGI(TAG, "     chain_key_send  → send_chain_key");
-    ESP_LOGI(TAG, "     header_key_recv → new_nhk_recv (for NEXT msg)");
-    ESP_LOGI(TAG, "     header_key_send → new_nhk_send (for NEXT msg)");
+    ESP_LOGI(TAG, "     header_key_send ← next_header_key_send (PROMOTION!)");
+    ESP_LOGI(TAG, "     header_key_recv ← next_header_key_recv (PROMOTION!)");
+    ESP_LOGI(TAG, "     next_header_key_send ← new_nhk_send (from KDF)");
+    ESP_LOGI(TAG, "     next_header_key_recv ← new_nhk_recv (from KDF)");
     ESP_LOGI(TAG, "     dh_self         → new_dh_self");
     ESP_LOGI(TAG, "     dh_peer         → peer_new_pub");
     ESP_LOGI(TAG, "     msg_num_recv    → %u", msg_ns + 1);
     ESP_LOGI(TAG, "     msg_num_send    → 0 (reset after DH ratchet)");
 
-    // Log old values for debugging
+    // Log old values
     printf("   OLD root_key:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
     printf("   OLD dh_self.pub:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("...\n");
     printf("   OLD hk_recv:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
     printf("   OLD hk_send:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
+    printf("   OLD nhk_recv:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_recv[i]); printf("...\n");
+    printf("   OLD nhk_send:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_send[i]); printf("...\n");
 
     // Apply state updates
     memcpy(ratchet_state.root_key, new_root_key_2, 32);
     memcpy(ratchet_state.chain_key_recv, next_chain_key, 32);
     memcpy(ratchet_state.chain_key_send, send_chain_key, 32);
-    memcpy(ratchet_state.header_key_recv, new_nhk_recv, 32);
-    memcpy(ratchet_state.header_key_send, new_nhk_send, 32);
+    
+    // FIX 3: Promotion: HK ← old NHK (for next message)
+    memcpy(ratchet_state.header_key_send, ratchet_state.next_header_key_send, 32);
+    memcpy(ratchet_state.header_key_recv, ratchet_state.next_header_key_recv, 32);
+    // NHK ← KDF output (for step after next)
+    memcpy(ratchet_state.next_header_key_send, new_nhk_send, 32);
+    memcpy(ratchet_state.next_header_key_recv, new_nhk_recv, 32);
+    
     memcpy(ratchet_state.dh_self.private_key, new_dh_self.private_key, 56);
     memcpy(ratchet_state.dh_self.public_key, new_dh_self.public_key, 56);
     memcpy(ratchet_state.dh_peer, peer_new_pub, 56);
     ratchet_state.msg_num_recv = msg_ns + 1;
-    ratchet_state.prev_chain_len = ratchet_state.msg_num_send;  // Save old send count for PN
-    ratchet_state.msg_num_send = 0;  // Reset nach DH Ratchet
+    ratchet_state.prev_chain_len = ratchet_state.msg_num_send;
+    ratchet_state.msg_num_send = 0;
 
-    // Log new values for verification
+    // Log new values
     printf("   NEW root_key:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
     printf("   NEW dh_self.pub:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("...\n");
     printf("   NEW hk_recv:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
     printf("   NEW hk_send:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
+    printf("   NEW nhk_recv:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_recv[i]); printf("...\n");
+    printf("   NEW nhk_send:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_send[i]); printf("...\n");
     printf("   NEW ck_recv:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_recv[i]); printf("...\n");
     printf("   NEW ck_send:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_send[i]); printf("...\n");
     ESP_LOGI(TAG, "   ✅ State updated! msg_num_recv=%u, msg_num_send=%u, prev_chain_len=%u",
