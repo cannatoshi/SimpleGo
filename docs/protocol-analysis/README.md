@@ -6,54 +6,59 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## Current Status (2026-02-06 Session 20)
+## Current Status (2026-02-07 Session 21)
 
 ```
-SESSION 20 - BODY DECRYPT SUCCESS! PEER PROFILE READ ON ESP32!
-================================================================
+SESSION 21 - v3 FORMAT IMPLEMENTED, HELLO DEBUGGING
+=====================================================
 
-BREAKTHROUGH:
-  Complete crypto chain working end-to-end:
-    TLS 1.3 → SMP Transport → Server Decrypt → E2E Decrypt → unPad
-    → ClientMessage → EncRatchetMessage → Header Decrypt (AES-GCM)
-    → DH Ratchet Step (2× rootKdf) → Chain KDF → Body Decrypt (AES-GCM)
-    → unPad → AgentConnInfo 'I' → Zstd Decompress → Peer Profile JSON
+HELLO FORMAT DEBUGGING:
+  7 bugs fixed (#20-#26) in HELLO wire format:
+    - PrivHeader: HELLO = 0x00 (not '_')
+    - AgentVersion: AgentMessage = 1 (not 2)
+    - prevMsgHash: Word16 prefix required
+    - cbEncrypt: pad BEFORE encrypt
+    - DH Key: snd_dh for HELLO (not rcv_dh)
+    - PubHeader Nothing: '0' required
+    - v2/v3 format: encodeLarge switches at v≥3
 
-  Peer profile read: "displayName": "cannatoshi" on an ESP32!
+v3 ENCRATCHETMESSAGE FORMAT:
+  - RATCHET_VERSION: 2 → 3
+  - emHeader: 123 → 124 bytes (2-byte prefix)
+  - ehBody prefix: 1 → 2 bytes
+  - MsgHeader: +KEM Nothing ('0'), contentLen 79→80
+  - Server accepts with OK ✅
 
-BUG #19 FIXED:
-  Root cause: Debug self-decrypt test in smp_peer.c:347
-  Side effects of ratchet_decrypt() corrupted ratchet state
-  Fix: Removed debug test, merged to main
+NEW ARCHITECTURE:
+  - 4 Header Keys: HKs/NHKs/HKr/NHKr with promotion
+  - SameRatchet vs AdvanceRatchet modes
+  - KEY Command implemented (optional for unsecured queues)
 
-NEW CAPABILITIES:
-  - DH Ratchet Step (2× rootKdf: recv chain + send chain)
-  - Body Decrypt via AES-256-GCM (14832 → 8887 bytes)
-  - ConnInfo parsing ('I' = AgentConnInfo, 'D' = AgentConnInfoReply)
-  - Zstd decompression (8881 → 12268 bytes JSON)
-  - XInfo Profile JSON parsing (displayName, image, preferences)
+BLOCKER:
+  App still shows "Connecting..." — RSYNC crypto error on HELLO decrypt
+  Server accepts everything, App can't decrypt
 
-10 KEY INSIGHTS:
-  - DH Ratchet Step = TWO rootKdf calls (recv + send)
-  - iv1 = Body IV, iv2 = Header IV (correction from earlier)
-  - ConnInfo: 'I' = profile only, 'D' = queues + profile
-  - Zstd: 'X' marker, '1'=compressed, '0'=passthrough
-  - Body AAD = rcAD || emHeader (raw bytes, 235 total)
+TOP SUSPECTS FOR SESSION 22:
+  1. HKs/NHKs Promotion after AdvanceRatchet
+  2. E2E Version in our Confirmation (v2 vs v3)
+  3. DH Key encoding in v3
 
-ALL LAYERS THROUGH LAYER 8:
+ALL LAYERS THROUGH LAYER 8 (receive):
   ✅ Layer 0: TLS 1.3
   ✅ Layer 1: SMP Transport
   ✅ Layer 2: E2E Decrypt (S18)
   ✅ Layer 2.5: unPad (S19)
   ✅ Layer 3: ClientMessage Parse (S19)
-  ✅ Layer 4: EncRatchetMessage Parse (S19)
+  ✅ Layer 4: EncRatchetMessage Parse (S19, v3 S21)
   ✅ Layer 5: Double Ratchet Header Decrypt (S19)
   ✅ Layer 6: Double Ratchet Body Decrypt (S20)
   ✅ Layer 7: ConnInfo Parse + Zstd (S20)
   ✅ Layer 8: Peer Profile JSON (S20)
-  ⏳ Layer 9: Connection Established (HELLO processing)
+  ⚠️ Layer 9: HELLO Send (Server OK, App RSYNC) (S21)
+  ⏳ Layer 10: HELLO Receive
+  ⏳ Layer 11: Connection Established
 
-NEXT: HELLO processing, Ratchet State Persistence, Bidirectional Messaging
+NEXT: HKs/NHKs Promotion, E2E Version Clarification
 ```
 
 ---
@@ -97,11 +102,12 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [16_PART14_SESSION_17.md](16_PART14_SESSION_17.md) | ~500 | Key Consistency Debug |
 | [17_PART15_SESSION_18.md](17_PART15_SESSION_18.md) | ~600 | 🎉 BUG #18 SOLVED! E2E Decrypt SUCCESS |
 | [18_PART16_SESSION_19.md](18_PART16_SESSION_19.md) | ~550 | Header Decrypt SUCCESS! |
-| [19_PART17_SESSION_20.md](19_PART17_SESSION_20.md) | ~600 | **Body Decrypt SUCCESS! Peer Profile!** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1400 | Complete bug documentation (19 bugs, 57 lessons) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~800 | Constants, wire formats, verified values |
+| [19_PART17_SESSION_20.md](19_PART17_SESSION_20.md) | ~600 | Body Decrypt SUCCESS! Peer Profile! |
+| [20_PART18_SESSION_21.md](20_PART18_SESSION_21.md) | ~700 | **v3 Format + HELLO Debugging** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1600 | Complete bug documentation (26 bugs, 71 lessons) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~900 | Constants, wire formats, verified values |
 
-**Total: ~25,000+ lines of detailed protocol analysis**
+**Total: ~28,000+ lines of detailed protocol analysis**
 
 ---
 
@@ -126,7 +132,50 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | 17 | Feb 4 | Key Consistency Debug | #18 (investigating) |
 | 18 | Feb 5 | 🎉 BUG #18 SOLVED! E2E Decrypt SUCCESS! | #18 ✅ SOLVED |
 | 19 | Feb 5 | Header Decrypt SUCCESS! MsgHeader Parsed | #19 found |
-| **20** | **Feb 6** | **🎉 Body Decrypt! Peer Profile on ESP32!** | **#19 ✅ SOLVED** |
+| 20 | Feb 6 | 🎉 Body Decrypt! Peer Profile on ESP32! | #19 ✅ SOLVED |
+| **21** | **Feb 6-7** | **v3 Format + HELLO Debugging (7 bugs!)** | **#20-#26** |
+
+---
+
+## Session 21 Key Achievements
+
+### 1. Seven HELLO Format Bugs Fixed (#20-#26)
+
+| Bug | Component | Fix |
+|-----|-----------|-----|
+| #20 | PrivHeader for HELLO | '_' → 0x00 (no PrivHeader) |
+| #21 | AgentVersion | v2 → v1 for AgentMessage |
+| #22 | prevMsgHash | Raw → Word16 prefix encoding |
+| #23 | cbEncrypt padding | Pad BEFORE encrypt |
+| #24 | DH Key selection | rcv_dh → snd_dh for HELLO |
+| #25 | PubHeader Nothing | Missing → '0' (0x30) |
+| #26 | v2/v3 format | 1-byte → 2-byte prefixes + KEM Nothing |
+
+### 2. v3 EncRatchetMessage Format
+
+```
+v3 changes from v2:
+  - emHeader prefix: 1 byte → 2 bytes Word16 BE
+  - emHeader size: 123 → 124 bytes
+  - ehBody prefix: 1 byte → 2 bytes Word16 BE
+  - MsgHeader: +KEM Nothing ('0'), contentLen 79→80
+  - Verified byte-correct, Server accepts with OK
+```
+
+### 3. New Architecture
+
+- **4 Header Keys:** HKs/NHKs/HKr/NHKr with promotion
+- **SameRatchet vs AdvanceRatchet** modes
+- **KEY Command** implemented (optional for unsecured queues)
+
+### 4. RSYNC Identified
+
+`chatItemNotFoundByContactId` = RSYNC (Ratchet Sync) = crypto decrypt failure.
+App receives our HELLO but can't decrypt it → RSYNC event.
+
+### 5. Remaining Blocker
+
+App still "Connecting..." — suspects: HKs/NHKs promotion, E2E version mismatch, DH key encoding.
 
 ---
 
@@ -134,54 +183,9 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 
 ### 1. Bug #19 FIXED
 
-| Aspect | Detail |
-|--------|--------|
-| Root Cause | Debug self-decrypt test in smp_peer.c:347 |
-| Problem | `ratchet_decrypt()` on own message triggered spurious DH ratchet step |
-| Fix | Removed debug test, merged to main |
-| Lesson | Tests must NEVER modify production state |
+Root cause: Debug self-decrypt test corrupted ratchet state.
 
-### 2. DH Ratchet Step Implemented
-
-Two rootKdf calls per DH ratchet step:
-- rootKdf #1: `peer_new_pub × our_old_priv` → recv chain
-- rootKdf #2: `peer_new_pub × our_NEW_priv` → send chain
-
-### 3. Body Decrypt SUCCESS
-
-```
-Chain KDF → message_key + iv_body
-AES-256-GCM Decrypt: 14832 bytes → 8889 bytes → unPad → 8887 bytes
-```
-
-### 4. ConnInfo Parsed
-
-| Tag | Constructor | Content |
-|-----|------------|---------|
-| 'I' | AgentConnInfo | Profile only (Reply Queue) |
-| 'D' | AgentConnInfoReply | SMP Queues + Profile (Contact Queue) |
-
-### 5. Zstd Decompression
-
-- Integrated zstd v1.5.5 as ESP-IDF component (~117KB Flash)
-- 8881 bytes compressed → 12268 bytes JSON
-
-### 6. Peer Profile Read
-
-```json
-{
-  "event": "x.info",
-  "params": {
-    "profile": {
-      "displayName": "cannatoshi"
-    }
-  }
-}
-```
-
-First time a peer's SimpleX profile has been read on an ESP32!
-
-### 7. Complete Crypto Chain
+### 2. Complete Crypto Chain
 
 ```
 TLS 1.3 → SMP Transport → Server Decrypt → E2E Decrypt → unPad
@@ -190,47 +194,18 @@ TLS 1.3 → SMP Transport → Server Decrypt → E2E Decrypt → unPad
 → unPad → ConnInfo 'I' → Zstd → Peer Profile JSON
 ```
 
+### 3. Peer Profile Read
+
+`"displayName": "cannatoshi"` — first SimpleX profile read on ESP32!
+
 ---
 
 ## Session 19 Key Achievements
 
-### 1. Three New Layers Discovered
+### 1. Three New Layers + Header Decrypt SUCCESS
 
-| Layer | Name | Content |
-|-------|------|---------|
-| 2.5 | unPad | [2B len][content][padding 0x23...] |
-| 3 | ClientMessage | PrivHeader + AgentMsgEnvelope |
-| 4 | EncRatchetMessage | [emHeader][emAuthTag][Tail emBody] |
-
-### 2. Double Ratchet Header Decrypt SUCCESS!
-
-```
-Key: saved_nhk (HKDF[32-63] from X3DH)
-IV: ehIV (16 bytes from EncMessageHeader)
-AAD: rcAD (112 bytes = our_key1 || peer_key1)
-Result: MsgHeader fully parsed!
-```
-
-### 3. MsgHeader Parsed
-
-| Field | Value |
-|-------|-------|
-| msgMaxVersion | 3 (Peer supports PQ) |
-| DH Key | 68 bytes X448 SPKI |
-| PN | 0 (first message) |
-| Ns | 0 (Message #0) |
-
-### 4. 11 Key Insights
-
-- unPad layer exists between E2E decrypt and ClientMessage
-- PrivHeader: 'K'=PHConfirmation, '_'=PHEmpty
-- Maybe encoding: '0'=Nothing, '1'=Just (NOT 0x00/0x01!)
-- nhk from X3DH HKDF[32-63] = header_key_recv
-- AES-GCM uses 16-byte IV in SimpleX
-
-### 5. Bug #19 Found
-
-`header_key_recv` gets overwritten somewhere. Workaround with `saved_nhk` works.
+- unPad Layer, ClientMessage Layer, EncRatchetMessage Layer
+- MsgHeader fully parsed (msgMaxVersion=3, PN=0, Ns=0)
 
 ---
 
@@ -238,18 +213,8 @@ Result: MsgHeader fully parsed!
 
 ### 1. 🎉 BUG #18 SOLVED After Weeks of Debugging!
 
-**Root Cause:** `envelope_len = plain_len - 2` included 102 bytes SMP block-padding  
-**Fix:** `envelope_len = raw_len_prefix` — ONE LINE!  
-**Result:** Method 0 decrypt SUCCESS → 15904 bytes AgentConfirmation
-
-### 2. Wire-Format Fully Analyzed
-
-| Discovery | Detail |
-|-----------|--------|
-| corrId NOT in envelope | corrId is SMP Transport Layer, parsed before envelope |
-| All offsets were WRONG | Code assumed header+corrId+maybe, reality is version+maybe+body |
-| No comma separators | `smpEncode a <> smpEncode b` — direct concatenation |
-| 102 bytes padding | SMP block-padding (0x23) for traffic analysis resistance |
+**Root Cause:** `envelope_len = plain_len - 2` included SMP padding  
+**Fix:** `envelope_len = raw_len_prefix` — ONE LINE!
 
 ---
 
@@ -266,7 +231,8 @@ Result: MsgHeader fully parsed!
 | #15-16 | HSalsa20, A_CRYPTO | [Part 6](08_PART6_SESSION_9.md) |
 | #17 | cmNonce instead of msgId | [Part 7](09_PART7_SESSION_10.md) |
 | #18 | Reply Queue E2E — SOLVED! | [Part 15](17_PART15_SESSION_18.md) |
-| #19 | header_key_recv — SOLVED! | [Part 16](18_PART16_SESSION_19.md) + [**Part 17**](19_PART17_SESSION_20.md) |
+| #19 | header_key_recv — SOLVED! | [Part 16](18_PART16_SESSION_19.md) + [Part 17](19_PART17_SESSION_20.md) |
+| **#20-#26** | **HELLO format + v3** | [**Part 18**](20_PART18_SESSION_21.md) |
 
 ### By Topic
 
@@ -278,8 +244,9 @@ Result: MsgHeader fully parsed!
 | AgentConfirmation | [Part 5](07_PART5_SESSION_8_BREAKTHROUGH.md) |
 | Reply Queue E2E | [Part 6](08_PART6_SESSION_9.md) - [Part 15](17_PART15_SESSION_18.md) |
 | Double Ratchet Header | [Part 16](18_PART16_SESSION_19.md) |
-| Double Ratchet Body | [**Part 17**](19_PART17_SESSION_20.md) |
-| ConnInfo + Zstd | [**Part 17**](19_PART17_SESSION_20.md) |
+| Double Ratchet Body | [Part 17](19_PART17_SESSION_20.md) |
+| ConnInfo + Zstd | [Part 17](19_PART17_SESSION_20.md) |
+| HELLO + v3 Format | [**Part 18**](20_PART18_SESSION_21.md) |
 | All Bugs | [BUG_TRACKER](BUG_TRACKER.md) |
 | Quick Reference | [QUICK_REFERENCE](QUICK_REFERENCE.md) |
 
@@ -291,4 +258,4 @@ This documentation is part of SimpleGo, licensed under AGPL-3.0.
 
 ---
 
-*Last updated: February 6, 2026 - Session 20 (Body Decrypt SUCCESS! Peer Profile Read!)*
+*Last updated: February 7, 2026 - Session 21 (v3 Format + HELLO Debugging)*

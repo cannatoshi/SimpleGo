@@ -1,6 +1,6 @@
 # Bug Tracker
 
-## Complete Documentation of All 19 Bugs
+## Complete Documentation of All 26 Bugs
 
 This document provides detailed documentation of all bugs discovered during SimpleGo development, including the incorrect code, correct code, and root cause analysis.
 
@@ -29,8 +29,15 @@ This document provides detailed documentation of all bugs discovered during Simp
 | 17 | cmNonce instead of msgId | 10C | FIXED |
 | 18 | Reply Queue E2E | 12-18 | FIXED |
 | 19 | header_key_recv overwritten | 19-20 | FIXED |
+| **20** | **PrivHeader for HELLO** | **21** | **FIXED** |
+| **21** | **AgentVersion for AgentMessage** | **21** | **FIXED** |
+| **22** | **prevMsgHash encoding** | **21** | **FIXED** |
+| **23** | **cbEncrypt padding** | **21** | **FIXED** |
+| **24** | **DH Key for HELLO** | **21** | **FIXED** |
+| **25** | **PubHeader Nothing encoding** | **21** | **FIXED** |
+| **26** | **v2/v3 EncRatchetMessage format** | **21** | **FIXED** |
 
-**Total: 19 bugs documented, 19 FIXED**
+**Total: 26 bugs documented, 26 FIXED**
 
 ---
 
@@ -539,24 +546,7 @@ header_key_recv after X3DH = 1c08e86e... (saved_nhk, correct)
 header_key_recv at receipt = cf0c74d2... (wrong, overwritten)
 ```
 
-### 19.2 Discovery (Session 19)
-
-During Session 19 Double Ratchet header decrypt implementation, we discovered that
-`header_key_recv` (the key used to decrypt incoming message headers) is being
-overwritten somewhere between X3DH initialization and message receipt.
-
-### 19.3 Workaround (Session 19)
-
-Saving `nhk` immediately after X3DH HKDF calculation as `saved_nhk`:
-```c
-// After X3DH HKDF:
-memcpy(saved_nhk, &x3dh_output[32], 32);  // nhk = HKDF output bytes 32-63
-
-// At header decrypt (instead of header_key_recv):
-aes_gcm_decrypt(ehBody, saved_nhk, ehIV, rcAD, ...);  // SUCCESS!
-```
-
-### 19.4 Root Cause — FOUND (Session 20)
+### 19.2 Root Cause — FOUND (Session 20)
 
 **`smp_peer.c:347`** — Debug self-decrypt test calling `ratchet_decrypt()`.
 
@@ -564,33 +554,206 @@ After encrypting the AgentConfirmation, a debug self-test called `ratchet_decryp
 on our own encrypted message. `ratchet_decrypt()` has **side effects**: it performs
 a DH ratchet step when it detects a "new" DH key in the decrypted header.
 
-When decrypting our **own** message, the DH key in the header is `dh_self.public_key`
-(our key), which differs from `dh_peer` (the peer's key). So `dh_changed = true`
-and the function overwrites:
-- `ratchet_state.root_key` → corrupted
-- `ratchet_state.chain_key_recv` → corrupted
-- **`ratchet_state.header_key_recv`** → changed from `1c08e86e...` to `cf0c74d2...`
-- `ratchet_state.dh_peer` → corrupted (set to our own key)
-- `ratchet_state.msg_num_recv` → reset to 0
+Corrupted: `header_key_recv`, `root_key`, `chain_key_recv`, `dh_peer`, `msg_num_recv`.
 
-### 19.5 Fix Applied (Session 20)
+### 19.3 Fix Applied (Session 20)
 
-Removed the debug self-decrypt test from `smp_peer.c:343-359`. The `saved_nhk`
-workaround in `smp_ratchet.c` is no longer needed but kept as safety net.
-
+Removed the debug self-decrypt test from `smp_peer.c:343-359`.
 Branch: `claude/fix-header-key-recv-bug-DNYeF` → merged to main.
 
-### 19.6 Call Flow (for reference)
+---
 
+## Bug #20: PrivHeader for HELLO (SESSION 21)
+
+**Session:** 21  
+**Component:** ClientMessage encoding for HELLO  
+**Impact:** Critical - wrong message type indicator
+
+### Incorrect Code
+```c
+// Used PHEmpty tag (WRONG!)
+buf[p++] = '_';  // 0x5F = PHEmpty (Confirmation without key)
 ```
-send_agent_confirmation():
-  [309] ratchet_x3dh_sender()    → header_key_recv = 1c08e86e... ✅
-  [317] ratchet_init_sender()    → no change to header_key_recv ✅
-  [335] ratchet_encrypt()        → msg #0, no change to recv keys ✅
-  [347] ratchet_decrypt() DEBUG  → header_key_recv = cf0c74d2... ❌ BUG!
-  [689] complete_handshake()     → ratchet_encrypt() msg #1 (HELLO)
-  ... later: ratchet_decrypt() on incoming msg → fails with wrong key
+
+### Correct Code
+```c
+// No PrivHeader for regular messages (CORRECT!)
+buf[p++] = 0x00;  // No PrivHeader
 ```
+
+### Root Cause
+
+PrivHeader encoding is NOT a standard Maybe:
+- `'K'` (0x4B) = PHConfirmation (with sender auth key)
+- `'_'` (0x5F) = PHEmpty (confirmation without key)
+- `0x00` = No PrivHeader (regular messages like HELLO)
+
+HELLO is a regular AgentMessage, not a Confirmation.
+
+---
+
+## Bug #21: AgentVersion for AgentMessage (SESSION 21)
+
+**Session:** 21  
+**Component:** AgentMsgEnvelope encoding  
+**Impact:** Critical - parser version mismatch
+
+### Incorrect Code
+```c
+// Used Agent protocol version (WRONG!)
+buf[p++] = 0x00;
+buf[p++] = 0x02;  // agentVersion = 2
+```
+
+### Correct Code
+```c
+// AgentMessage uses version 1 (CORRECT!)
+buf[p++] = 0x00;
+buf[p++] = 0x01;  // agentVersion = 1
+```
+
+### Root Cause
+
+AgentConfirmation uses agentVersion=7 (protocol version), but AgentMessage (HELLO)
+uses agentVersion=1 (message format version). Different fields, different values.
+
+---
+
+## Bug #22: prevMsgHash Encoding (SESSION 21)
+
+**Session:** 21  
+**Component:** AgentMessage encoding  
+**Impact:** Critical - parser fails on hash field
+
+### Incorrect Code
+```c
+// Raw empty bytes or missing (WRONG!)
+```
+
+### Correct Code
+```c
+// smpEncode(ByteString) with Word16 prefix (CORRECT!)
+buf[p++] = 0x00;
+buf[p++] = 0x00;  // Word16 BE length = 0 (empty hash)
+```
+
+### Root Cause
+
+prevMsgHash field uses Large encoding (Word16 prefix). For empty hash: `[0x00][0x00]`.
+Related to Bug #2 (same encoding pattern).
+
+---
+
+## Bug #23: cbEncrypt Padding (SESSION 21)
+
+**Session:** 21  
+**Component:** Server-level encryption (cbEncrypt)  
+**Impact:** Critical - server rejects or app can't decrypt
+
+### Incorrect Code
+```c
+// Encrypt raw plaintext (WRONG!)
+cbEncrypt(key, nonce, raw_plaintext, raw_len, ...);
+```
+
+### Correct Code
+```c
+// Pad BEFORE encrypt (CORRECT!)
+pad(raw_plaintext, raw_len, padded_buf, &padded_len);
+cbEncrypt(key, nonce, padded_buf, padded_len, ...);
+```
+
+### Root Cause
+
+The `pad` function adds a 2-byte length prefix and 0x23 padding BEFORE encryption.
+Receiver does: decrypt → unPad. Sender must: pad → encrypt.
+
+---
+
+## Bug #24: DH Key for HELLO (SESSION 21)
+
+**Session:** 21  
+**Component:** Per-queue E2E encryption key selection  
+**Impact:** Critical - E2E layer fails
+
+### Incorrect Code
+```c
+// Used receiver's DH key (WRONG!)
+compute_e2e_secret(rcv_dh_public, our_private, ...);
+```
+
+### Correct Code
+```c
+// Use sender's DH key for HELLO (CORRECT!)
+compute_e2e_secret(snd_dh_public, our_private, ...);
+```
+
+### Root Cause
+
+For Confirmation: use `rcv_dh` (receiver's DH key from the queue).
+For HELLO: use `snd_dh` (sender's DH key for the reply queue).
+
+---
+
+## Bug #25: PubHeader Nothing Encoding (SESSION 21)
+
+**Session:** 21  
+**Component:** ClientMsgEnvelope PubHeader field  
+**Impact:** Medium - parser may fail
+
+### Incorrect Code
+```c
+// Field missing entirely (WRONG!)
+```
+
+### Correct Code
+```c
+// Maybe Nothing = '0' (CORRECT!)
+buf[p++] = '0';  // 0x30 = Nothing
+```
+
+### Root Cause
+
+PubHeader in ClientMsgEnvelope is a Maybe type. When Nothing, must be encoded
+as `'0'` (0x30), not omitted.
+
+---
+
+## Bug #26: v2/v3 EncRatchetMessage Format (SESSION 21)
+
+**Session:** 21  
+**Component:** EncRatchetMessage encoding  
+**Impact:** Critical - App can't decrypt HELLO (RSYNC error)
+
+### The Discovery
+
+App initialized ratchet with `currentE2EEncryptVersion = 3` (v3), but our
+EncRatchetMessage was encoded in v2 format.
+
+### Incorrect Code (v2)
+```c
+#define RATCHET_VERSION 2
+em_header[hp++] = 0x7B;         // emHeader len = 123 (1 byte)
+em_header[hp++] = 0x58;         // ehBody len = 88 (1 byte)
+#define EM_HEADER_SIZE 123
+// No KEM field in MsgHeader
+```
+
+### Correct Code (v3)
+```c
+#define RATCHET_VERSION 3
+em_header[hp++] = 0x00;
+em_header[hp++] = 0x7C;         // emHeader len = 124 (2 bytes Word16 BE)
+em_header[hp++] = 0x00;
+em_header[hp++] = 0x58;         // ehBody len = 88 (2 bytes Word16 BE)
+#define EM_HEADER_SIZE 124
+// KEM Nothing: msg_header[p++] = '0';  // 0x30
+```
+
+### Root Cause
+
+`encodeLarge` switches at v≥3: 1-byte (Word8) → 2-byte (Word16 BE) prefix.
+Also MsgHeader must include KEM Nothing field in v3.
 
 ---
 
@@ -612,14 +775,15 @@ send_agent_confirmation():
 | Feb 4 | S17 | #18 Key Consistency Debug |
 | Feb 5 | S18 | #18 ✅ SOLVED! One-line fix! |
 | Feb 5 | S19 | #19 header_key_recv overwritten (workaround) |
-| **Feb 6** | **S20** | **#19 ✅ SOLVED! Root cause: debug self-decrypt** |
+| Feb 6 | S20 | #19 ✅ SOLVED! Root cause: debug self-decrypt |
+| **Feb 6-7** | **S21** | **#20-#26 HELLO format + v3 format (7 bugs!)** |
 
 ---
 
 ## Bug Categories
 
 ```
-19 Bugs Total (19 FIXED):
+26 Bugs Total (26 FIXED):
 - 7x Length Prefix issues (#1-6, #13)
 - 3x KDF/IV Order issues (#7, #8, #14)
 - 1x Byte Order issue (#9 - wolfSSL)
@@ -631,6 +795,13 @@ send_agent_confirmation():
 - 1x Nonce source issue (#17 - cmNonce)
 - 1x Envelope length calculation issue (#18 - SMP padding)
 - 1x Key management issue (#19 - debug self-decrypt side effects)
+- 1x Message type indicator issue (#20 - PrivHeader for HELLO)
+- 1x Version field issue (#21 - AgentVersion)
+- 1x Hash encoding issue (#22 - prevMsgHash)
+- 1x Encryption order issue (#23 - pad before encrypt)
+- 1x Key selection issue (#24 - rcv_dh vs snd_dh)
+- 1x Maybe field issue (#25 - PubHeader Nothing)
+- 1x Format version issue (#26 - v2/v3 encodeLarge)
 ```
 
 ---
@@ -694,10 +865,24 @@ send_agent_confirmation():
 55. **DH Ratchet Step = TWO rootKdf calls** - recv chain + send chain, new keypair in between! (Session 20)
 56. **iv1 = Body IV, iv2 = Header IV** - During decrypt, header IV comes from ehIV, not chainKdf! (Session 20)
 57. **Body AAD = rcAD || emHeader (raw bytes)** - Use exact wire bytes, don't re-serialize! (Session 20)
+58. **ESP32 = Accepting Party, App = Joining Party** - Roles determine key/queue usage! (Session 21)
+59. **PrivHeader: HELLO=0x00, CONF='K'** - Regular messages have NO PrivHeader, not PHEmpty! (Session 21)
+60. **AgentMessage uses agentVersion=1, not v2/v7** - Different from AgentConfirmation! (Session 21)
+61. **prevMsgHash must be smpEncoded** - Word16 prefix even when empty: [0x00][0x00]! (Session 21)
+62. **DH Keys: rcv_dh for Confirmation, snd_dh for HELLO** - Different keys for different msg types! (Session 21)
+63. **PubHeader Nothing = '0' (0x30), not missing** - Standard Maybe encoding, must be present! (Session 21)
+64. **NOT_AVAILABLE = AUTH error on App side** - App can't SEND because queue not secured! (Session 21)
+65. **KEY Command timing: after Confirmation, before HELLO** - Authorize sender before they can send! (Session 21)
+66. **Reply Queues are unsecured** - SEND works without KEY auth! (Session 21)
+67. **chatItemNotFoundByContactId = RSYNC Crypto Error** - Not HELLO parsing, but decrypt failure! (Session 21)
+68. **RSYNC = Ratchet Sync Event** - Triggered on decrypt failure, not protocol error! (Session 21)
+69. **v2/v3 encodeLarge switch at v≥3** - 1-byte → 2-byte prefix, affects header sizes! (Session 21)
+70. **Version from E2ERatchetParams, not hardcoded** - Confirmation determines peer's expected format! (Session 21)
+71. **Confirmation can work v2, HELLO expected v3** - Version mismatch between message types! (Session 21)
 
 ---
 
-*Bug Tracker v15.0*  
-*Last updated: February 6, 2026 - Session 20*  
-*Total bugs documented: 19 (19 FIXED)*  
-*57 lessons learned!*
+*Bug Tracker v16.0*  
+*Last updated: February 7, 2026 - Session 21*  
+*Total bugs documented: 26 (26 FIXED)*  
+*71 lessons learned!*
