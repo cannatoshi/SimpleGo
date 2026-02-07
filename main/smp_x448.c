@@ -2,7 +2,7 @@
  * SimpleGo - smp_x448.c
  * X448 Elliptic Curve Diffie-Hellman for E2E Ratchet
  * Uses wolfSSL with HAVE_CURVE448 enabled
- * v0.1.26-alpha - FIXED: Byte-order reversal for cryptonite compatibility!
+ * v0.1.17-alpha - FIXED: Byte-order reversal for cryptonite compatibility!
  */
 
 #include "smp_x448.h"
@@ -214,8 +214,8 @@ int x448_encode_base64url(const uint8_t *public_key, char *output) {
 }
 
 bool e2e_generate_params(e2e_params_t *params) {
-    params->version_min = 2;
-    params->version_max = 2;
+    params->version_min = 3;  // v3: App uses this for encodeLarge() prefix size
+    params->version_max = 3;
     params->has_kem = false;
 
     if (!x448_generate_keypair(&params->key1)) {
@@ -258,6 +258,10 @@ int e2e_encode_params(const e2e_params_t *params, uint8_t *output) {
     x448_encode_spki(params->key2.public_key, output + offset);
     offset += 68;
     
-    ESP_LOGI(TAG, "📦 E2E params encoded: %d bytes", offset);
-    return offset;  // 2 + 69 + 69 = 140 bytes (nicht 142!)
+    // KEM Nothing - v3 requires Maybe-encoding for KEM field
+    // '0' (0x30) = Nothing in SimpleX Maybe-encoding
+    output[offset++] = 0x30;  // '0' = No KEM/PQ
+    
+    ESP_LOGI(TAG, "📦 E2E params encoded: %d bytes (v3, no KEM)", offset);
+    return offset;  // 2 + 69 + 69 + 1 = 141 bytes
 }
