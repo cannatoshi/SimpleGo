@@ -67,28 +67,23 @@ static int build_hello_message(uint8_t *output, int max_len) {
     output[p++] = (msg_id >> 8) & 0xFF;
     output[p++] = msg_id & 0xFF;
     
-    // prevMsgHash = ByteString [Word16 BE len][hash...]
+    // prevMsgHash = shortString [Word8 len][hash...]
     // For first message, use empty (len=0)
     if (handshake_state.msg_id == 1) {
-        output[p++] = 0x00;  // High byte
-        output[p++] = 0x00;  // Low byte = 0 (empty hash)
+        output[p++] = 0x00;  // Word8 len = 0 (empty hash)
     } else {
-        output[p++] = 0x00;  // High byte
-        output[p++] = 32;    // Low byte = 32
+        output[p++] = 32;    // Word8 len = 32
         memcpy(&output[p], handshake_state.prev_msg_hash, 32);
         p += 32;
     }
     // aMessage = HELLO = %s"H"
     output[p++] = 'H';
-    // DEBUG: Show exact HELLO plaintext bytes
-    ESP_LOGI(TAG, "   📋 HELLO plaintext hex:");
-    printf("      ");
-    for (int i = 0; i < p; i++) {
-        printf("%02x ", output[i]);
-    }
+    // ===== AUFTRAG 18c: Layer 6 — AgentMessage (Ratchet plaintext) =====
+    ESP_LOGI(TAG, "🔬 [L6] AgentMessage: %d bytes", p);
+    printf("   L6 complete:  ");
+    for (int i = 0; i < p; i++) printf("%02x ", output[i]);
     printf("\n");
-    // NO internal padding - ratchet_encrypt handles padding to 15840 bytes!
-    ESP_LOGI(TAG, "   📦 HELLO plaintext: %d bytes", p);
+    // ===== END =====
 
     return p;
 }
@@ -106,9 +101,9 @@ static int build_agent_msg_envelope(
 ) {
     int p = 0;
     
-    // agentVersion = 2 bytes Big-Endian (version 5)
+    // agentVersion = 2 bytes Big-Endian (version 7)
     output[p++] = 0x00;
-    output[p++] = 0x05;
+    output[p++] = 0x07;
     
     // Message type = 'M' (AgentMsgEnvelope)
     output[p++] = 'M';
@@ -281,6 +276,8 @@ bool send_hello_message(
     }
     
     // 2. Build AgentMsgEnvelope (encrypt with ratchet)
+    //    crypto_box plaintext = '_' || AgentMsgEnvelope
+    //    '_' = PHEmpty PrivHeader (0x5F)
     #define HELLO_BUFFER_SIZE 17000
     
     uint8_t *agent_envelope = malloc(HELLO_BUFFER_SIZE);
@@ -288,17 +285,69 @@ bool send_hello_message(
         ESP_LOGE(TAG, "   ❌ Failed to allocate agent_envelope!");
         return false;
     }
+    
+    // Write AgentMsgEnvelope at offset 1 (leave room for PrivHeader)
     int envelope_len = build_agent_msg_envelope(ratchet, hello_plain, hello_plain_len,
-                                                  agent_envelope, HELLO_BUFFER_SIZE);  // ← FIX!
+                                                  agent_envelope + 1, HELLO_BUFFER_SIZE - 1);
     if (envelope_len < 0) {
         ESP_LOGE(TAG, "   ❌ Failed to build AgentMsgEnvelope!");
         free(agent_envelope);
         return false;
     }
+    
+    // Prepend PrivHeader = '_' (PHEmpty)
+    agent_envelope[0] = '_';
+    int total_plain_len = 1 + envelope_len;  // '_' + AgentMsgEnvelope
 
-    ESP_LOGI(TAG, "   📦 AgentMsgEnvelope: %d bytes", envelope_len);
+    // ===== AUFTRAG 18c: Layer 3 — AgentMsgEnvelope =====
+    ESP_LOGI(TAG, "🔬 [L3] AgentMsgEnvelope: %d bytes", envelope_len);
+    printf("   L3 first 16: ");
+    for (int i = 0; i < 16 && i < envelope_len; i++) printf("%02x ", agent_envelope[1 + i]);
+    printf("\n");
+    // ===== END =====
 
-    // 3. Encrypt with SMP-level crypto (NaCL crypto_box)
+    // ===== AUFTRAG 18c: Layer 2 — ClientMessage ('_' + AgentMsgEnvelope) =====
+    ESP_LOGI(TAG, "🔬 [L2] ClientMessage: %d bytes", total_plain_len);
+    printf("   L2 first 16: ");
+    for (int i = 0; i < 16 && i < total_plain_len; i++) printf("%02x ", agent_envelope[i]);
+    printf("\n");
+    // ===== END =====
+
+    // 3. cbEncrypt: Pad plaintext before crypto_box
+    //    Format: [Word16 BE len of ClientMessage][ClientMessage][0x23 padding to 16000]
+    #define E2E_ENC_HELLO_LENGTH 16000
+    
+    uint8_t *padded = malloc(E2E_ENC_HELLO_LENGTH);
+    if (!padded) {
+        ESP_LOGE(TAG, "   ❌ Failed to allocate cbEncrypt padding buffer!");
+        free(agent_envelope);
+        return false;
+    }
+    
+    // Word16 BE length prefix
+    padded[0] = (total_plain_len >> 8) & 0xFF;
+    padded[1] = total_plain_len & 0xFF;
+    
+    // Copy ClientMessage ('_' + AgentMsgEnvelope)
+    memcpy(&padded[2], agent_envelope, total_plain_len);
+    
+    // Fill rest with '#' (0x23)
+    int pad_start = 2 + total_plain_len;
+    memset(&padded[pad_start], '#', E2E_ENC_HELLO_LENGTH - pad_start);
+    
+    free(agent_envelope);  // No longer needed after copy
+
+    // ===== AUFTRAG 18c: Layer 1 — cbEncrypt Padded =====
+    ESP_LOGI(TAG, "🔬 [L1] cbEncrypt Padded: %d bytes", E2E_ENC_HELLO_LENGTH);
+    printf("   L1 first 16: ");
+    for (int i = 0; i < 16; i++) printf("%02x ", padded[i]);
+    printf("\n");
+    printf("   L1 last 4:   ");
+    for (int i = E2E_ENC_HELLO_LENGTH - 4; i < E2E_ENC_HELLO_LENGTH; i++) printf("%02x ", padded[i]);
+    printf("\n");
+    // ===== END =====
+
+    // 4. Encrypt with SMP-level crypto (NaCL crypto_box)
     uint8_t nonce[24];
     esp_fill_random(nonce, 24);
 
@@ -306,7 +355,7 @@ bool send_hello_message(
     uint8_t *client_msg = malloc(HELLO_BUFFER_SIZE);
     if (!client_msg) {
         ESP_LOGE(TAG, "   ❌ Failed to allocate client_msg!");
-        free(agent_envelope);
+        free(padded);
         return false;
     }
     int cmp = 0;
@@ -315,49 +364,49 @@ bool send_hello_message(
     client_msg[cmp++] = 0x00;
     client_msg[cmp++] = 0x04;
 
-    // PubHeader: Maybe tag '1' = Just (we have a DH key)
-    client_msg[cmp++] = '1';
+    // PubHeader: Maybe tag '0' = Nothing (no DH key for HELLO!)
+    // SMP uses '0'/'1' for Maybe encoding, not ','
+    client_msg[cmp++] = '0';
 
-    // PubHeader: Length prefix for 44-byte SPKI
-    client_msg[cmp++] = 44;
-
-    // PubHeader: X25519 DH public key in SPKI format (44 bytes)
-    memcpy(&client_msg[cmp], X25519_SPKI_HEADER, 12);
-    cmp += 12;
-    memcpy(&client_msg[cmp], our_dh_public, 32);
-    cmp += 32;
-
-    // Nonce (24 bytes)
+    // Nonce (24 bytes) — directly after version + Nothing tag
     memcpy(&client_msg[cmp], nonce, 24);
     cmp += 24;
 
-    // Encrypted envelope + MAC (16 bytes MAC)
-    uint8_t *enc_envelope = malloc(HELLO_BUFFER_SIZE);
+    // Encrypted padded envelope + MAC
+    uint8_t *enc_envelope = malloc(E2E_ENC_HELLO_LENGTH + crypto_box_MACBYTES);
     if (!enc_envelope) {
         ESP_LOGE(TAG, "   ❌ Failed to allocate enc_envelope!");
         free(client_msg);
-        free(agent_envelope);
+        free(padded);
         return false;
     }
     
-    if (crypto_box_easy(enc_envelope, agent_envelope, envelope_len,
+    if (crypto_box_easy(enc_envelope, padded, E2E_ENC_HELLO_LENGTH,
                         nonce, peer_dh_public, our_dh_private) != 0) {
         ESP_LOGE(TAG, "   ❌ crypto_box failed!");
         free(enc_envelope);
         free(client_msg);
-        free(agent_envelope);
+        free(padded);
         return false;
     }
-    int enc_envelope_len = envelope_len + crypto_box_MACBYTES;
+    int enc_envelope_len = E2E_ENC_HELLO_LENGTH + crypto_box_MACBYTES;
+    
+    free(padded);  // No longer needed after encryption
 
     memcpy(&client_msg[cmp], enc_envelope, enc_envelope_len);
     cmp += enc_envelope_len;
 
-    free(enc_envelope);  // Nicht mehr benötigt
-    free(agent_envelope);  // Nicht mehr benötigt
+    free(enc_envelope);
 
-    ESP_LOGI(TAG, "   📦 Client message: %d bytes (48 PubHeader + 24 nonce + %d encrypted)",
+    ESP_LOGI(TAG, "   📦 Client message: %d bytes (3 PubHeader + 24 nonce + %d encrypted)",
              cmp, enc_envelope_len);
+
+    // ===== AUFTRAG 18c: Layer 0 — ClientMsgEnvelope (PubHeader + Nonce + cmEncBody) =====
+    ESP_LOGI(TAG, "🔬 [L0] ClientMsgEnvelope: %d bytes", cmp);
+    printf("   L0 first 32: ");
+    for (int i = 0; i < 32 && i < cmp; i++) printf("%02x ", client_msg[i]);
+    printf("\n");
+    // ===== END =====
 
     // 4. Build SEND command body
     uint8_t *send_body = malloc(HELLO_BUFFER_SIZE);
@@ -580,51 +629,19 @@ bool complete_handshake(
 ) {
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║  🔗 COMPLETING DUPLEX CONNECTION HANDSHAKE                   ║");
+    ESP_LOGI(TAG, "║  🔗 COMPLETING DUPLEX CONNECTION (Confirmation only)          ║");
     ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
     ESP_LOGI(TAG, "");
     
     // Reset handshake state
     memset(&handshake_state, 0, sizeof(handshake_state));
     
-    // Step 1: AgentConfirmation already sent
-    ESP_LOGI(TAG, "   [1/4] AgentConfirmation ✅ (already sent)");
+    // Auftrag 24: HELLO moved to main.c (after KEY command)
+    // complete_handshake() now only marks Confirmation as done
+    ESP_LOGI(TAG, "   [1/2] AgentConfirmation ✅ (already sent)");
+    ESP_LOGI(TAG, "   [2/2] HELLO will be sent from main.c after KEY ⏳");
     
-    // Step 2: Fast duplex - skip waiting for confirmation
-    ESP_LOGI(TAG, "   [2/4] Peer confirmation ✅ (fast duplex, skipped)");
     handshake_state.confirmation_received = true;
-    
-    // Step 4: Send HELLO
-    ESP_LOGI(TAG, "   [3/4] Sending HELLO...");
-    
-    if (!send_hello_message(peer_ssl, block, peer_session_id,
-                            peer_queue_id, peer_queue_id_len,
-                            peer_dh_public, our_dh_private, our_dh_public,
-                            ratchet, snd_auth_private)) {  // Pass it through!
-        ESP_LOGE(TAG, "   ❌ Failed to send HELLO!");
-        return false;
-    }
-    
-    // Step 5: Wait for HELLO from peer
-    ESP_LOGI(TAG, "   [4/4] Waiting for HELLO from peer...");
-    ESP_LOGI(TAG, "         ⏳ (Will arrive on reply queue)");
-    
-    // For demo purposes, mark as connected after sending our HELLO
-    // The SimpleX app should show "Connected" when it receives our HELLO
-    handshake_state.connected = true;
-    
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
-    ESP_LOGI(TAG, "║  📊 HANDSHAKE STATUS                                         ║");
-    ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════════╣");
-    ESP_LOGI(TAG, "║  AgentConfirmation sent:   ✅                                ║");
-    ESP_LOGI(TAG, "║  Fast duplex mode:         ✅                                ║");
-    ESP_LOGI(TAG, "║  HELLO sent:               ✅                                ║");
-    ESP_LOGI(TAG, "║  HELLO received:           ⏳ (waiting)                      ║");
-    ESP_LOGI(TAG, "╠══════════════════════════════════════════════════════════════╣");
-    ESP_LOGI(TAG, "║  🎉 CONNECTION SHOULD BE ACTIVE! 🎉                          ║");
-    ESP_LOGI(TAG, "║  Check SimpleX app for 'Connected' status.                   ║");
-    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
     
     return true;
 }
