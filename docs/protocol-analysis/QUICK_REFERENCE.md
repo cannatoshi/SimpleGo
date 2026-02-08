@@ -2,42 +2,38 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-07 - Session 22 (Reply Queue Flow Discovery, E2E v3, KEM Parser)**
+**Updated: 2026-02-08 - Session 23 (🎉 CONNECTED! First SimpleX on Microcontroller!)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 22 - REPLY QUEUE FLOW DISCOVERED
-==========================================
+SESSION 23 - 🎉 CONNECTED! HISTORIC MILESTONE!
+================================================
 
-5 bugs fixed (#27-#31):
-  - E2E version_min: 2→3 + KEM Nothing in Confirmation
-  - KEM Parser: Dynamic for SNTRUP761 (2310 bytes)
-  - Body Decrypt: Dynamic emHeader size calculation
-  - NHK Init/Promotion: Three-part fix for header key chain
-  - Try-Order: HKr first (SameRatchet), NHKr second (AdvanceRatchet)
+First SimpleX connection on a microcontroller achieved!
+ESP32-S3 shows "Connected" in SimpleX App.
 
-BREAKTHROUGH DISCOVERY:
-  Modern SimpleX (v2 + senderCanSecure) needs NO HELLO!
-  App expects AgentConnInfo on Reply Queue instead.
-  Reply Queue Info is in Tag 'D' AgentConnInfoReply (innermost layer).
+Session 23 Achievements:
+  - ZERO new bugs (all 31 previous bugs were sufficient!)
+  - Complete 7-step handshake verified and working
+  - Role clarification: ESP32=Bob (Accepting), App=Alice (Initiating)
+  - Tag correction: We send 'D', App sends 'I' (not vice versa!)
+  - Legacy Path: PHConfirmation 'K' requires KEY + HELLO
+  - KEY command: Recipient command, signed with rcv_private_auth_key
+  - TLS reconnect: Required after timeout during Confirmation processing
 
-Post-Quantum:
-  SimpleX uses SNTRUP761 (not Kyber1024)
-  1158B pubkey, 1039B ciphertext, 32B shared secret
-  PQ-Graceful-Degradation: KEM Nothing → pure DH fallback
+Complete Handshake:
+  1. App: NEW → Q_A, Invitation
+  2. ESP32→App: SKEY + CONF Tag 'D' (Q_B + Profile)
+  3. App: processConf → CONF Event
+  4. App: LET/Accept Confirmation
+  5. App→ESP32: KEY on Q_A + SKEY on Q_B + Tag 'I'
+  6. ESP32: Reconnect + SUB + KEY + HELLO
+  7. Both: CON → "CONNECTED" 🎉
 
-Missing for "Connected":
-  1. Parse Reply Queue Info from Confirmation
-  2. Second TLS connection to Reply Queue server
-  3. SMP Handshake on Reply Queue
-  4. SKEY on Reply Queue
-  5. AgentConnInfo on Reply Queue
-  6. App receives → CON → "Connected"
-
-Next: Reply Queue Implementation (Session 23)
+Next: Bidirectional Chat Messages
 ```
 
 ---
@@ -760,8 +756,8 @@ else if (try_header_decrypt(next_header_key_recv, ...)) {
 
 ## 14. Session 22 Key Insights Summary
 
-1. **Modern SimpleX needs NO HELLO** — v2 + senderCanSecure uses Reply Queue flow
-2. **AgentConnInfo on Reply Queue** — not HELLO on Contact Queue
+1. **Modern SimpleX needs NO HELLO** — v2 + senderCanSecure uses Reply Queue flow (CORRECTED S23!)
+2. **AgentConnInfo on Reply Queue** — not HELLO on Contact Queue (CORRECTED S23!)
 3. **Reply Queue Info in Tag 'D'** — AgentConnInfoReply (innermost layer)
 4. **SNTRUP761 for PQ KEM** — not Kyber1024 (1158B pk, 1039B ct, 32B ss)
 5. **PQ-Graceful-Degradation** — KEM Nothing → pure DH fallback, no error
@@ -775,7 +771,69 @@ else if (try_header_decrypt(next_header_key_recv, ...)) {
 
 ---
 
-*Quick Reference v16.0*  
-*Last updated: February 7, 2026 - Session 22*  
-*Status: Reply Queue Flow Discovered, 5 bugs fixed*  
-*Next: Reply Queue Implementation (Parse, Connect, SKEY, AgentConnInfo)*
+## 15. Session 23 Key Insights Summary — 🎉 CONNECTED!
+
+1. **ESP32 = Bob (Accepting Party)** — creates Reply Queue, sends Tag 'D'
+2. **App = Alice (Initiating Party)** — creates Contact Queue, sends Tag 'I'
+3. **Tag 'D' sent BY US** — contains Reply Queue info (Q_B)
+4. **Tag 'I' received FROM App** — contains only profile, no queue info
+5. **Legacy Path (PHConfirmation 'K')** — requires KEY + HELLO exchange
+6. **Modern Path (PHEmpty '_')** — would skip HELLO (but we use Legacy!)
+7. **KEY is RECIPIENT command** — signed with rcv_private_auth_key
+8. **KEY authorizes SENDER** — App becomes authorized to send on our queue
+9. **TLS timeout during processing** — Reply Queue drops, must reconnect
+10. **Reconnect sequence** — TLS → SUB → KEY (must re-subscribe!)
+11. **Sequence critical: KEY before HELLO** — can't HELLO without authorization
+12. **7-step handshake** — exactly 7 steps for Legacy Path connection
+13. **CONNECTED needs BOTH HELLOs** — we send on Q_A, App sends on Q_B
+14. **Session 22 assumption WRONG** — Legacy Path still needs HELLO!
+15. **Verify assumptions with logs** — Tag 'D' branch never triggered!
+
+---
+
+## 16. Complete 7-Step Handshake (Session 23 — Verified Working!)
+
+```
+Step   Queue   Direction      Content                           Status
+──────────────────────────────────────────────────────────────────────────
+1.     —       App            NEW → Q_A, Invitation QR           ✅
+2a.    Q_A     ESP32→App      SKEY (Register Sender Auth)        ✅
+2b.    Q_A     ESP32→App      CONF Tag 'D' (Q_B + Profile)       ✅
+3.     —       App            processConf → CONF Event           ✅
+4.     —       App            LET/Accept Confirmation            ✅
+5a.    Q_A     App            KEY on Q_A (senderKey)             ✅
+5b.    Q_B     App→ESP32      SKEY on Q_B                        ✅
+5c.    Q_B     App→ESP32      Tag 'I' (App Profile)              ✅
+6a.    Q_B     ESP32          Reconnect + SUB + KEY              ✅
+6b.    Q_A     ESP32→App      HELLO                              ✅
+6c.    Q_B     App→ESP32      HELLO                              ✅
+7.     —       Both           CON — "CONNECTED" 🎉               ✅
+```
+
+---
+
+## 17. KEY Command Wire Format (Session 23)
+
+```
+KEY Body: "KEY " + senderKey
+
+senderKey:
+  [1B len=0x2C] + [44B Ed25519 X.509 SPKI DER]
+
+Full body: "KEY " + 0x2C + peer_sender_auth_key[44]
+Total: 4 + 1 + 44 = 49 bytes
+
+Signed with: rcv_private_auth_key (OUR recipient private key!)
+This is a RECIPIENT command — we authorize senders on OUR queue.
+
+Server Response:
+  OK    → Sender authorized successfully
+  ERR   → Authorization failed
+```
+
+---
+
+*Quick Reference v17.0*  
+*Last updated: February 8, 2026 - Session 23*  
+*Status: 🎉 CONNECTED! First SimpleX on Microcontroller!*  
+*Next: Bidirectional Chat Messages*
