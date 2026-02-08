@@ -31,15 +31,6 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Security',
-      collapsed: false,
-      items: [
-        'learn/security/threat-model',
-        'learn/security/protocol-comparison',
-      ],
-    },
-    {
-      type: 'category',
       label: 'Reference',
       collapsed: true,
       items: [
@@ -52,7 +43,7 @@ const sidebars: SidebarsConfig = {
   ],
 
   // =============================================
-  // SPECIFICATION — Formal protocol reference
+  // SPEC — Formal protocol reference
   // =============================================
   specSidebar: [
     'spec/index',
@@ -146,7 +137,7 @@ const sidebars: SidebarsConfig = {
   ],
 
   // =============================================
-  // IMPLEMENT — C/ESP32 developer guide
+  // BUILD — C/ESP32 developer guide
   // =============================================
   implementSidebar: [
     'implement/index',
@@ -238,7 +229,59 @@ const sidebars: SidebarsConfig = {
   ],
 
   // =============================================
-  // PROTOCOL ANALYSIS — Session-by-session journey
+  // HARDWARE — Dedicated hardware documentation
+  // =============================================
+  hardwareSidebar: [
+    'hardware/HARDWARE_OVERVIEW',
+    'hardware/HAL_ARCHITECTURE',
+    'hardware/HARDWARE_TIERS',
+    'hardware/COMPONENT_SELECTION',
+    'hardware/PCB_DESIGN',
+    'hardware/ENCLOSURE_DESIGN',
+    'hardware/SECURITY_ARCHITECTURE',
+  ],
+
+  // =============================================
+  // SECURITY — Security model and analysis
+  // =============================================
+  securitySidebar: [
+    'security/index',
+    'SECURITY_MODEL',
+    'security/threat-model',
+    'security/encryption-deep-dive',
+    'security/hardware-security',
+    'security/audit-log',
+  ],
+
+  // =============================================
+  // WHY SIMPLEGO? — Comparisons and rationale
+  // =============================================
+  whySimpleGoSidebar: [
+    'why-simplego/index',
+    {
+      type: 'category',
+      label: 'Protocol Comparisons',
+      collapsed: false,
+      items: [
+        'SIMPLEX_VS_MATRIX',
+        'SIMPLEX_VS_GRAPHENEOS',
+        'why-simplego/vs-signal',
+        'why-simplego/vs-briar',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Design Decisions',
+      collapsed: false,
+      items: [
+        'why-simplego/why-own-hardware',
+        'why-simplego/why-esp32',
+      ],
+    },
+  ],
+
+  // =============================================
+  // ANALYSIS — Protocol analysis sessions
   // =============================================
   analysisSidebar: [
     'protocol-analysis/SIMPLEX_PROTOCOL_INDEX',
@@ -276,7 +319,7 @@ const sidebars: SidebarsConfig = {
   ],
 
   // =============================================
-  // PROJECT — Existing project documentation
+  // PROJECT — Software docs + Releases
   // =============================================
   projectSidebar: [
     {
@@ -291,23 +334,19 @@ const sidebars: SidebarsConfig = {
         'CRYPTO',
         'PROTOCOL',
         'WIRE_FORMAT',
-        'SECURITY_MODEL',
         'BUGS',
         'DEVNOTES',
       ],
     },
     {
       type: 'category',
-      label: 'Hardware',
+      label: 'Releases',
       collapsed: false,
       items: [
-        'hardware/HARDWARE_OVERVIEW',
-        'hardware/HAL_ARCHITECTURE',
-        'hardware/HARDWARE_TIERS',
-        'hardware/COMPONENT_SELECTION',
-        'hardware/PCB_DESIGN',
-        'hardware/ENCLOSURE_DESIGN',
-        'hardware/SECURITY_ARCHITECTURE',
+        'releases/index',
+        'releases/v0-1-16-alpha',
+        'releases/v0-1-15-alpha',
+        'releases/v0-1-14-alpha',
       ],
     },
     {
@@ -316,24 +355,12 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'ADDING_NEW_DEVICE',
-        'SIMPLEX_VS_MATRIX',
-        'SIMPLEX_VS_GRAPHENEOS',
         'SPONSORS',
         'DISCLAIMER',
         'TRADEMARK',
         'LEGAL',
       ],
     },
-  ],
-
-  // =============================================
-  // RELEASES
-  // =============================================
-  releasesSidebar: [
-    'releases/index',
-    'releases/v0-1-16-alpha',
-    'releases/v0-1-15-alpha',
-    'releases/v0-1-14-alpha',
   ],
 };
 
