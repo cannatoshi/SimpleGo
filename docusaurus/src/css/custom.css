@@ -1,0 +1,38 @@
+:root {
+  --ifm-color-primary: #6366f1;
+  --ifm-color-primary-dark: #4f46e5;
+  --ifm-color-primary-darker: #4338ca;
+  --ifm-color-primary-darkest: #3730a3;
+  --ifm-color-primary-light: #818cf8;
+  --ifm-color-primary-lighter: #a5b4fc;
+  --ifm-color-primary-lightest: #c7d2fe;
+  --ifm-font-family-base: 'Inter', system-ui, -apple-system, sans-serif;
+  --ifm-font-family-monospace: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+  --ifm-code-font-size: 87.5%;
+  --ifm-heading-font-weight: 600;
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #818cf8;
+  --ifm-color-primary-dark: #6366f1;
+  --ifm-color-primary-darker: #4f46e5;
+  --ifm-color-primary-darkest: #4338ca;
+  --ifm-color-primary-light: #a5b4fc;
+  --ifm-color-primary-lighter: #c7d2fe;
+  --ifm-color-primary-lightest: #e0e7ff;
+  --ifm-background-color: #0f172a;
+  --ifm-background-surface-color: #1e293b;
+}
+
+table { font-size: 0.95rem; }
+table code { background: transparent; padding: 0; }
+pre { border-radius: 8px; }
+.alert { border-radius: 8px; }
+.anchor { scroll-margin-top: 80px; }
+pre code { line-height: 1.6; }
+.badge--warning { font-size: 0.75rem; }
+
+.footer { border-top: 1px solid var(--ifm-color-emphasis-300); }
+[data-theme='dark'] .footer { border-top-color: var(--ifm-color-emphasis-200); }
+.footer__title { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.8; }
+.footer__copyright { margin-top: 1.5rem; padding-top: 1rem; border-top: 1px solid var(--ifm-color-emphasis-200); font-size: 0.85rem; opacity: 0.7; }
