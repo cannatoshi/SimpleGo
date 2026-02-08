@@ -1,6 +1,6 @@
 /**
  * SimpleGo - smp_queue.h
- * SMP Queue Management (NEW, SUB, ACK commands)
+ * SMP Queue Management (NEW, SUB, KEY, ACK commands)
  * v0.1.15-alpha
  */
 
@@ -52,28 +52,38 @@ extern our_queue_t our_queue;
 
 /**
  * Create a new receive queue on our SMP server
- * This sends NEW command and parses IDS response
- * 
- * @param host SMP server hostname
- * @param port SMP server port (usually 443)
- * @return true if queue created successfully
  */
 bool queue_create(const char *host, int port);
 
 /**
  * Subscribe to our queue to receive messages
- * Sends SUB command
- * 
- * @return true if subscribed
  */
 bool queue_subscribe(void);
 
 /**
+ * Read one raw SMP block from the Reply Queue connection.
+ * Returns content_len (>0 success), <0 error. Data at buf+2.
+ */
+int queue_read_raw(uint8_t *buf, int buf_size, int timeout_ms);
+
+/**
+ * Reconnect to our reply queue server (after connection dropped).
+ * Reuses stored host/port, does NOT create a new queue.
+ */
+bool queue_reconnect(void);
+
+/**
+ * Send KEY command to register peer's sender auth key on our reply queue.
+ * Must be called after receiving peer's AgentConfirmation with PHConfirmation.
+ *
+ * @param peer_auth_key_spki  44-byte Ed25519 SPKI (as received in PrivHeader 'K')
+ * @param key_len             Length (must be 44)
+ * @return true if server accepted KEY
+ */
+bool queue_send_key(const uint8_t *peer_auth_key_spki, int key_len);
+
+/**
  * Encode our queue as SMPQueueInfo for AgentConnInfoReply
- * 
- * @param buf Output buffer
- * @param max_len Buffer size
- * @return Encoded length, or -1 on error
  */
 int queue_encode_info(uint8_t *buf, int max_len);
 

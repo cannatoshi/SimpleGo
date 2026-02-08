@@ -1472,6 +1472,22 @@ static void smp_connect(void) {
                                                     if (body_plain[0] == 'D') {
                                                         // AgentConnInfoReply: 'D' + queues + JSON
                                                         ESP_LOGI(TAG, "      Tag: 'D' = AgentConnInfoReply");
+
+                                                        // ======== Auftrag 41a: SMPQueueInfo boundary ========
+                                                        {
+                                                            size_t json_offset = 0;
+                                                            for (size_t i = 1; i < body_plain_len && i < 300; i++) {
+                                                                if (body_plain[i] == '{') { json_offset = i; break; }
+                                                            }
+                                                            ESP_LOGI(TAG, "      ======================================");
+                                                            ESP_LOGI(TAG, "      📋 41a: JSON '{' found at offset %zu", json_offset);
+                                                            ESP_LOGI(TAG, "      📋 41a: SMPQueueInfo = bytes [1..%zu] (%zu bytes)",
+                                                                     json_offset > 0 ? json_offset - 1 : 0,
+                                                                     json_offset > 0 ? json_offset - 1 : 0);
+                                                            ESP_LOGI(TAG, "      ======================================");
+                                                        }
+                                                        // ======== Ende Auftrag 41a ========
+
                                                         for (size_t i = 1; i < body_plain_len && i < 200; i++) {
                                                             if (body_plain[i] == '{') {
                                                                 int json_end = (body_plain_len - i > 200) ? 200 : (int)(body_plain_len - i);
@@ -1486,6 +1502,17 @@ static void smp_connect(void) {
                                                     // ============================================================
                                                     else if (body_plain_len > 6 && body_plain[0] == 'I') {
                                                         ESP_LOGI(TAG, "      Tag: 'I' = AgentMessage INFO (peer ConnInfo)");
+
+                                                        // ======== Auftrag 42a: Peer Sender Auth Key Status ========
+                                                        ESP_LOGI(TAG, "      ==========================================");
+                                                        ESP_LOGI(TAG, "      📋 42a: PEER SENDER AUTH KEY (für KEY Command)");
+                                                        ESP_LOGI(TAG, "      has_peer_sender_auth: %s", has_peer_sender_auth ? "YES" : "NO");
+                                                        if (has_peer_sender_auth) {
+                                                            ESP_LOG_BUFFER_HEX("      peer_sender_auth_key (44 bytes)", peer_sender_auth_key, 44);
+                                                        }
+                                                        ESP_LOGI(TAG, "      ==========================================");
+                                                        // ======== Ende Auftrag 42a ========
+
                                                         ESP_LOGI(TAG, "      body_plain[0-7]: %02x %02x %02x %02x %02x %02x %02x %02x",
                                                                  body_plain[0], body_plain[1], body_plain[2], body_plain[3],
                                                                  body_plain[4], body_plain[5], body_plain[6],
@@ -1601,22 +1628,334 @@ static void smp_connect(void) {
                             }
                             
                             // ================================================================
-                            // AUFTRAG 25b: HELLO without KEY (TEST)
-                            // KEY skipped to test if it's needed
-                            // ================================================================
+                            // ======== Auftrag 42c+42d: Reconnect + SUB + KEY + HELLO + Read Reply ========
                             {
                                 ESP_LOGI(TAG, "");
-                                ESP_LOGI(TAG, "   📤 Sending HELLO (WITHOUT KEY - test!)...");
-                                
-                                contact_t *hello_contact = &contacts_db.contacts[0];
-                                if (peer_send_hello(hello_contact)) {
-                                    ESP_LOGI(TAG, "   ✅ HELLO sent! Waiting for peer HELLO...");
-                                } else {
-                                    ESP_LOGE(TAG, "   ❌ HELLO send failed!");
+                                if (!has_peer_sender_auth) {
+                                    ESP_LOGW(TAG, "      ⚠️ 42c: No peer auth key!");
+                                    goto skip_42d;
                                 }
+                                
+                                // === Step 1: Reconnect to Reply Queue ===
+                                ESP_LOGI(TAG, "      📋 42c: Reconnecting to Reply Queue for KEY...");
+                                if (!queue_reconnect()) {
+                                    ESP_LOGE(TAG, "      ❌ 42c: Reconnect failed!");
+                                    goto skip_42d;
+                                }
+                                ESP_LOGI(TAG, "      ✅ 42c: Reconnected!");
+                                
+                                // === Step 2: SUB on Reply Queue ===
+                                if (!queue_subscribe()) {
+                                    ESP_LOGE(TAG, "      ❌ 42c: SUB failed!");
+                                    goto skip_42d;
+                                }
+                                ESP_LOGI(TAG, "      ✅ 42c: SUB OK!");
+                                
+                                // === Step 3: KEY command ===
+                                if (!queue_send_key(peer_sender_auth_key, 44)) {
+                                    ESP_LOGE(TAG, "      ❌ 42c: KEY failed!");
+                                    goto skip_42d;
+                                }
+                                ESP_LOGI(TAG, "      ✅ 42c: KEY accepted!");
+                                
+                                // === Step 4: Send HELLO on Contact Queue Q_A ===
+                                ESP_LOGI(TAG, "");
+                                ESP_LOGI(TAG, "      📋 42d: Sending HELLO on Contact Queue Q_A...");
+                                {
+                                    contact_t *hello_contact = &contacts_db.contacts[0];
+                                    if (peer_send_hello(hello_contact)) {
+                                        ESP_LOGI(TAG, "      ✅ 42d: HELLO sent!");
+                                    } else {
+                                        ESP_LOGE(TAG, "      ❌ 42d: HELLO send failed!");
+                                    }
+                                }
+                                
+                                // === Step 5: Read + Decrypt Reply Queue message ===
+                                ESP_LOGI(TAG, "");
+                                ESP_LOGI(TAG, "      📋 42d: Reading Reply Queue message...");
+                                {
+                                    uint8_t *rq_block = heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
+                                    if (!rq_block) {
+                                        ESP_LOGE(TAG, "      ❌ malloc failed!");
+                                        goto skip_42d;
+                                    }
+                                    
+                                    // Read up to 3 blocks (might get OK, END, MSG)
+                                    for (int rq_try = 0; rq_try < 3; rq_try++) {
+                                        int rq_content_len = queue_read_raw(rq_block, SMP_BLOCK_SIZE, 15000);
+                                        if (rq_content_len < 0) {
+                                            ESP_LOGW(TAG, "      📋 42d: No more data from Reply Queue (try %d)", rq_try);
+                                            break;
+                                        }
+                                        
+                                        uint8_t *rq_resp = rq_block + 2;
+                                        
+                                        // Parse SMP transport
+                                        int rp = 0;
+                                        if (rq_resp[rp] == 1) rp++;  // txCount
+                                        rp += 2;  // txLen
+                                        
+                                        int rq_authLen = rq_resp[rp++]; rp += rq_authLen;
+                                        int rq_sessLen = rq_resp[rp++]; rp += rq_sessLen;
+                                        int rq_corrLen = rq_resp[rp++]; rp += rq_corrLen;
+                                        int rq_entLen = rq_resp[rp++]; rp += rq_entLen;
+                                        
+                                        // Check command type
+                                        if (rp + 1 < rq_content_len && rq_resp[rp] == 'O' && rq_resp[rp+1] == 'K') {
+                                            ESP_LOGI(TAG, "      📋 42d [%d]: OK", rq_try);
+                                            continue;
+                                        }
+                                        if (rp + 2 < rq_content_len && rq_resp[rp] == 'E' && rq_resp[rp+1] == 'N' && rq_resp[rp+2] == 'D') {
+                                            ESP_LOGI(TAG, "      📋 42d [%d]: END", rq_try);
+                                            continue;
+                                        }
+                                        if (!(rp + 3 < rq_content_len && rq_resp[rp] == 'M' && rq_resp[rp+1] == 'S' && rq_resp[rp+2] == 'G')) {
+                                            ESP_LOGW(TAG, "      📋 42d [%d]: Unknown command: %c%c%c", rq_try,
+                                                     rq_resp[rp], rq_resp[rp+1], rq_resp[rp+2]);
+                                            continue;
+                                        }
+                                        
+                                        // === MSG received! ===
+                                        rp += 4;  // Skip "MSG "
+                                        uint8_t rq_msgIdLen = rq_resp[rp++];
+                                        uint8_t rq_msg_id[24] = {0};
+                                        if (rq_msgIdLen > 24) rq_msgIdLen = 24;
+                                        memcpy(rq_msg_id, &rq_resp[rp], rq_msgIdLen);
+                                        rp += rq_msgIdLen;
+                                        
+                                        int rq_enc_len = rq_content_len - rp;
+                                        
+                                        ESP_LOGI(TAG, "");
+                                        ESP_LOGI(TAG, "      ╔══════════════════════════════════════════════════════╗");
+                                        ESP_LOGI(TAG, "      ║  📋 42d: REPLY QUEUE MSG RECEIVED!                    ║");
+                                        ESP_LOGI(TAG, "      ╚══════════════════════════════════════════════════════╝");
+                                        ESP_LOGI(TAG, "      MsgId: %02x%02x%02x%02x...", rq_msg_id[0], rq_msg_id[1], rq_msg_id[2], rq_msg_id[3]);
+                                        ESP_LOGI(TAG, "      Encrypted: %d bytes", rq_enc_len);
+                                        
+                                        // --- Layer 1: Server-level decrypt ---
+                                        uint8_t rq_server_nonce[24] = {0};
+                                        memcpy(rq_server_nonce, rq_msg_id, rq_msgIdLen);
+                                        
+                                        uint8_t *rq_server_plain = malloc(rq_enc_len);
+                                        if (!rq_server_plain) break;
+                                        
+                                        if (crypto_box_open_easy_afternm(rq_server_plain, &rq_resp[rp], rq_enc_len,
+                                                                          rq_server_nonce, our_queue.shared_secret) != 0) {
+                                            ESP_LOGE(TAG, "      ❌ Server-level decrypt FAILED!");
+                                            free(rq_server_plain);
+                                            break;
+                                        }
+                                        int rq_plain_len = rq_enc_len - crypto_box_MACBYTES;
+                                        ESP_LOGI(TAG, "      ✅ Server decrypt OK! (%d bytes)", rq_plain_len);
+                                        
+                                        // --- Layer 2: Parse ClientMsgEnvelope ---
+                                        // Reply Queue has 2-byte length prefix
+                                        int rq_prefix = 0;
+                                        uint16_t rq_data_len = (rq_server_plain[0] << 8) | rq_server_plain[1];
+                                        if (rq_data_len > 0 && rq_data_len < rq_plain_len) {
+                                            rq_prefix = 2;
+                                        }
+                                        const uint8_t *rq_env = rq_server_plain + rq_prefix;
+                                        size_t rq_env_len = rq_prefix ? rq_data_len : rq_plain_len;
+                                        
+                                        ESP_LOGI(TAG, "      Envelope: prefix=%d, len=%zu", rq_prefix, rq_env_len);
+                                        ESP_LOGI(TAG, "      First 32 bytes:");
+                                        printf("         ");
+                                        for (int i = 0; i < 32 && i < (int)rq_env_len; i++) printf("%02x ", rq_env[i]);
+                                        printf("\n");
+                                        
+                                        // Parse envelope: [0-11]=header, [12]=maybe_corrId, [13]=maybe_e2e
+                                        int rq_off = 12;
+                                        uint8_t rq_mcorr = rq_env[rq_off++];
+                                        uint8_t rq_me2e = rq_env[rq_off++];
+                                        
+                                        ESP_LOGI(TAG, "      maybe_corrId=0x%02x '%c', maybe_e2e=0x%02x '%c'",
+                                                 rq_mcorr, (rq_mcorr >= 0x20 && rq_mcorr < 0x7f) ? rq_mcorr : '?',
+                                                 rq_me2e, (rq_me2e >= 0x20 && rq_me2e < 0x7f) ? rq_me2e : '?');
+                                        
+                                        // Extract E2E sender key
+                                        const uint8_t rq_spki[] = {0x30,0x2a,0x30,0x05,0x06,0x03,0x2b,0x65,0x6e,0x03,0x21,0x00};
+                                        uint8_t rq_sender_pub[32] = {0};
+                                        bool rq_have_key = false;
+                                        
+                                        if (rq_mcorr == '1' && (rq_me2e == ',' || rq_me2e == '0')) {
+                                            // corrId SPKI doubles as E2E key
+                                            if (memcmp(&rq_env[rq_off], rq_spki, 12) == 0) {
+                                                memcpy(rq_sender_pub, &rq_env[rq_off + 12], 32);
+                                                rq_have_key = true;
+                                                ESP_LOGI(TAG, "      ✅ E2E key from corrId SPKI");
+                                            }
+                                            rq_off += 44;
+                                        } else if (rq_mcorr == ',' || rq_mcorr == '0') {
+                                            if (reply_queue_e2e_peer_valid) {
+                                                memcpy(rq_sender_pub, reply_queue_e2e_peer_public, 32);
+                                                rq_have_key = true;
+                                                ESP_LOGI(TAG, "      ✅ Using pre-shared E2E key");
+                                            }
+                                        } else if (rq_mcorr == '1' && rq_me2e == '1') {
+                                            rq_off += 44;  // skip corrId SPKI
+                                            uint8_t e2e_len = rq_env[rq_off++];
+                                            if (e2e_len == 44 && memcmp(&rq_env[rq_off], rq_spki, 12) == 0) {
+                                                memcpy(rq_sender_pub, &rq_env[rq_off + 12], 32);
+                                                rq_have_key = true;
+                                                ESP_LOGI(TAG, "      ✅ Separate E2E key");
+                                            }
+                                            rq_off += 44;
+                                        }
+                                        
+                                        if (!rq_have_key) {
+                                            ESP_LOGE(TAG, "      ❌ No E2E key found!");
+                                            // Dump first 80 bytes for analysis
+                                            printf("         Full envelope hex:\n         ");
+                                            for (int i = 0; i < 80 && i < (int)rq_env_len; i++) {
+                                                printf("%02x ", rq_env[i]);
+                                                if ((i+1) % 16 == 0) printf("\n         ");
+                                            }
+                                            printf("\n");
+                                            free(rq_server_plain);
+                                            break;
+                                        }
+                                        
+                                        ESP_LOGI(TAG, "      Sender pub: %02x%02x%02x%02x...",
+                                                 rq_sender_pub[0], rq_sender_pub[1], rq_sender_pub[2], rq_sender_pub[3]);
+                                        
+                                        // Extract nonce + ciphertext
+                                        uint8_t rq_cm_nonce[24];
+                                        memcpy(rq_cm_nonce, &rq_env[rq_off], 24);
+                                        rq_off += 24;
+                                        
+                                        const uint8_t *rq_e2e_enc = &rq_env[rq_off];
+                                        size_t rq_e2e_enc_len = rq_env_len - rq_off;
+                                        
+                                        ESP_LOGI(TAG, "      cmNonce: %02x%02x%02x%02x...", rq_cm_nonce[0], rq_cm_nonce[1], rq_cm_nonce[2], rq_cm_nonce[3]);
+                                        ESP_LOGI(TAG, "      E2E cipher: %zu bytes", rq_e2e_enc_len);
+                                        
+                                        // --- E2E Decrypt ---
+                                        uint8_t *rq_e2e_plain = malloc(rq_e2e_enc_len);
+                                        if (!rq_e2e_plain) { free(rq_server_plain); break; }
+                                        
+                                        int rq_dec_ret = -1;
+                                        
+                                        // Try Method 0: decrypt_client_msg
+                                        {
+                                            int nonce_start = rq_off - 24;  // back to nonce in envelope
+                                            int enc_block_len = rq_env_len - nonce_start;
+                                            uint8_t *m0_plain = malloc(enc_block_len);
+                                            if (m0_plain) {
+                                                int dec_len = decrypt_client_msg(&rq_env[nonce_start], enc_block_len,
+                                                                                  rq_sender_pub, our_queue.e2e_private, m0_plain);
+                                                if (dec_len > 0) {
+                                                    rq_dec_ret = 0;
+                                                    memcpy(rq_e2e_plain, m0_plain, dec_len);
+                                                    ESP_LOGI(TAG, "      ✅ E2E decrypt OK (Method 0, %d bytes)", dec_len);
+                                                }
+                                                free(m0_plain);
+                                            }
+                                        }
+                                        
+                                        if (rq_dec_ret != 0) {
+                                            rq_dec_ret = crypto_box_open_easy(rq_e2e_plain, rq_e2e_enc, rq_e2e_enc_len,
+                                                                               rq_cm_nonce, rq_sender_pub, our_queue.e2e_private);
+                                            if (rq_dec_ret == 0) ESP_LOGI(TAG, "      ✅ E2E decrypt OK (Method 1)");
+                                        }
+                                        
+                                        if (rq_dec_ret != 0) {
+                                            uint8_t rq_dh[32];
+                                            crypto_scalarmult(rq_dh, our_queue.e2e_private, rq_sender_pub);
+                                            rq_dec_ret = crypto_secretbox_open_easy(rq_e2e_plain, rq_e2e_enc, rq_e2e_enc_len,
+                                                                                     rq_cm_nonce, rq_dh);
+                                            if (rq_dec_ret == 0) ESP_LOGI(TAG, "      ✅ E2E decrypt OK (Method 2)");
+                                            sodium_memzero(rq_dh, 32);
+                                        }
+                                        
+                                        if (rq_dec_ret != 0) {
+                                            ESP_LOGE(TAG, "      ❌ E2E decrypt FAILED (all methods)!");
+                                            printf("         sender_pub: "); for(int i=0;i<32;i++) printf("%02x",rq_sender_pub[i]); printf("\n");
+                                            printf("         our_e2e_priv: "); for(int i=0;i<32;i++) printf("%02x",our_queue.e2e_private[i]); printf("\n");
+                                            printf("         cm_nonce: "); for(int i=0;i<24;i++) printf("%02x",rq_cm_nonce[i]); printf("\n");
+                                            free(rq_e2e_plain);
+                                            free(rq_server_plain);
+                                            break;
+                                        }
+                                        
+                                        int rq_e2e_plain_len = rq_e2e_enc_len - 16;
+                                        
+                                        // --- Layer 3: unPad + Parse PrivHeader + Agent Tag ---
+                                        uint16_t rq_orig_len = (rq_e2e_plain[0] << 8) | rq_e2e_plain[1];
+                                        uint8_t *rq_client_msg = rq_e2e_plain + 2;
+                                        uint8_t rq_priv_tag = rq_client_msg[0];
+                                        
+                                        ESP_LOGI(TAG, "      unPad: origLen=%u, total=%d", rq_orig_len, rq_e2e_plain_len);
+                                        ESP_LOGI(TAG, "      PrivHeader: 0x%02x '%c'", rq_priv_tag,
+                                                 (rq_priv_tag >= 0x20 && rq_priv_tag < 0x7f) ? rq_priv_tag : '?');
+                                        
+                                        if (rq_priv_tag == '_') {
+                                            // PHEmpty — AgentMsgEnvelope starts at offset 1
+                                            ESP_LOGI(TAG, "      PHEmpty — parsing AgentMsgEnvelope...");
+                                            uint8_t *rq_agent = rq_client_msg + 1;
+                                            int rq_agent_len = rq_orig_len - 1;
+                                            
+                                            // Auftrag 37b style: version + tag
+                                            if (rq_agent_len >= 3) {
+                                                uint16_t rq_agent_ver = (rq_agent[0] << 8) | rq_agent[1];
+                                                char rq_agent_tag = rq_agent[2];
+                                                ESP_LOGI(TAG, "");
+                                                ESP_LOGI(TAG, "      ╔══════════════════════════════════════════════════════╗");
+                                                ESP_LOGI(TAG, "      ║  🎯 42d: AGENT MESSAGE TAG                           ║");
+                                                ESP_LOGI(TAG, "      ╚══════════════════════════════════════════════════════╝");
+                                                ESP_LOGI(TAG, "      Agent version: %u", rq_agent_ver);
+                                                ESP_LOGI(TAG, "      Agent tag: 0x%02x '%c'", rq_agent_tag,
+                                                         (rq_agent_tag >= 0x20 && rq_agent_tag < 0x7f) ? rq_agent_tag : '?');
+                                                
+                                                if (rq_agent_tag == 'H') {
+                                                    ESP_LOGI(TAG, "      🎉🎉🎉 A_HELLO received from peer! 🎉🎉🎉");
+                                                    ESP_LOGI(TAG, "      This means: CONNECTED! (CON)");
+                                                } else if (rq_agent_tag == 'M') {
+                                                    ESP_LOGI(TAG, "      📨 A_MSG — peer sent a message!");
+                                                } else {
+                                                    ESP_LOGI(TAG, "      Tag '%c' — see agent-protocol.md for meaning", rq_agent_tag);
+                                                }
+                                                
+                                                // Dump first 32 bytes of agent payload
+                                                ESP_LOGI(TAG, "      Agent payload (%d bytes):", rq_agent_len);
+                                                printf("         ");
+                                                for (int i = 0; i < 32 && i < rq_agent_len; i++) printf("%02x ", rq_agent[i]);
+                                                printf("\n");
+                                                printf("         ASCII: ");
+                                                for (int i = 0; i < 32 && i < rq_agent_len; i++) {
+                                                    char c = rq_agent[i];
+                                                    printf("%c", (c >= 32 && c < 127) ? c : '.');
+                                                }
+                                                printf("\n");
+                                            }
+                                        } else if (rq_priv_tag == 'K') {
+                                            ESP_LOGI(TAG, "      PHConfirmation — unexpected on Reply Queue!");
+                                        } else {
+                                            ESP_LOGW(TAG, "      Unknown PrivHeader: 0x%02x", rq_priv_tag);
+                                        }
+                                        
+                                        // Hex+ASCII dump of full decrypted content
+                                        ESP_LOGI(TAG, "      📋 Full decrypted (%d bytes):", rq_e2e_plain_len);
+                                        for (int di = 0; di < rq_e2e_plain_len && di < 128; di += 16) {
+                                            char hex[64] = {0}; char asc[20] = {0}; int hx = 0;
+                                            for (int dj = 0; dj < 16 && (di+dj) < rq_e2e_plain_len; dj++) {
+                                                uint8_t b = rq_e2e_plain[di+dj];
+                                                hx += sprintf(&hex[hx], "%02x ", b);
+                                                asc[dj] = (b >= 0x20 && b < 0x7f) ? (char)b : '.';
+                                            }
+                                            ESP_LOGI(TAG, "        +%04d: %-48s |%s|", di, hex, asc);
+                                        }
+                                        
+                                        free(rq_e2e_plain);
+                                        free(rq_server_plain);
+                                        break;  // Processed one MSG, done
+                                    }
+                                    free(rq_block);
+                                }
+                                
+                                skip_42d: ;
                             }
-                            // ================================================================
-                            // END AUFTRAG 25b
+                            // ======== Ende Auftrag 42c+42d ========
                             // ================================================================
                             
                         } else if (priv_tag == '_') {  // PHEmpty
