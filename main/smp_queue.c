@@ -1,8 +1,9 @@
 ﻿/**
  * SimpleGo - smp_queue.c
- * SMP Queue Management (NEW, SUB, ACK commands)
+ * SMP Queue Management (NEW, SUB, KEY, ACK commands)
  * v0.1.15-alpha - FIXED: NEW command now properly signed!
  * + DEBUG: E2E key tracking to find key mismatch bug
+ * + Auftrag 42b: KEY command for peer auth registration
  */
 
 #include "smp_queue.h"
@@ -551,7 +552,7 @@ int queue_encode_info(uint8_t *buf, int max_len) {
     char port_str[8];
     snprintf(port_str, sizeof(port_str), "%d", our_queue.server_port);
     int port_len = strlen(port_str);
-    buf[p++] = (uint8_t)port_len;  // ← FIX: Length prefix!
+    buf[p++] = (uint8_t)port_len;  // Length prefix!
     memcpy(&buf[p], port_str, port_len);
     p += port_len;
 
@@ -573,7 +574,7 @@ int queue_encode_info(uint8_t *buf, int max_len) {
     p += 32;
     
     // ================================================================
-    // 🐰 CONSISTENCY TEST: Alle 3 E2E Public Keys müssen identisch sein!
+    // CONSISTENCY TEST: Alle 3 E2E Public Keys müssen identisch sein!
     // ================================================================
     uint8_t derived_public[32];
     crypto_scalarmult_base(derived_public, our_queue.e2e_private);
@@ -713,6 +714,157 @@ bool queue_subscribe(void) {
     free(block);
     return false;
 }
+
+// ======== Auftrag 42b: KEY Command ========
+
+bool queue_send_key(const uint8_t *peer_auth_key_spki, int key_len) {
+    if (!queue_conn.connected || !our_queue.valid) {
+        ESP_LOGE(TAG, "queue_send_key: not ready (connected=%d, valid=%d)",
+                 queue_conn.connected, our_queue.valid);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  🔐 SENDING KEY COMMAND (Register Peer Auth)                 ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
+
+    // Body: corrId + entityId(rcvId) + "KEY " + [len]authKey
+    uint8_t body[128];
+    int bp = 0;
+
+    body[bp++] = 1;      // corrId length
+    body[bp++] = 'K';    // corrId value
+
+    body[bp++] = (uint8_t)our_queue.rcv_id_len;
+    memcpy(&body[bp], our_queue.rcv_id, our_queue.rcv_id_len);
+    bp += our_queue.rcv_id_len;
+
+    memcpy(&body[bp], "KEY ", 4);
+    bp += 4;
+
+    body[bp++] = (uint8_t)key_len;  // 44 = 0x2C
+    memcpy(&body[bp], peer_auth_key_spki, key_len);
+    bp += key_len;
+
+    // Sign: [32-len-prefix][sessionId] + body
+    uint8_t to_sign[1 + 32 + 128];
+    int sign_pos = 0;
+    to_sign[sign_pos++] = 32;
+    memcpy(&to_sign[sign_pos], queue_conn.session_id, 32);
+    sign_pos += 32;
+    memcpy(&to_sign[sign_pos], body, bp);
+    sign_pos += bp;
+
+    uint8_t signature[crypto_sign_BYTES];
+    crypto_sign_detached(signature, NULL, to_sign, sign_pos, our_queue.rcv_auth_private);
+
+    // Transmission: [sigLen][sig][sessLen][sess][body]
+    uint8_t transmission[256];
+    int tp = 0;
+
+    transmission[tp++] = crypto_sign_BYTES;
+    memcpy(&transmission[tp], signature, crypto_sign_BYTES);
+    tp += crypto_sign_BYTES;
+
+    transmission[tp++] = 32;
+    memcpy(&transmission[tp], queue_conn.session_id, 32);
+    tp += 32;
+
+    memcpy(&transmission[tp], body, bp);
+    tp += bp;
+
+    ESP_LOGI(TAG, "   📡 KEY transmission: %d bytes", tp);
+    ESP_LOGI(TAG, "   🔑 Peer auth key: %02x%02x%02x%02x...%02x%02x%02x%02x",
+             peer_auth_key_spki[0], peer_auth_key_spki[1],
+             peer_auth_key_spki[2], peer_auth_key_spki[3],
+             peer_auth_key_spki[40], peer_auth_key_spki[41],
+             peer_auth_key_spki[42], peer_auth_key_spki[43]);
+
+    uint8_t *block = heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
+    if (!block) return false;
+
+    int ret = smp_write_command_block(&queue_conn.ssl, block, transmission, tp);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "   ❌ Send KEY failed: %d", ret);
+        free(block);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "   📤 KEY sent! Waiting for response...");
+
+    int content_len = smp_read_block(&queue_conn.ssl, block, 10000);
+    if (content_len < 0) {
+        ESP_LOGE(TAG, "   ❌ No response!");
+        free(block);
+        return false;
+    }
+
+    uint8_t *resp = block + 2;
+
+    for (int i = 0; i < content_len - 1; i++) {
+        if (resp[i] == 'O' && resp[i+1] == 'K') {
+            ESP_LOGI(TAG, "   ✅ KEY accepted! Peer auth registered on our queue.");
+            free(block);
+            return true;
+        }
+    }
+
+    // Debug response
+    ESP_LOGW(TAG, "   ⚠️ KEY response (%d bytes):", content_len);
+    printf("      ");
+    for (int i = 0; i < content_len && i < 50; i++) printf("%02x ", resp[i]);
+    printf("\n");
+
+    for (int i = 0; i < content_len - 3; i++) {
+        if (resp[i] == 'E' && resp[i+1] == 'R' && resp[i+2] == 'R') {
+            char err[32] = {0};
+            int j = 0;
+            for (int k = i + 4; k < content_len && j < 31 && resp[k] >= 0x20; k++)
+                err[j++] = resp[k];
+            ESP_LOGE(TAG, "   🛑 Server Error: ERR %s", err);
+            break;
+        }
+    }
+
+    free(block);
+    return false;
+}
+
+// ======== Ende Auftrag 42b ========
+
+// ======== Auftrag 42d: Read from Reply Queue ========
+
+int queue_read_raw(uint8_t *buf, int buf_size, int timeout_ms) {
+    if (!queue_conn.connected) {
+        ESP_LOGE(TAG, "queue_read_raw: not connected!");
+        return -1;
+    }
+    return smp_read_block(&queue_conn.ssl, buf, timeout_ms);
+}
+
+// ======== Ende Auftrag 42d ========
+
+// ======== Auftrag 42c: Reconnect ========
+
+bool queue_reconnect(void) {
+    if (!our_queue.valid) {
+        ESP_LOGE(TAG, "queue_reconnect: queue not valid!");
+        return false;
+    }
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  🔄 RECONNECTING TO REPLY QUEUE SERVER                      ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
+
+    // Cleanup old connection
+    queue_disconnect();
+
+    // Reconnect (TLS + SMP Handshake only, no NEW)
+    return queue_connect(our_queue.server_host, our_queue.server_port);
+}
+
+// ======== Ende Auftrag 42c ========
 
 // ============== Disconnect ==============
 
