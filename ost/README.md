@@ -8,17 +8,16 @@ This folder contains the official SimpleGo Original Soundtrack - music created t
 
 ## Track List
 
-| Track | Version | Date | Theme |
-|-------|---------|------|-------|
-| SimpleGo_OST_-_v0.1.17-alpha.mp3 | v0.1.17-alpha | 2026-01-28 | The Breakthrough Release |
+| # | Track | Date | Genre | Theme |
+|---|-------|------|-------|-------|
+| 1 | SimpleGo_OST_-_v0.1.17-alpha.mp3 | 2026-01-28 | Cyberpunk / Industrial | The Breakthrough Release |
+| 2 | SimpleGo_OST_-_connected.mp3 | 2026-02-09 | Elektro Swing | Connected |
 
 ---
 
 ## About the Music
 
-Each track in this OST corresponds to a significant release version of SimpleGo. The music captures the spirit of late-night debugging sessions, cryptographic breakthroughs, and the relentless pursuit of making hardware speak a protocol it was never designed to understand.
-
-**Genre:** Cyberpunk / Industrial / Synthwave
+Each track in this OST marks a significant milestone in the SimpleGo journey. The music captures the spirit of late-night debugging sessions, cryptographic breakthroughs, and the relentless pursuit of making hardware speak a protocol it was never designed to understand.
 
 ---
 
@@ -52,24 +51,26 @@ All tracks are part of the SimpleGo project and follow the same AGPL-3.0 spirit 
 ## Naming Convention
 
 ```
-SimpleGo_OST_-_v{VERSION}.mp3
+SimpleGo_OST_-_{IDENTIFIER}.mp3
 
 Examples:
-- SimpleGo_OST_-_v0.1.17-alpha.mp3  (The Breakthrough Release)
-- SimpleGo_OST_-_v0.2.0.mp3         (Future: Full Duplex)
-- SimpleGo_OST_-_v1.0.0.mp3         (Future: First Stable)
+- SimpleGo_OST_-_v0.1.17-alpha.mp3  (version-based: The Breakthrough Release)
+- SimpleGo_OST_-_connected.mp3       (milestone-based: Connected)
 ```
+
+Each track also has matching files:
+- `_COVER.png` — Album artwork
+- `.md` — Lyrics
 
 ---
 
 ## Creation Notes
 
-### v0.1.17-alpha - "The Breakthrough Release"
+### Track 1: v0.1.17-alpha — "The Breakthrough Release"
 
-**Created:** 2026-01-28  
-**Generator:** Suno AI (Pro)  
-**Style:** Cyberpunk, Industrial, Electronic  
-**BPM:** ~140  
+**Created:** 2026-01-28
+**Genre:** Cyberpunk, Industrial, Electronic
+**BPM:** ~140
 
 **Lyrics Theme:**
 - Binary rivers and protocol fire
@@ -83,27 +84,39 @@ Examples:
 - 14+ bugs found and fixed
 - Being the FIRST native SMP implementation worldwide
 
+### Track 2: Connected
+
+**Created:** 2026-02-09
+**Genre:** Elektro Swing
+**BPM:** ~128
+
+**Inspired by:**
+- Session 23: ESP32 achieves full SMP handshake
+- SimpleX App shows "ESP32 — Connected" for the first time
+- 23 sessions of reverse-engineering from zero documentation
+- The moment everything clicked — KEY, HELLO, CON
+
 ---
 
 ## Future Tracks (Planned)
 
-| Version | Working Title | Milestone |
-|---------|--------------|-----------|
-| v0.2.0 | "Full Duplex" | Bidirectional chat working |
-| v0.3.0 | "Ratchet Spin" | Complete Double Ratchet |
-| v1.0.0 | "Native Protocol" | First stable release |
+| Working Title | Milestone |
+|--------------|-----------|
+| "Full Duplex" | Bidirectional chat working |
+| "Ratchet Spin" | Complete Double Ratchet |
+| "Native Protocol" | First stable release |
 
 ---
 
 ## Credits
 
-**Song by:** Cannatoshi & Claude AI (Opus 4.5)  
-**Music Generated with:** Suno AI (Pro)  
-**Project:** SimpleGo - Native ESP32 SMP Implementation  
+**Song by:** Cannatoshi & Claude AI (Opus 4.5)
+**Music Generated with:** Suno AI (Pro)
+**Project:** SimpleGo — Native ESP32 SMP Implementation
 
 ---
 
-*"We are the first - native on the wire"*
+*"We are the first — native on the wire"*
 
 ---
 
