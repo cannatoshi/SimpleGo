@@ -1,6 +1,6 @@
 # Security through reduction: SimpleGo versus GrapheneOS
 
-![SimpleDB](docs/gfx/GRAPHENEOS_VS_SIMPLEGO.png)
+![SimpleDB](gfx/GRAPHENEOS_VS_SIMPLEGO.png)
 
 ## Executive Summary
 
