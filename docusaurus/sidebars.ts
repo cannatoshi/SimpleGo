@@ -264,7 +264,7 @@ const sidebars: SidebarsConfig = {
       collapsed: false,
       items: [
         'SIMPLEX_VS_MATRIX',
-        'SIMPLEX_VS_GRAPHENEOS',
+        'SIMPLEGO_VS_GRAPHENEOS',
         'why-simplego/vs-signal',
         'why-simplego/vs-briar',
       ],
@@ -365,3 +365,4 @@ const sidebars: SidebarsConfig = {
 };
 
 export default sidebars;
+
