@@ -1889,6 +1889,28 @@ static void smp_connect(void) {
                                         ESP_LOGI(TAG, "      PrivHeader: 0x%02x '%c'", rq_priv_tag,
                                                  (rq_priv_tag >= 0x20 && rq_priv_tag < 0x7f) ? rq_priv_tag : '?');
                                         
+                                        // === Auftrag 43b: Q_B POST-E2E ANALYSIS ===
+                                        // Verify: Real HELLO or False Positive?
+                                        ESP_LOGI(TAG, "");
+                                        ESP_LOGI(TAG, "      === Q_B POST-E2E ANALYSIS (43b) ===");
+                                        ESP_LOGI(TAG, "      rq_orig_len: %u", rq_orig_len);
+                                        ESP_LOGI(TAG, "      rq_e2e_plain_len: %d", rq_e2e_plain_len);
+                                        ESP_LOGI(TAG, "      Plausibility: origLen %s",
+                                                 (rq_orig_len > 0 && rq_orig_len < 100) ? "SMALL → likely real HELLO" :
+                                                 (rq_orig_len > 15000) ? "LARGE → likely ratchet-encrypted!" :
+                                                 "MEDIUM → unclear, check hex");
+                                        ESP_LOGI(TAG, "      First 32 bytes after unPad (rq_client_msg):");
+                                        printf("         HEX: ");
+                                        for (int i = 0; i < 32 && i < (int)rq_orig_len; i++) printf("%02x ", rq_client_msg[i]);
+                                        printf("\n");
+                                        printf("         ASC: ");
+                                        for (int i = 0; i < 32 && i < (int)rq_orig_len; i++) {
+                                            char c = rq_client_msg[i];
+                                            printf("%c", (c >= 32 && c < 127) ? c : '.');
+                                        }
+                                        printf("\n");
+                                        // === Ende 43b Analysis ===
+                                        
                                         if (rq_priv_tag == '_') {
                                             // PHEmpty — AgentMsgEnvelope starts at offset 1
                                             ESP_LOGI(TAG, "      PHEmpty — parsing AgentMsgEnvelope...");
