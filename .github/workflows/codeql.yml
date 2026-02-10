@@ -1,0 +1,24 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: c-cpp
+          config-file: ./.github/codeql-config.yml
+      - name: Build
+        run: echo "Skip build for analysis"
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
