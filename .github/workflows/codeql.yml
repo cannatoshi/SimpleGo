@@ -17,8 +17,7 @@ jobs:
         uses: github/codeql-action/init@v3
         with:
           languages: c-cpp
+          build-mode: none
           config-file: ./.github/codeql-config.yml
-      - name: Build
-        run: echo "Skip build for analysis"
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3
