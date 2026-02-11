@@ -835,7 +835,28 @@ bool queue_send_key(const uint8_t *peer_auth_key_spki, int key_len) {
 
 // ======== Auftrag 42d: Read from Reply Queue ========
 
+// Pending message buffer: stores MSG received during ACK/SUB reads
+static struct {
+    uint8_t *data;
+    int len;
+    bool valid;
+} pending_msg = {0};
+
 int queue_read_raw(uint8_t *buf, int buf_size, int timeout_ms) {
+    // Check pending buffer first (MSG caught during ACK)
+    if (pending_msg.valid && pending_msg.data && pending_msg.len > 2) {
+        int total = pending_msg.len;
+        int copy_len = total < buf_size ? total : buf_size;
+        memcpy(buf, pending_msg.data, copy_len);
+        free(pending_msg.data);
+        pending_msg.data = NULL;
+        pending_msg.len = 0;
+        pending_msg.valid = false;
+        int content_len = total - 2;  // smp_read_block returns content_len, data at buf+2
+        ESP_LOGI(TAG, "   📬 Returning pending MSG from buffer (content_len=%d)", content_len);
+        return content_len;
+    }
+    
     if (!queue_conn.connected) {
         ESP_LOGE(TAG, "queue_read_raw: not connected!");
         return -1;
@@ -844,6 +865,136 @@ int queue_read_raw(uint8_t *buf, int buf_size, int timeout_ms) {
 }
 
 // ======== Ende Auftrag 42d ========
+
+// ======== Auftrag 45a: ACK Command ========
+
+bool queue_send_ack(const uint8_t *msg_id, int msg_id_len) {
+    if (!queue_conn.connected || !our_queue.valid) {
+        ESP_LOGE(TAG, "queue_send_ack: not ready");
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "   📨 Sending ACK for msgId %02x%02x%02x%02x...",
+             msg_id[0], msg_id[1], msg_id[2], msg_id[3]);
+    
+    // Build body: corrId + entityId(rcvId) + "ACK " + msgId
+    uint8_t body[128];
+    int bp = 0;
+    
+    body[bp++] = 1;
+    body[bp++] = 'A';  // corrId
+    
+    body[bp++] = (uint8_t)our_queue.rcv_id_len;
+    memcpy(&body[bp], our_queue.rcv_id, our_queue.rcv_id_len);
+    bp += our_queue.rcv_id_len;
+    
+    memcpy(&body[bp], "ACK ", 4);
+    bp += 4;
+    
+    // msgId (length-prefixed)
+    body[bp++] = (uint8_t)msg_id_len;
+    memcpy(&body[bp], msg_id, msg_id_len);
+    bp += msg_id_len;
+    
+    // Sign
+    uint8_t to_sign[1 + 32 + 128];
+    int sign_pos = 0;
+    to_sign[sign_pos++] = 32;
+    memcpy(&to_sign[sign_pos], queue_conn.session_id, 32);
+    sign_pos += 32;
+    memcpy(&to_sign[sign_pos], body, bp);
+    sign_pos += bp;
+    
+    uint8_t signature[crypto_sign_BYTES];
+    crypto_sign_detached(signature, NULL, to_sign, sign_pos, our_queue.rcv_auth_private);
+    
+    // Transmission
+    uint8_t transmission[256];
+    int tp = 0;
+    
+    transmission[tp++] = crypto_sign_BYTES;
+    memcpy(&transmission[tp], signature, crypto_sign_BYTES);
+    tp += crypto_sign_BYTES;
+    
+    transmission[tp++] = 32;
+    memcpy(&transmission[tp], queue_conn.session_id, 32);
+    tp += 32;
+    
+    memcpy(&transmission[tp], body, bp);
+    tp += bp;
+    
+    // Send
+    uint8_t *block = heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
+    if (!block) return false;
+    
+    int ret = smp_write_command_block(&queue_conn.ssl, block, transmission, tp);
+    if (ret != 0) {
+        ESP_LOGE(TAG, "   ❌ Send ACK failed!");
+        free(block);
+        return false;
+    }
+    
+    int content_len = smp_read_block(&queue_conn.ssl, block, 5000);
+    if (content_len >= 0) {
+        uint8_t *resp = block + 2;
+        
+        // Parse SMP transport to find command type
+        int rp = 0;
+        if (rp < content_len && resp[rp] == 1) rp++;  // txCount
+        rp += 2;  // txLen
+        int al = resp[rp++]; rp += al;  // auth
+        int sl = resp[rp++]; rp += sl;  // sess
+        int cl = resp[rp++]; rp += cl;  // corr
+        int el = resp[rp++]; rp += el;  // entity
+        
+        if (rp + 1 < content_len && resp[rp] == 'O' && resp[rp+1] == 'K') {
+            ESP_LOGI(TAG, "   ✅ ACK accepted!");
+            free(block);
+            return true;
+        }
+        
+        if (rp + 2 < content_len && resp[rp] == 'M' && resp[rp+1] == 'S' && resp[rp+2] == 'G') {
+            // Got a MSG instead of OK — ACK was accepted, server immediately delivered next message
+            ESP_LOGI(TAG, "   ✅ ACK accepted (implicit — server sent next MSG)");
+            ESP_LOGI(TAG, "   📬 Storing MSG in pending buffer (%d bytes)", content_len + 2);
+            
+            // Store the full block (including 2-byte header) for later queue_read_raw()
+            pending_msg.data = malloc(content_len + 2);
+            if (pending_msg.data) {
+                memcpy(pending_msg.data, block, content_len + 2);
+                pending_msg.len = content_len + 2;
+                pending_msg.valid = true;
+            }
+            free(block);
+            return true;
+        }
+        
+        if (rp + 2 < content_len && resp[rp] == 'E' && resp[rp+1] == 'N' && resp[rp+2] == 'D') {
+            ESP_LOGI(TAG, "   ✅ ACK accepted (got END — queue empty)");
+            free(block);
+            return true;
+        }
+        
+        if (rp + 2 < content_len && resp[rp] == 'E' && resp[rp+1] == 'R' && resp[rp+2] == 'R') {
+            ESP_LOGE(TAG, "   ❌ ACK error: ERR");
+            free(block);
+            return false;
+        }
+        
+        // Unknown response — log it
+        ESP_LOGW(TAG, "   ⚠️ ACK: unexpected response at offset %d: %02x%02x%02x '%c%c%c'",
+                 rp, resp[rp], resp[rp+1], resp[rp+2],
+                 (resp[rp]>=32&&resp[rp]<127)?(char)resp[rp]:'.',
+                 (resp[rp+1]>=32&&resp[rp+1]<127)?(char)resp[rp+1]:'.',
+                 (resp[rp+2]>=32&&resp[rp+2]<127)?(char)resp[rp+2]:'.');
+    }
+    
+    ESP_LOGW(TAG, "   ⚠️ ACK response timeout or parse error");
+    free(block);
+    return false;
+}
+
+// ======== Ende Auftrag 45a ========
 
 // ======== Auftrag 42c: Reconnect ========
 

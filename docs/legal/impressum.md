@@ -1,12 +1,12 @@
 ---
-title: "Legal Notice (Impressum)"
+title: "Legal Notice (Imprint)"
 sidebar_position: 99
 unlisted: true
 ---
 
-# Legal Notice (Impressum)
+# Legal Notice (Imprint)
 
-Required under German law (TMG, MStV).
+Required under German law (§ 5 DDG).
 
 ## Provider
 

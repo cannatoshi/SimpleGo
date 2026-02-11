@@ -13,7 +13,7 @@
 // Queue ID sizes
 #define QUEUE_ID_SIZE       24
 #define DH_PUBLIC_SIZE      32
-#define AUTH_KEY_SIZE       32
+#define AUTH_KEY_SIZE        32
 
 // Our created queue info
 typedef struct {
@@ -81,6 +81,17 @@ bool queue_reconnect(void);
  * @return true if server accepted KEY
  */
 bool queue_send_key(const uint8_t *peer_auth_key_spki, int key_len);
+
+/**
+ * Send ACK command to acknowledge a received message.
+ * Must be called after processing each MSG to unblock the queue.
+ * Auftrag 45a.
+ *
+ * @param msg_id      Message ID from MSG command (server nonce)
+ * @param msg_id_len  Length of message ID
+ * @return true if server accepted ACK
+ */
+bool queue_send_ack(const uint8_t *msg_id, int msg_id_len);
 
 /**
  * Encode our queue as SMPQueueInfo for AgentConnInfoReply
