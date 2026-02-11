@@ -10,6 +10,8 @@
  * 3. We send HELLO message
  * 4. App sends HELLO back
  * 5. CONNECTED!
+ *
+ * Auftrag 44a: Added send_chat_message() for A_MSG
  */
 
 #include "smp_handshake.h"
@@ -18,6 +20,7 @@
 #include "smp_queue.h"
 #include "smp_ratchet.h"
 #include <string.h>
+#include <stdio.h>
 #include <time.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
@@ -85,6 +88,80 @@ static int build_hello_message(uint8_t *output, int max_len) {
     printf("\n");
     // ===== END =====
 
+    return p;
+}
+
+// ============== Auftrag 44a: Chat Message Building ==============
+
+/**
+ * Build A_MSG message:
+ * 
+ * agentMessage = %s"M" agentMsgHeader aMessage
+ * agentMsgHeader = agentMsgId prevMsgHash
+ * aMessage = %s"M" msgBody
+ * msgBody = UTF-8 text
+ * 
+ * Byte layout:
+ *   [0]      'M'     AgentMessage tag
+ *   [1-8]    Int64   sndMsgId (Big-Endian)
+ *   [9]      len     prevMsgHash length (0 or 32)
+ *   [10-41]  hash    prevMsgHash (if len=32)
+ *   [N]      'M'     A_MSG tag
+ *   [N+1..]  text    msgBody (UTF-8)
+ */
+static int build_chat_message(const char *message, uint8_t *output, int max_len) {
+    int p = 0;
+    
+    // agentMessage tag = 'M'
+    output[p++] = 'M';
+    
+    // agentMsgId = 8 bytes Big-Endian
+    handshake_state.msg_id++;
+    uint64_t msg_id = handshake_state.msg_id;
+    output[p++] = (msg_id >> 56) & 0xFF;
+    output[p++] = (msg_id >> 48) & 0xFF;
+    output[p++] = (msg_id >> 40) & 0xFF;
+    output[p++] = (msg_id >> 32) & 0xFF;
+    output[p++] = (msg_id >> 24) & 0xFF;
+    output[p++] = (msg_id >> 16) & 0xFF;
+    output[p++] = (msg_id >> 8) & 0xFF;
+    output[p++] = msg_id & 0xFF;
+    
+    // prevMsgHash = shortString
+    if (handshake_state.msg_id == 1) {
+        output[p++] = 0x00;  // empty
+    } else {
+        output[p++] = 32;
+        memcpy(&output[p], handshake_state.prev_msg_hash, 32);
+        p += 32;
+    }
+    
+    // aMessage = A_MSG = 'M' + msgBody (ChatMessage JSON)
+    output[p++] = 'M';
+    
+    // msgBody = ChatMessage JSON format
+    // Same format as x.info but with x.msg.new event
+    char json_buf[400];
+    int json_len = snprintf(json_buf, sizeof(json_buf),
+        "{\"v\":\"1\",\"event\":\"x.msg.new\",\"params\":{\"content\":{\"type\":\"text\",\"text\":\"%s\"}}}",
+        message);
+    memcpy(&output[p], json_buf, json_len);
+    p += json_len;
+    
+    // === 44a: Hex-dump AgentMessage before encrypt ===
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "🔬 [44a] AgentMessage (A_MSG): %d bytes, msg_id=%llu", p, (unsigned long long)msg_id);
+    printf("   HEX: ");
+    for (int i = 0; i < p && i < 64; i++) printf("%02x ", output[i]);
+    if (p > 64) printf("...");
+    printf("\n");
+    printf("   ASC: ");
+    for (int i = 0; i < p && i < 64; i++) {
+        char c = (char)output[i];
+        printf("%c", (c >= 32 && c < 127) ? c : '.');
+    }
+    printf("\n");
+    
     return p;
 }
 
@@ -538,6 +615,264 @@ bool send_hello_message(
     for (int i = 0; i < content_len - 3; i++) {
         if (resp[i] == 'E' && resp[i+1] == 'R' && resp[i+2] == 'R' && resp[i+3] == ' ') {
             // Found "ERR ", print the error type
+            char err_type[32] = {0};
+            int j = 0;
+            for (int k = i + 4; k < content_len && j < 31 && resp[k] >= 0x20 && resp[k] < 0x7F; k++) {
+                err_type[j++] = resp[k];
+            }
+            ESP_LOGE(TAG, "   🛑 Server Error: ERR %s", err_type);
+            break;
+        }
+    }
+    
+    return false;
+}
+
+// ============== Auftrag 44a: Send Chat Message (A_MSG) ==============
+
+/**
+ * Send a chat message to peer via A_MSG.
+ * 
+ * Identical encrypt chain to HELLO:
+ *   AgentMessage → Ratchet Encrypt → AgentMsgEnvelope →
+ *   PrivHeader('_') → ClientMessage → E2E Pad → crypto_box →
+ *   PubHeader → SEND (signed)
+ * 
+ * Only difference: AgentMessage contains 'M' + text instead of 'H'
+ */
+bool send_chat_message(
+    mbedtls_ssl_context *ssl,
+    uint8_t *block,
+    const uint8_t *session_id,
+    const uint8_t *peer_queue_id,
+    int peer_queue_id_len,
+    const uint8_t *peer_dh_public,
+    const uint8_t *our_dh_private,
+    const uint8_t *our_dh_public,
+    ratchet_state_t *ratchet,
+    const uint8_t *snd_auth_private,
+    const char *message
+) {
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  📤 AUFTRAG 44a: SENDING CHAT MESSAGE (A_MSG)                ║");
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
+    ESP_LOGI(TAG, "   Message: \"%s\"", message);
+    
+    handshake_state.ratchet = ratchet;
+    
+    // 1. Build A_MSG plaintext
+    uint8_t msg_plain[512];
+    int msg_plain_len = build_chat_message(message, msg_plain, sizeof(msg_plain));
+    if (msg_plain_len < 0) {
+        ESP_LOGE(TAG, "   ❌ Failed to build A_MSG!");
+        return false;
+    }
+    
+    // 2. Build AgentMsgEnvelope (Ratchet encrypt)
+    #define AMSG_BUFFER_SIZE 17000
+    
+    uint8_t *agent_envelope = malloc(AMSG_BUFFER_SIZE);
+    if (!agent_envelope) {
+        ESP_LOGE(TAG, "   ❌ malloc agent_envelope failed!");
+        return false;
+    }
+    
+    // PrivHeader '_' at offset 0, AgentMsgEnvelope at offset 1
+    agent_envelope[0] = '_';
+    int envelope_len = build_agent_msg_envelope(ratchet, msg_plain, msg_plain_len,
+                                                  agent_envelope + 1, AMSG_BUFFER_SIZE - 1);
+    if (envelope_len < 0) {
+        ESP_LOGE(TAG, "   ❌ Ratchet encrypt failed!");
+        free(agent_envelope);
+        return false;
+    }
+    int total_plain_len = 1 + envelope_len;
+    
+    ESP_LOGI(TAG, "   ClientMessage ('_' + envelope): %d bytes", total_plain_len);
+    
+    // 3. E2E Pad: [Word16 BE len][ClientMessage][0x23 padding → 16000]
+    #define E2E_ENC_AMSG_LENGTH 16000
+    
+    uint8_t *padded = malloc(E2E_ENC_AMSG_LENGTH);
+    if (!padded) {
+        ESP_LOGE(TAG, "   ❌ malloc padded failed!");
+        free(agent_envelope);
+        return false;
+    }
+    
+    padded[0] = (total_plain_len >> 8) & 0xFF;
+    padded[1] = total_plain_len & 0xFF;
+    memcpy(&padded[2], agent_envelope, total_plain_len);
+    memset(&padded[2 + total_plain_len], '#', E2E_ENC_AMSG_LENGTH - 2 - total_plain_len);
+    
+    free(agent_envelope);
+    
+    // 4. crypto_box: PubHeader + nonce + encrypted
+    uint8_t nonce[24];
+    esp_fill_random(nonce, 24);
+    
+    uint8_t *client_msg = malloc(AMSG_BUFFER_SIZE);
+    if (!client_msg) {
+        ESP_LOGE(TAG, "   ❌ malloc client_msg failed!");
+        free(padded);
+        return false;
+    }
+    int cmp = 0;
+    
+    // PubHeader: version 4
+    client_msg[cmp++] = 0x00;
+    client_msg[cmp++] = 0x04;
+    
+    // PubHeader: '0' = Nothing (no new DH key)
+    client_msg[cmp++] = '0';
+    
+    // Nonce
+    memcpy(&client_msg[cmp], nonce, 24);
+    cmp += 24;
+    
+    // Encrypt
+    uint8_t *enc_buf = malloc(E2E_ENC_AMSG_LENGTH + crypto_box_MACBYTES);
+    if (!enc_buf) {
+        ESP_LOGE(TAG, "   ❌ malloc enc_buf failed!");
+        free(client_msg);
+        free(padded);
+        return false;
+    }
+    
+    if (crypto_box_easy(enc_buf, padded, E2E_ENC_AMSG_LENGTH,
+                        nonce, peer_dh_public, our_dh_private) != 0) {
+        ESP_LOGE(TAG, "   ❌ crypto_box failed!");
+        free(enc_buf);
+        free(client_msg);
+        free(padded);
+        return false;
+    }
+    int enc_len = E2E_ENC_AMSG_LENGTH + crypto_box_MACBYTES;
+    free(padded);
+    
+    memcpy(&client_msg[cmp], enc_buf, enc_len);
+    cmp += enc_len;
+    free(enc_buf);
+    
+    ESP_LOGI(TAG, "   📦 ClientMsgEnvelope: %d bytes", cmp);
+    
+    // 5. Build SEND command
+    uint8_t *send_body = malloc(AMSG_BUFFER_SIZE);
+    if (!send_body) {
+        free(client_msg);
+        return false;
+    }
+    int sbp = 0;
+    
+    // CorrId
+    send_body[sbp++] = 1;
+    send_body[sbp++] = 'A';  // 'A' for A_MSG
+    
+    // EntityId = peer's queue
+    send_body[sbp++] = (uint8_t)peer_queue_id_len;
+    memcpy(&send_body[sbp], peer_queue_id, peer_queue_id_len);
+    sbp += peer_queue_id_len;
+    
+    // SEND command
+    memcpy(&send_body[sbp], "SEND ", 5);
+    sbp += 5;
+    
+    // MsgFlags: 'T' = notification True
+    send_body[sbp++] = 'T';
+    send_body[sbp++] = ' ';
+    
+    // MsgBody
+    memcpy(&send_body[sbp], client_msg, cmp);
+    sbp += cmp;
+    free(client_msg);
+    
+    ESP_LOGI(TAG, "   📮 SEND body: %d bytes", sbp);
+    
+    // 6. Sign: authorized = sessionId + send_body
+    uint8_t *authorized = malloc(AMSG_BUFFER_SIZE);
+    if (!authorized) {
+        free(send_body);
+        return false;
+    }
+    int ap = 0;
+    
+    authorized[ap++] = 32;
+    memcpy(&authorized[ap], session_id, 32);
+    ap += 32;
+    
+    memcpy(&authorized[ap], send_body, sbp);
+    ap += sbp;
+    free(send_body);
+    
+    uint8_t signature[64];
+    crypto_sign_detached(signature, NULL, authorized, ap, snd_auth_private);
+    
+    ESP_LOGI(TAG, "   🔏 Signed A_MSG SEND (%d bytes)", ap);
+    
+    // 7. Transmission = [sigLen][signature][authorized]
+    uint8_t *transmission = malloc(AMSG_BUFFER_SIZE);
+    if (!transmission) {
+        free(authorized);
+        return false;
+    }
+    int tp = 0;
+    
+    transmission[tp++] = 64;
+    memcpy(&transmission[tp], signature, 64);
+    tp += 64;
+    
+    memcpy(&transmission[tp], authorized, ap);
+    tp += ap;
+    free(authorized);
+    
+    ESP_LOGI(TAG, "   📡 Transmission: %d bytes", tp);
+    
+    // 8. Send!
+    int ret = smp_write_command_block(ssl, block, transmission, tp);
+    free(transmission);
+    
+    if (ret != 0) {
+        ESP_LOGE(TAG, "   ❌ Send A_MSG failed: %d", ret);
+        return false;
+    }
+    
+    ESP_LOGI(TAG, "   📤 A_MSG sent! Waiting for response...");
+    
+    // 9. Wait for response
+    int content_len = smp_read_block(ssl, block, 10000);
+    if (content_len < 0) {
+        ESP_LOGE(TAG, "   ❌ No response!");
+        return false;
+    }
+    
+    uint8_t *resp = block + 2;
+    
+    for (int i = 0; i < content_len - 1; i++) {
+        if (resp[i] == 'O' && resp[i+1] == 'K') {
+            ESP_LOGI(TAG, "");
+            ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
+            ESP_LOGI(TAG, "║  🎉🎉🎉 A_MSG ACCEPTED BY SERVER! 🎉🎉🎉                     ║");
+            ESP_LOGI(TAG, "║                                                              ║");
+            ESP_LOGI(TAG, "║  Message \"%s\" sent to peer!                                  ║", message);
+            ESP_LOGI(TAG, "║  Check SimpleX App for the message!                          ║");
+            ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
+            
+            // Update prev_msg_hash for next message
+            mbedtls_sha256(msg_plain, msg_plain_len, handshake_state.prev_msg_hash, 0);
+            
+            return true;
+        }
+    }
+    
+    // Check for error
+    ESP_LOGW(TAG, "   ⚠️  Response not OK (%d bytes):", content_len);
+    printf("   HEX: ");
+    for (int i = 0; i < content_len && i < 80; i++) printf("%02x ", resp[i]);
+    printf("\n");
+    
+    for (int i = 0; i < content_len - 3; i++) {
+        if (resp[i] == 'E' && resp[i+1] == 'R' && resp[i+2] == 'R' && resp[i+3] == ' ') {
             char err_type[32] = {0};
             int j = 0;
             for (int k = i + 4; k < content_len && j < 31 && resp[k] >= 0x20 && resp[k] < 0x7F; k++) {

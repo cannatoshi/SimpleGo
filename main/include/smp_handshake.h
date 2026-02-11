@@ -56,6 +56,40 @@ bool send_hello_message(
 );
 
 /**
+ * Send a chat message (A_MSG) to peer.
+ * Auftrag 44a: First bidirectional chat message.
+ *
+ * Uses same encrypt chain as HELLO (Ratchet → E2E → SEND),
+ * but with A_MSG payload instead of HELLO tag.
+ *
+ * @param ssl               TLS context for peer connection
+ * @param block             Work buffer (SMP_BLOCK_SIZE)
+ * @param session_id        Current session ID (32 bytes)
+ * @param peer_queue_id     Peer's queue ID
+ * @param peer_queue_id_len Length of peer's queue ID
+ * @param peer_dh_public    Peer's X25519 DH public key (32 bytes)
+ * @param our_dh_private    Our X25519 DH private key (32 bytes)
+ * @param our_dh_public     Our X25519 DH public key (32 bytes)
+ * @param ratchet           Ratchet state for encryption
+ * @param snd_auth_private  Ed25519 private key for signing SEND (64 bytes)
+ * @param message           UTF-8 message text to send
+ * @return true on success
+ */
+bool send_chat_message(
+    mbedtls_ssl_context *ssl,
+    uint8_t *block,
+    const uint8_t *session_id,
+    const uint8_t *peer_queue_id,
+    int peer_queue_id_len,
+    const uint8_t *peer_dh_public,
+    const uint8_t *our_dh_private,
+    const uint8_t *our_dh_public,
+    ratchet_state_t *ratchet,
+    const uint8_t *snd_auth_private,
+    const char *message
+);
+
+/**
  * Parse a decrypted message to check if it's HELLO.
  *
  * @param data       Decrypted message data
