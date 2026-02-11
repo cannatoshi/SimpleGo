@@ -803,3 +803,55 @@ bool peer_send_hello(contact_t *contact) {
     free(block);
     return ok;
 }
+
+// ============== Auftrag 44a: Send Chat Message ==============
+
+bool peer_send_chat_message(contact_t *contact, const char *message) {
+    // Reconnect to peer if needed
+    if (!peer_state.connected) {
+        if (peer_state.last_host[0] == '\0' || peer_state.last_port == 0) {
+            ESP_LOGE(TAG, "❌ peer_send_chat_message: no saved peer host/port!");
+            return false;
+        }
+        ESP_LOGI(TAG, "   🔄 Reconnecting to peer server %s:%d...",
+                 peer_state.last_host, peer_state.last_port);
+        if (!peer_connect(peer_state.last_host, peer_state.last_port)) {
+            ESP_LOGE(TAG, "❌ peer_send_chat_message: reconnect failed!");
+            return false;
+        }
+        ESP_LOGI(TAG, "   ✅ Peer reconnected!");
+    }
+
+    if (!pending_peer.valid || !pending_peer.has_dh) {
+        ESP_LOGE(TAG, "❌ peer_send_chat_message: no pending peer data!");
+        return false;
+    }
+
+    uint8_t *block = heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
+    if (!block) {
+        ESP_LOGE(TAG, "❌ peer_send_chat_message: malloc failed!");
+        return false;
+    }
+
+    uint8_t our_dh_private[32];
+    uint8_t our_dh_public[32];
+    memcpy(our_dh_private, contact->rcv_dh_secret, 32);
+    memcpy(our_dh_public,  contact->rcv_dh_public,  32);
+
+    bool ok = send_chat_message(
+        &peer_state.ssl,
+        block,
+        peer_state.session_id,
+        pending_peer.queue_id,
+        pending_peer.queue_id_len,
+        pending_peer.dh_public,
+        our_dh_private,
+        our_dh_public,
+        ratchet_get_state(),
+        our_queue.rcv_auth_private,
+        message
+    );
+
+    free(block);
+    return ok;
+}
