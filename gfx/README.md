@@ -17,14 +17,14 @@ This directory contains the official SimpleGo logo and branding materials.
 
 The source code of SimpleGo is licensed under [AGPL-3.0](../LICENSE).
 
-**The logo and all branding materials in this directory are NOT covered by the AGPL-3.0 license.** They are subject to the [SimpleGo Trademark Policy](../TRADEMARK.md).
+**The logo and all branding materials in this directory are NOT covered by the AGPL-3.0 license.** They are subject to the [SimpleGo Trademark Policy](../gfx/TRADEMARK.md).
 
 ### Quick Summary
 
 - **Permitted without asking**: Editorial use, blog posts, talks, presentations, screenshots, ecosystem references.
 - **Requires permission**: Product names, modified logos, commercial use, anything implying endorsement.
 
-See [TRADEMARK.md](../TRADEMARK.md) for full details.
+See [TRADEMARK.md](../gfx/TRADEMARK.md) for full details.
 
 ## Contact
 
