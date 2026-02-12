@@ -698,19 +698,50 @@ bool queue_subscribe(void) {
     int content_len = smp_read_block(&queue_conn.ssl, block, 5000);
     if (content_len >= 0) {
         uint8_t *resp = block + 2;
-        
-        // Look for OK
-        for (int i = 0; i < content_len - 1; i++) {
-            if (resp[i] == 'O' && resp[i+1] == 'K') {
-                ESP_LOGI(TAG, "   ✅ Subscribed!");
-                free(block);
-                return true;
-            }
+
+        // Parse SMP transport to find command
+        int rp = 0;
+        if (rp < content_len && resp[rp] == 1) rp++;  // txCount
+        rp += 2;  // txLen
+        int al = resp[rp++]; rp += al;  // auth
+        int sl = resp[rp++]; rp += sl;  // sess
+        int cl = resp[rp++]; rp += cl;  // corr
+        int el = resp[rp++]; rp += el;  // entity
+
+        if (rp + 1 < content_len && resp[rp] == 'O' && resp[rp+1] == 'K') {
+            ESP_LOGI(TAG, "   ✅ Subscribed!");
+            free(block);
+            return true;
         }
-        
-        ESP_LOGW(TAG, "   ⚠️ SUB response: %.20s", resp);
+
+        if (rp + 2 < content_len && resp[rp] == 'E' && resp[rp+1] == 'N' && resp[rp+2] == 'D') {
+            ESP_LOGI(TAG, "   ✅ Subscribed (END — queue empty)!");
+            free(block);
+            return true;
+        }
+
+        if (rp + 2 < content_len && resp[rp] == 'M' && resp[rp+1] == 'S' && resp[rp+2] == 'G') {
+            // Server delivered a pending MSG instead of OK — SUB was accepted implicitly.
+            // Store this MSG for later processing via queue_read_raw().
+            ESP_LOGI(TAG, "   ✅ Subscribed (server delivered pending MSG)");
+            ESP_LOGI(TAG, "   📬 Storing MSG in pending buffer (%d bytes)", content_len + 2);
+
+            pending_msg.data = malloc(content_len + 2);
+            if (pending_msg.data) {
+                memcpy(pending_msg.data, block, content_len + 2);
+                pending_msg.len = content_len + 2;
+                pending_msg.valid = true;
+            }
+            free(block);
+            return true;
+        }
+
+        ESP_LOGW(TAG, "   ⚠️ SUB response at offset %d: %02x%02x '%c%c'",
+                 rp, resp[rp], rp+1 < content_len ? resp[rp+1] : 0,
+                 (resp[rp] >= 32 && resp[rp] < 127) ? (char)resp[rp] : '.',
+                 (rp+1 < content_len && resp[rp+1] >= 32 && resp[rp+1] < 127) ? (char)resp[rp+1] : '.');
     }
-    
+
     free(block);
     return false;
 }
