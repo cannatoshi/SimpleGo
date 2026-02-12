@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="/gfx/simplego_x_cover.png" alt="cover" width="1500">
+</p>
+
 # SimpleGo
 
 **Native SimpleX Protocol Implementation for Dedicated Secure Communication Devices**
@@ -91,7 +95,6 @@ SimpleGo is under active development. The protocol implementation has reached a 
 | Storage Abstraction | Complete |
 | Network Abstraction | Complete |
 | T-Deck Plus Implementation | In Progress |
-| T-Embed CC1101 Implementation | Planned |
 
 ### Cryptographic Verification
 
