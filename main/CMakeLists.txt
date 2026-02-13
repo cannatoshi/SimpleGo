@@ -16,7 +16,10 @@ message(STATUS "========================================")
 # Core protocol sources (device-independent)
 set(CORE_SOURCES
     "main.c"
+    "smp_ack.c"
+    "smp_agent.c"
     "smp_contacts.c"
+    "smp_e2e.c"
     "simplex_crypto.c"
     "smp_crypto.c"
     "smp_globals.c"
@@ -25,6 +28,7 @@ set(CORE_SOURCES
     "smp_peer.c"
     "smp_queue.c"
     "smp_utils.c"
+    "smp_wifi.c"
     "smp_x448.c"
     "smp_ratchet.c"
     "smp_handshake.c"
