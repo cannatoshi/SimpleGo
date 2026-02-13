@@ -744,6 +744,15 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     printf("   dh_self.pub:   "); for(int i=0; i<56; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("\n");
     printf("   dh_peer:       "); for(int i=0; i<56; i++) printf("%02x", ratchet_state.dh_peer[i]); printf("\n");
 
+    // Variables needed by both modes
+    uint8_t recv_chain_key[32];
+    uint8_t new_root_key_2[32] = {0};
+    uint8_t send_chain_key[32] = {0};
+    uint8_t new_nhk_recv[32] = {0};
+    uint8_t new_nhk_send[32] = {0};
+    x448_keypair_t new_dh_self = {0};
+
+    if (mode == RATCHET_MODE_ADVANCE) {
     // SCHRITT 1: DH Ratchet Step — Receiving Chain
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "   === SCHRITT 1: DH Ratchet (Receiving Chain) ===");
@@ -755,7 +764,7 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     }
     printf("   dh_secret_recv: "); for(int i=0; i<56; i++) printf("%02x", dh_secret_recv[i]); printf("\n");
 
-    uint8_t new_root_key_1[32], recv_chain_key[32], new_nhk_recv[32];
+    uint8_t new_root_key_1[32];
     kdf_root(ratchet_state.root_key, dh_secret_recv,
              new_root_key_1, recv_chain_key, new_nhk_recv);
 
@@ -767,7 +776,6 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "   === SCHRITT 2: DH Ratchet (Sending Chain) ===");
 
-    x448_keypair_t new_dh_self;
     if (!x448_generate_keypair(&new_dh_self)) {
         ESP_LOGE(TAG, "   ❌ X448 keygen failed!");
         return -2;
@@ -781,7 +789,6 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     }
     printf("   dh_secret_send: "); for(int i=0; i<56; i++) printf("%02x", dh_secret_send[i]); printf("\n");
 
-    uint8_t new_root_key_2[32], send_chain_key[32], new_nhk_send[32];
     kdf_root(new_root_key_1, dh_secret_send,
              new_root_key_2, send_chain_key, new_nhk_send);
 
@@ -789,7 +796,19 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     printf("   send_chain_key: "); for(int i=0; i<32; i++) printf("%02x", send_chain_key[i]); printf("\n");
     printf("   new_nhk_send:   "); for(int i=0; i<32; i++) printf("%02x", new_nhk_send[i]); printf("\n");
 
+    } else {
+        // RATCHET_MODE_SAME: Skip DH ratchet, use existing chain_key_recv
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "   === SAME RATCHET: Using existing recv chain (no DH) ===");
+        memcpy(recv_chain_key, ratchet_state.chain_key_recv, 32);
+        ESP_LOGI(TAG, "   chain_key_recv: %02x%02x%02x%02x%02x%02x%02x%02x...",
+                 recv_chain_key[0], recv_chain_key[1], recv_chain_key[2], recv_chain_key[3],
+                 recv_chain_key[4], recv_chain_key[5], recv_chain_key[6], recv_chain_key[7]);
+    }
+
     // SCHRITT 3: Chain KDF
+    // ADVANCE: chain starts at position 0, skip 0..msg_ns-1 (absolute)
+    // SAME:    chain starts at position msg_num_recv, skip msg_num_recv..msg_ns-1 (relative)
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "   === SCHRITT 3: Chain KDF ===");
 
@@ -798,7 +817,11 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
 
     uint8_t message_key[32], next_chain_key[32], iv_body[16], iv_header[16];
 
-    for (uint32_t i = 0; i < msg_ns; i++) {
+    uint32_t skip_from = (mode == RATCHET_MODE_ADVANCE) ? 0 : ratchet_state.msg_num_recv;
+    ESP_LOGI(TAG, "   Chain position: %u, target Ns: %u, steps to skip: %u",
+             skip_from, msg_ns, (msg_ns > skip_from) ? msg_ns - skip_from : 0);
+
+    for (uint32_t i = skip_from; i < msg_ns; i++) {
         ESP_LOGI(TAG, "   Skipping chain step %u...", i);
         kdf_chain(temp_ck, next_chain_key, message_key, iv_body, iv_header);
         memcpy(temp_ck, next_chain_key, 32);
@@ -882,66 +905,69 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
     }
 
     // ================================================================
-    // SCHRITT 6: State Update — FIX 3: Proper HK←NHK Promotion
-    // Signal spec DHRatchetHE():
-    //   state.HKs = state.NHKs
-    //   state.HKr = state.NHKr
-    //   ... then RK, CKr, NHKr = KDF(...)
-    //   ... then RK, CKs, NHKs = KDF(...)
+    // SCHRITT 6: State Update — Mode-dependent
+    // ADVANCE: Full DH ratchet state + HK←NHK Promotion
+    // SAME: Only chain_key_recv + msg_num_recv
     // ================================================================
     ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "   === SCHRITT 6: State Update (FIX 3: HK←NHK Promotion) ===");
-    ESP_LOGI(TAG, "   Updating ratchet state per Signal DHRatchetHE():");
-    ESP_LOGI(TAG, "     root_key        → new_root_key_2");
-    ESP_LOGI(TAG, "     chain_key_recv  → next_chain_key");
-    ESP_LOGI(TAG, "     chain_key_send  → send_chain_key");
-    ESP_LOGI(TAG, "     header_key_send ← next_header_key_send (PROMOTION!)");
-    ESP_LOGI(TAG, "     header_key_recv ← next_header_key_recv (PROMOTION!)");
-    ESP_LOGI(TAG, "     next_header_key_send ← new_nhk_send (from KDF)");
-    ESP_LOGI(TAG, "     next_header_key_recv ← new_nhk_recv (from KDF)");
-    ESP_LOGI(TAG, "     dh_self         → new_dh_self");
-    ESP_LOGI(TAG, "     dh_peer         → peer_new_pub");
-    ESP_LOGI(TAG, "     msg_num_recv    → %u", msg_ns + 1);
-    ESP_LOGI(TAG, "     msg_num_send    → 0 (reset after DH ratchet)");
+    ESP_LOGI(TAG, "   === SCHRITT 6: State Update (mode=%s) ===",
+             mode == RATCHET_MODE_SAME ? "SameRatchet" : "AdvanceRatchet");
 
-    // Log old values
-    printf("   OLD root_key:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
-    printf("   OLD dh_self.pub:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("...\n");
-    printf("   OLD hk_recv:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
-    printf("   OLD hk_send:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
-    printf("   OLD nhk_recv:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_recv[i]); printf("...\n");
-    printf("   OLD nhk_send:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_send[i]); printf("...\n");
+    if (mode == RATCHET_MODE_ADVANCE) {
+        ESP_LOGI(TAG, "   Updating ratchet state per Signal DHRatchetHE():");
 
-    // Apply state updates
-    memcpy(ratchet_state.root_key, new_root_key_2, 32);
-    memcpy(ratchet_state.chain_key_recv, next_chain_key, 32);
-    memcpy(ratchet_state.chain_key_send, send_chain_key, 32);
-    
-    // FIX 3: Promotion: HK ← old NHK (for next message)
-    memcpy(ratchet_state.header_key_send, ratchet_state.next_header_key_send, 32);
-    memcpy(ratchet_state.header_key_recv, ratchet_state.next_header_key_recv, 32);
-    // NHK ← KDF output (for step after next)
-    memcpy(ratchet_state.next_header_key_send, new_nhk_send, 32);
-    memcpy(ratchet_state.next_header_key_recv, new_nhk_recv, 32);
-    
-    memcpy(ratchet_state.dh_self.private_key, new_dh_self.private_key, 56);
-    memcpy(ratchet_state.dh_self.public_key, new_dh_self.public_key, 56);
-    memcpy(ratchet_state.dh_peer, peer_new_pub, 56);
-    ratchet_state.msg_num_recv = msg_ns + 1;
-    ratchet_state.prev_chain_len = ratchet_state.msg_num_send;
-    ratchet_state.msg_num_send = 0;
+        // Log old values
+        printf("   OLD root_key:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
+        printf("   OLD dh_self.pub:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("...\n");
+        printf("   OLD hk_recv:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
+        printf("   OLD hk_send:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
+        printf("   OLD nhk_recv:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_recv[i]); printf("...\n");
+        printf("   OLD nhk_send:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_send[i]); printf("...\n");
 
-    // Log new values
-    printf("   NEW root_key:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
-    printf("   NEW dh_self.pub:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("...\n");
-    printf("   NEW hk_recv:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
-    printf("   NEW hk_send:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
-    printf("   NEW nhk_recv:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_recv[i]); printf("...\n");
-    printf("   NEW nhk_send:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_send[i]); printf("...\n");
-    printf("   NEW ck_recv:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_recv[i]); printf("...\n");
-    printf("   NEW ck_send:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_send[i]); printf("...\n");
-    ESP_LOGI(TAG, "   ✅ State updated! msg_num_recv=%u, msg_num_send=%u, prev_chain_len=%u",
-             ratchet_state.msg_num_recv, ratchet_state.msg_num_send, ratchet_state.prev_chain_len);
+        // Apply state updates
+        memcpy(ratchet_state.root_key, new_root_key_2, 32);
+        memcpy(ratchet_state.chain_key_recv, next_chain_key, 32);
+        memcpy(ratchet_state.chain_key_send, send_chain_key, 32);
+
+        // HK←NHK Promotion per Signal spec
+        memcpy(ratchet_state.header_key_send, ratchet_state.next_header_key_send, 32);
+        memcpy(ratchet_state.header_key_recv, ratchet_state.next_header_key_recv, 32);
+        memcpy(ratchet_state.next_header_key_send, new_nhk_send, 32);
+        memcpy(ratchet_state.next_header_key_recv, new_nhk_recv, 32);
+
+        // DH keys
+        memcpy(ratchet_state.dh_self.private_key, new_dh_self.private_key, 56);
+        memcpy(ratchet_state.dh_self.public_key, new_dh_self.public_key, 56);
+        memcpy(ratchet_state.dh_peer, peer_new_pub, 56);
+
+        // Counters
+        ratchet_state.prev_chain_len = ratchet_state.msg_num_send;
+        ratchet_state.msg_num_recv = msg_ns + 1;
+        ratchet_state.msg_num_send = 0;
+
+        // Log new values
+        printf("   NEW root_key:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
+        printf("   NEW dh_self.pub:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("...\n");
+        printf("   NEW hk_recv:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
+        printf("   NEW hk_send:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
+        printf("   NEW nhk_recv:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_recv[i]); printf("...\n");
+        printf("   NEW nhk_send:      "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.next_header_key_send[i]); printf("...\n");
+        printf("   NEW ck_recv:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_recv[i]); printf("...\n");
+        printf("   NEW ck_send:       "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_send[i]); printf("...\n");
+        ESP_LOGI(TAG, "   ✅ State updated! msg_num_recv=%u, msg_num_send=%u, prev_chain_len=%u",
+                 ratchet_state.msg_num_recv, ratchet_state.msg_num_send, ratchet_state.prev_chain_len);
+    } else {
+        // SAME: Only update chain key and recv counter
+        memcpy(ratchet_state.chain_key_recv, next_chain_key, 32);
+        ratchet_state.msg_num_recv = msg_ns + 1;
+
+        ESP_LOGI(TAG, "   ✅ SAME state: msg_num_recv=%u, ck_recv=%02x%02x%02x%02x%02x%02x%02x%02x...",
+                 ratchet_state.msg_num_recv,
+                 ratchet_state.chain_key_recv[0], ratchet_state.chain_key_recv[1],
+                 ratchet_state.chain_key_recv[2], ratchet_state.chain_key_recv[3],
+                 ratchet_state.chain_key_recv[4], ratchet_state.chain_key_recv[5],
+                 ratchet_state.chain_key_recv[6], ratchet_state.chain_key_recv[7]);
+    }
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔═══════════════════════════════════════════════════════╗");

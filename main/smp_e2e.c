@@ -88,13 +88,13 @@ static bool extract_sender_key(const uint8_t *envelope, size_t envelope_len,
         off += 44;
 
     } else if (maybe_corrId == ',' || maybe_corrId == '0') {
-        // No corrId → use pre-shared key
-        // 47g FIX: maybe_e2e byte is actually the FIRST NONCE BYTE!
-        // Nonce starts at offset 13 (right after corrId), not 14
+        // 48a: No inline key → cached peer key, nonce right after corrId byte
+        // Format: [12B header][corrId byte][24B nonce][ciphertext+MAC]
+        // maybe_e2e was actually nonce[0], so back up 1 byte
         if (reply_queue_e2e_peer_valid) {
             memcpy(sender_pub, reply_queue_e2e_peer_public, 32);
-            *offset = off - 1;  // Back up 1 byte: nonce starts at 13, not 14
-            ESP_LOGI(TAG, "47g: corrId='%c', nonce at offset %d (backed up 1 byte)", maybe_corrId, off - 1);
+            *offset = off - 1;  // Nonce starts at byte 13, not 14
+            ESP_LOGD(TAG, "E2E: corrId='%c', nonce_offset=%d, using cached key", maybe_corrId, off - 1);
             return true;
         }
         ESP_LOGE(TAG, "No pre-shared E2E key available");
@@ -209,10 +209,9 @@ int smp_e2e_decrypt_reply_message(
     int plain_len = encrypted_len - crypto_box_MACBYTES;
     ESP_LOGI(TAG, "Server decrypt OK (%d bytes)", plain_len);
 
-    // 47e: Server decrypt diagnostic
-    ESP_LOGW(TAG, "47e: === REPLY QUEUE DECRYPT DIAGNOSTIC ===");
-    ESP_LOGW(TAG, "47e: enc_len=%d, msg_id_len=%d, plain_len=%d", encrypted_len, msg_id_len, plain_len);
-    ESP_LOGW(TAG, "47e: shared_secret: %02x%02x%02x%02x %02x%02x%02x%02x",
+    // 48a: Server decrypt diagnostic (DEBUG level)
+    ESP_LOGD(TAG, "47e: enc_len=%d, msg_id_len=%d, plain_len=%d", encrypted_len, msg_id_len, plain_len);
+    ESP_LOGD(TAG, "47e: shared_secret: %02x%02x%02x%02x %02x%02x%02x%02x",
              our_queue.shared_secret[0], our_queue.shared_secret[1],
              our_queue.shared_secret[2], our_queue.shared_secret[3],
              our_queue.shared_secret[4], our_queue.shared_secret[5],
@@ -228,14 +227,14 @@ int smp_e2e_decrypt_reply_message(
     const uint8_t *envelope = server_plain + prefix_len;
     size_t envelope_len = raw_len_prefix;
 
-    // 47e: Envelope diagnostic
-    ESP_LOGW(TAG, "47e: len_prefix=%u, prefix_len=%d, envelope_len=%zu", raw_len_prefix, prefix_len, envelope_len);
-    ESP_LOGW(TAG, "47e: envelope first 32 bytes:");
+    // 48a: Envelope diagnostic (DEBUG level)
+    ESP_LOGD(TAG, "47e: len_prefix=%u, prefix_len=%d, envelope_len=%zu", raw_len_prefix, prefix_len, envelope_len);
+    ESP_LOGD(TAG, "47e: envelope first 32 bytes:");
     {
         char hex[128] = {0}; int hx = 0;
         for (int i = 0; i < 32 && i < (int)envelope_len; i++)
             hx += sprintf(&hex[hx], "%02x ", envelope[i]);
-        ESP_LOGW(TAG, "  %s", hex);
+        ESP_LOGD(TAG, "  %s", hex);
     }
 
     // === Layer 2: E2E envelope parse + decrypt ===
@@ -248,104 +247,11 @@ int smp_e2e_decrypt_reply_message(
         return -3;
     }
 
-    // 47e: Key comparison diagnostic
-    ESP_LOGW(TAG, "47e: sender_pub (from envelope): %02x%02x%02x%02x %02x%02x%02x%02x",
+    // 48a: Compact E2E key diagnostic
+    ESP_LOGD(TAG, "E2E keys: sender=%02x%02x%02x%02x, our=%02x%02x%02x%02x",
              sender_pub[0], sender_pub[1], sender_pub[2], sender_pub[3],
-             sender_pub[4], sender_pub[5], sender_pub[6], sender_pub[7]);
-    ESP_LOGW(TAG, "47e: our_e2e_public:             %02x%02x%02x%02x %02x%02x%02x%02x",
              our_queue.e2e_public[0], our_queue.e2e_public[1],
-             our_queue.e2e_public[2], our_queue.e2e_public[3],
-             our_queue.e2e_public[4], our_queue.e2e_public[5],
-             our_queue.e2e_public[6], our_queue.e2e_public[7]);
-    ESP_LOGW(TAG, "47e: our_e2e_private (first 8):  %02x%02x%02x%02x %02x%02x%02x%02x",
-             our_queue.e2e_private[0], our_queue.e2e_private[1],
-             our_queue.e2e_private[2], our_queue.e2e_private[3],
-             our_queue.e2e_private[4], our_queue.e2e_private[5],
-             our_queue.e2e_private[6], our_queue.e2e_private[7]);
-    // 47e: DH computation check
-    {
-        uint8_t dh_check[32];
-        crypto_scalarmult(dh_check, our_queue.e2e_private, sender_pub);
-        ESP_LOGW(TAG, "47e: DH(our_priv, sender_pub):   %02x%02x%02x%02x %02x%02x%02x%02x",
-                 dh_check[0], dh_check[1], dh_check[2], dh_check[3],
-                 dh_check[4], dh_check[5], dh_check[6], dh_check[7]);
-    }
-
-    // ================================================================
-    // AUFTRAG 47g: Brute-Force Nonce-Offset Scan
-    // Test ALL possible nonce start positions in the envelope
-    // ================================================================
-    ESP_LOGW(TAG, "47g: === BRUTE-FORCE NONCE OFFSET SCAN ===");
-    ESP_LOGW(TAG, "47g: envelope_len=%zu, current offset=%d", envelope_len, offset);
-    {
-        uint8_t *bf_plain = malloc(envelope_len);
-        if (bf_plain) {
-            for (int nonce_off = 8; nonce_off <= 24; nonce_off++) {
-                int cipher_off = nonce_off + 24;
-                if (cipher_off + 16 >= (int)envelope_len) break;
-                size_t ct_len = envelope_len - cipher_off;
-
-                int bf_ret = crypto_box_open_easy(
-                    bf_plain,
-                    &envelope[cipher_off],
-                    ct_len,
-                    &envelope[nonce_off],
-                    sender_pub,
-                    our_queue.e2e_private
-                );
-
-                if (bf_ret == 0) {
-                    int pt_len = ct_len - 16;
-                    ESP_LOGW(TAG, "47g: ✅✅✅ DECRYPT OK at nonce_offset=%d! pt_len=%d", nonce_off, pt_len);
-                    ESP_LOGW(TAG, "47g: Plaintext first 64 bytes:");
-                    for (int i = 0; i < 64 && i < pt_len; i += 16) {
-                        char hex[64] = {0}; char asc[20] = {0}; int hx = 0;
-                        for (int j = 0; j < 16 && (i+j) < pt_len; j++) {
-                            uint8_t b = bf_plain[i+j];
-                            hx += sprintf(&hex[hx], "%02x ", b);
-                            asc[j] = (b >= 0x20 && b < 0x7f) ? (char)b : '.';
-                        }
-                        ESP_LOGW(TAG, "  +%04d: %-48s |%s|", i, hex, asc);
-                    }
-                    free(bf_plain);
-                    goto bf_done;
-                }
-            }
-            // Also try with decrypt_client_msg style (XSalsa20 with DH)
-            ESP_LOGW(TAG, "47g: crypto_box failed for all offsets, trying XSalsa20...");
-            for (int nonce_off = 8; nonce_off <= 24; nonce_off++) {
-                int block_len = envelope_len - nonce_off;
-                if (block_len < 40) break;
-
-                int dcm_ret = decrypt_client_msg(
-                    &envelope[nonce_off], block_len,
-                    sender_pub, our_queue.e2e_private,
-                    bf_plain
-                );
-
-                if (dcm_ret > 0) {
-                    ESP_LOGW(TAG, "47g: ✅✅✅ XSalsa20 OK at nonce_offset=%d! pt_len=%d", nonce_off, dcm_ret);
-                    ESP_LOGW(TAG, "47g: Plaintext first 64 bytes:");
-                    int pt_len = dcm_ret;
-                    for (int i = 0; i < 64 && i < pt_len; i += 16) {
-                        char hex[64] = {0}; char asc[20] = {0}; int hx = 0;
-                        for (int j = 0; j < 16 && (i+j) < pt_len; j++) {
-                            uint8_t b = bf_plain[i+j];
-                            hx += sprintf(&hex[hx], "%02x ", b);
-                            asc[j] = (b >= 0x20 && b < 0x7f) ? (char)b : '.';
-                        }
-                        ESP_LOGW(TAG, "  +%04d: %-48s |%s|", i, hex, asc);
-                    }
-                    free(bf_plain);
-                    goto bf_done;
-                }
-            }
-            ESP_LOGW(TAG, "47g: ❌ ALL offsets (8-24) failed for BOTH methods");
-            ESP_LOGW(TAG, "47g: Key is likely wrong — App rotated E2E keys");
-            free(bf_plain);
-        }
-    }
-    bf_done:
+             our_queue.e2e_public[2], our_queue.e2e_public[3]);
 
     // Check bounds for nonce + MAC
     if (envelope_len < (size_t)offset + 24 + 16) {
@@ -382,7 +288,7 @@ int smp_e2e_decrypt_reply_message(
     ESP_LOGI(TAG, "      +----------------------------------------------+");
     ESP_LOGI(TAG, "      |  🎉 E2E LAYER 2 DECRYPT SUCCESS!            |");
     ESP_LOGI(TAG, "      +----------------------------------------------+");
-    ESP_LOGI(TAG, "      Decrypted %zu bytes!", result_len);
+    ESP_LOGI(TAG, "      Decrypted %zu bytes! (nonce_offset=%d)", result_len, nonce_offset);
 
     *out_plain = e2e_plain;
     *out_plain_len = result_len;
