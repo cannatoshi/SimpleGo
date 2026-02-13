@@ -3,10 +3,23 @@
  * v0.1.17-alpha - AgentConfirmation with Reply Queue
  * github.com/cannatoshi/SimpleGo
  * Autor: cannatoshi
+ *
+ * Phase 1 Refactoring: main.c contains only:
+ * - Config, app_main(), smp_connect()
+ * - TLS/Handshake (Steps 1-5)
+ * - Message Receive Loop with transport parsing
+ * - Post-confirmation orchestration (42d: KEY/HELLO/read reply)
+ *
+ * Extracted to modules:
+ * - smp_wifi.c       (WiFi init)
+ * - smp_ack.c        (ACK consolidation)
+ * - smp_e2e.c        (Reply Queue E2E decrypt pipeline)
+ * - smp_agent.c      (Agent protocol: PrivHeader dispatch, ratchet, Zstd)
  */
 
 #include <string.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <unistd.h>
 
 #include "freertos/FreeRTOS.h"
@@ -226,6 +239,18 @@ static void smp_connect(void) {
     
     while (1) {
         content_len = smp_read_block(&ssl, block, 60000);
+        ESP_LOGW(TAG, "47b: MAIN LOOP received block, content_len=%d", content_len);
+        
+        // 47e: Dump first 64 bytes of EVERY received block
+        if (content_len > 0) {
+            ESP_LOGW(TAG, "47e: First 64 bytes of block:");
+            for (int i = 0; i < 64 && i < content_len + 2; i += 16) {
+                char hex[64] = {0}; int hx = 0;
+                for (int j = 0; j < 16 && (i+j) < content_len + 2; j++)
+                    hx += sprintf(&hex[hx], "%02x ", block[i+j]);
+                ESP_LOGW(TAG, "  +%04d: %s", i, hex);
+            }
+        }
         
         if (content_len == -2) {
             ESP_LOGI(TAG, "   ... still waiting ...");
@@ -241,10 +266,9 @@ static void smp_connect(void) {
         
         // Parse transport format
         int p = 0;
-        if (resp[p] != 1) {
-            ESP_LOGW(TAG, "   Unexpected txCount: %d", resp[p]);
-            continue;
-        }
+        // txCount is a sequence counter, increments per transaction on TLS session
+        uint8_t tx_count = resp[p];
+        ESP_LOGD(TAG, "   txCount: %d", tx_count);
         p++;
         p += 2;
         
@@ -270,6 +294,12 @@ static void smp_connect(void) {
         }
 
         // Parse command
+        ESP_LOGW(TAG, "47b: entity=%02x%02x%02x%02x, contact=%s, reply_q=%d, cmd=%c%c%c",
+                 entity_id[0], entity_id[1], entity_id[2], entity_id[3],
+                 contact ? contact->name : "NULL", is_reply_queue,
+                 (p < content_len) ? resp[p] : '?',
+                 (p+1 < content_len) ? resp[p+1] : '?',
+                 (p+2 < content_len) ? resp[p+2] : '?');
         if (p + 1 < content_len && resp[p] == 'O' && resp[p+1] == 'K') {
             ESP_LOGI(TAG, "   OK");
         }
@@ -370,7 +400,7 @@ static void smp_connect(void) {
 
                             // Parse SMP transport
                             int rp = 0;
-                            if (rq_resp[rp] == 1) rp++;
+                            rp++;  // txCount (sequence counter, always consume)
                             rp += 2;
                             int rq_authLen = rq_resp[rp++]; rp += rq_authLen;
                             int rq_sessLen = rq_resp[rp++]; rp += rq_sessLen;
@@ -429,6 +459,10 @@ static void smp_connect(void) {
                     has_peer_sender_auth = false;  // Don't re-trigger 42d
 
                     skip_42d: ;
+                    // 47c Fix 2: Re-subscribe to Q_A after handshake to ensure we receive App messages
+                    ESP_LOGW(TAG, "47c: Re-subscribing to Q_A after handshake...");
+                    subscribe_all_contacts(&ssl, block, session_id);
+                    ESP_LOGW(TAG, "47c: Re-SUB done, waiting for App messages on Q_A...");
                 }
 
                 // ACK Reply Queue message on main connection
@@ -442,27 +476,27 @@ static void smp_connect(void) {
             // CONTACT QUEUE: SMP Decrypt + Agent Parse
             // ==============================================================
             if (contact && contact->have_srv_dh && enc_len > crypto_box_MACBYTES) {
+                ESP_LOGW(TAG, "47b: Contact Queue decrypt attempt! contact=%s, enc_len=%d", contact->name, enc_len);
                 uint8_t *plain = malloc(enc_len);
                 if (plain) {
                     int plain_len = 0;
                     if (decrypt_smp_message(contact, &resp[p], enc_len, msg_id, msgIdLen, plain, &plain_len)) {
                         ESP_LOGI(TAG, "   SMP-Level Decryption OK! (%d bytes)", plain_len);
                         
-                        // Extract e2ePubKey for Reply Queue
+                        // Extract e2ePubKey from Contact Queue (for reference only)
+                        // 47f: Do NOT cache as reply_queue key — Q_B has its own key!
                         if (contact && plain_len > 60) {
                             const uint8_t x25519_spki[] = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 
                                                            0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00};
                             
                             if (memcmp(&plain[14], x25519_spki, 12) == 0) {
-                                memcpy(reply_queue_e2e_peer_public, &plain[26], 32);
-                                reply_queue_e2e_peer_valid = true;
-                                ESP_LOGI(TAG, "   E2E key extracted from Contact Queue");
+                                ESP_LOGI(TAG, "   47f: Contact Queue E2E key at offset 14 (NOT caching for reply queue)");
+                                ESP_LOGI(TAG, "        Key: %02x%02x%02x%02x...",
+                                         plain[26], plain[27], plain[28], plain[29]);
                             } else {
                                 for (int i = 0; i < 100 && i < plain_len - 44; i++) {
                                     if (memcmp(&plain[i], x25519_spki, 12) == 0) {
-                                        memcpy(reply_queue_e2e_peer_public, &plain[i + 12], 32);
-                                        reply_queue_e2e_peer_valid = true;
-                                        ESP_LOGI(TAG, "   E2E key found at offset %d", i);
+                                        ESP_LOGI(TAG, "   47f: Contact Queue E2E key at offset %d (NOT caching)", i);
                                         break;
                                     }
                                 }
