@@ -40,8 +40,9 @@
 
 // Auftrag 24: Forward declaration for HELLO after KEY
 extern bool peer_send_hello(contact_t *contact);
-extern bool peer_send_chat_message(contact_t *contact, const char *message);  // Auftrag 44a
-extern bool queue_send_ack(const uint8_t *msg_id, int msg_id_len);  // Auftrag 45a
+// Auftrag 45m: Raw TLS read bypass
+extern int queue_raw_tls_read(uint8_t *buf, int buf_size, int timeout_ms);
+extern bool queue_has_pending_msg(int *out_len);
 #include "smp_x448.h"
 #include "smp_queue.h"
 #include "simplex_crypto.h"  // SimpleX custom XSalsa20-Poly1305
@@ -1891,28 +1892,6 @@ static void smp_connect(void) {
                                         ESP_LOGI(TAG, "      PrivHeader: 0x%02x '%c'", rq_priv_tag,
                                                  (rq_priv_tag >= 0x20 && rq_priv_tag < 0x7f) ? rq_priv_tag : '?');
                                         
-                                        // === Auftrag 43b: Q_B POST-E2E ANALYSIS ===
-                                        // Verify: Real HELLO or False Positive?
-                                        ESP_LOGI(TAG, "");
-                                        ESP_LOGI(TAG, "      === Q_B POST-E2E ANALYSIS (43b) ===");
-                                        ESP_LOGI(TAG, "      rq_orig_len: %u", rq_orig_len);
-                                        ESP_LOGI(TAG, "      rq_e2e_plain_len: %d", rq_e2e_plain_len);
-                                        ESP_LOGI(TAG, "      Plausibility: origLen %s",
-                                                 (rq_orig_len > 0 && rq_orig_len < 100) ? "SMALL → likely real HELLO" :
-                                                 (rq_orig_len > 15000) ? "LARGE → likely ratchet-encrypted!" :
-                                                 "MEDIUM → unclear, check hex");
-                                        ESP_LOGI(TAG, "      First 32 bytes after unPad (rq_client_msg):");
-                                        printf("         HEX: ");
-                                        for (int i = 0; i < 32 && i < (int)rq_orig_len; i++) printf("%02x ", rq_client_msg[i]);
-                                        printf("\n");
-                                        printf("         ASC: ");
-                                        for (int i = 0; i < 32 && i < (int)rq_orig_len; i++) {
-                                            char c = rq_client_msg[i];
-                                            printf("%c", (c >= 32 && c < 127) ? c : '.');
-                                        }
-                                        printf("\n");
-                                        // === Ende 43b Analysis ===
-                                        
                                         if (rq_priv_tag == '_') {
                                             // PHEmpty — AgentMsgEnvelope starts at offset 1
                                             ESP_LOGI(TAG, "      PHEmpty — parsing AgentMsgEnvelope...");
@@ -1935,251 +1914,7 @@ static void smp_connect(void) {
                                                     ESP_LOGI(TAG, "      🎉🎉🎉 A_HELLO received from peer! 🎉🎉🎉");
                                                     ESP_LOGI(TAG, "      This means: CONNECTED! (CON)");
                                                 } else if (rq_agent_tag == 'M') {
-                                                    ESP_LOGI(TAG, "      📨 AgentMsgEnvelope Tag 'M' — EncRatchetMessage follows");
-                                                    
-                                                    // === Auftrag 43b: Ratchet Decrypt Q_B Message ===
-                                                    uint8_t *enc_rm = rq_agent + 3;  // After version(2B) + tag(1B)
-                                                    int enc_rm_len = rq_agent_len - 3;
-                                                    
-                                                    ESP_LOGI(TAG, "");
-                                                    ESP_LOGI(TAG, "      ╔══════════════════════════════════════════════════════╗");
-                                                    ESP_LOGI(TAG, "      ║  43b: Q_B RATCHET DECRYPT                            ║");
-                                                    ESP_LOGI(TAG, "      ╚══════════════════════════════════════════════════════╝");
-                                                    ESP_LOGI(TAG, "      EncRatchetMessage: %d bytes", enc_rm_len);
-                                                    
-                                                    if (enc_rm_len < 20) {
-                                                        ESP_LOGE(TAG, "      ❌ Too short for EncRatchetMessage!");
-                                                    } else if (!ratchet_is_initialized()) {
-                                                        ESP_LOGE(TAG, "      ❌ Ratchet not initialized!");
-                                                    } else {
-                                                        // Step 1: Parse EncRatchetMessage
-                                                        uint16_t rm_hdr_len = (enc_rm[0] << 8) | enc_rm[1];
-                                                        const uint8_t *rm_header = &enc_rm[2];
-                                                        const uint8_t *rm_auth_tag = &enc_rm[2 + rm_hdr_len];
-                                                        const uint8_t *rm_body = &enc_rm[2 + rm_hdr_len + 16];
-                                                        size_t rm_body_len = enc_rm_len - 2 - rm_hdr_len - 16;
-                                                        
-                                                        ESP_LOGI(TAG, "      emHeaderLen: %u, emBodyLen: %zu", rm_hdr_len, rm_body_len);
-                                                        
-                                                        // Step 2: Parse emHeader structure
-                                                        uint16_t eh_ver = (rm_header[0] << 8) | rm_header[1];
-                                                        const uint8_t *eh_iv = &rm_header[2];
-                                                        const uint8_t *eh_tag = &rm_header[18];
-                                                        
-                                                        int eh_boff;
-                                                        uint16_t eh_blen;
-                                                        if (rm_hdr_len > 123) {
-                                                            eh_blen = (rm_header[34] << 8) | rm_header[35];
-                                                            eh_boff = 36;
-                                                        } else {
-                                                            eh_blen = rm_header[34];
-                                                            eh_boff = 35;
-                                                        }
-                                                        const uint8_t *eh_body = &rm_header[eh_boff];
-                                                        
-                                                        ESP_LOGI(TAG, "      ehVer: %u, ehBodyLen: %u, ehBodyOff: %d", eh_ver, eh_blen, eh_boff);
-                                                        
-                                                        // Step 3: Header decrypt — try HKr then NHKr
-                                                        ratchet_state_t *rs43 = ratchet_get_state();
-                                                        uint8_t *hdr_plain = malloc(eh_blen + 16);
-                                                        
-                                                        if (!hdr_plain) {
-                                                            ESP_LOGE(TAG, "      ❌ malloc header_plain failed!");
-                                                        } else {
-                                                            mbedtls_gcm_context gcm43;
-                                                            int hr;
-                                                            bool hdr_ok = false;
-                                                            int dec_mode = -1;
-                                                            
-                                                            // Try 1: HKr + rcAD (SameRatchet)
-                                                            mbedtls_gcm_init(&gcm43);
-                                                            mbedtls_gcm_setkey(&gcm43, MBEDTLS_CIPHER_ID_AES, rs43->header_key_recv, 256);
-                                                            hr = mbedtls_gcm_auth_decrypt(&gcm43, eh_blen,
-                                                                        eh_iv, 16, rs43->assoc_data, 112,
-                                                                        eh_tag, 16, eh_body, hdr_plain);
-                                                            mbedtls_gcm_free(&gcm43);
-                                                            ESP_LOGI(TAG, "      [Try 1] HKr + rcAD: %s", hr == 0 ? "✅" : "❌");
-                                                            if (hr == 0) { hdr_ok = true; dec_mode = 0; }
-                                                            
-                                                            // Try 2: NHKr + rcAD (AdvanceRatchet)
-                                                            if (!hdr_ok) {
-                                                                mbedtls_gcm_init(&gcm43);
-                                                                mbedtls_gcm_setkey(&gcm43, MBEDTLS_CIPHER_ID_AES, rs43->next_header_key_recv, 256);
-                                                                hr = mbedtls_gcm_auth_decrypt(&gcm43, eh_blen,
-                                                                            eh_iv, 16, rs43->assoc_data, 112,
-                                                                            eh_tag, 16, eh_body, hdr_plain);
-                                                                mbedtls_gcm_free(&gcm43);
-                                                                ESP_LOGI(TAG, "      [Try 2] NHKr + rcAD: %s", hr == 0 ? "✅" : "❌");
-                                                                if (hr == 0) { hdr_ok = true; dec_mode = 1; }
-                                                            }
-                                                            
-                                                            // Try 3+4: Swapped rcAD
-                                                            if (!hdr_ok) {
-                                                                uint8_t rcAD_sw[112];
-                                                                memcpy(rcAD_sw, rs43->assoc_data + 56, 56);
-                                                                memcpy(rcAD_sw + 56, rs43->assoc_data, 56);
-                                                                
-                                                                mbedtls_gcm_init(&gcm43);
-                                                                mbedtls_gcm_setkey(&gcm43, MBEDTLS_CIPHER_ID_AES, rs43->header_key_recv, 256);
-                                                                hr = mbedtls_gcm_auth_decrypt(&gcm43, eh_blen,
-                                                                            eh_iv, 16, rcAD_sw, 112,
-                                                                            eh_tag, 16, eh_body, hdr_plain);
-                                                                mbedtls_gcm_free(&gcm43);
-                                                                ESP_LOGI(TAG, "      [Try 3] HKr + swapped: %s", hr == 0 ? "✅" : "❌");
-                                                                if (hr == 0) { hdr_ok = true; dec_mode = 0; }
-                                                                
-                                                                if (!hdr_ok) {
-                                                                    mbedtls_gcm_init(&gcm43);
-                                                                    mbedtls_gcm_setkey(&gcm43, MBEDTLS_CIPHER_ID_AES, rs43->next_header_key_recv, 256);
-                                                                    hr = mbedtls_gcm_auth_decrypt(&gcm43, eh_blen,
-                                                                                eh_iv, 16, rcAD_sw, 112,
-                                                                                eh_tag, 16, eh_body, hdr_plain);
-                                                                    mbedtls_gcm_free(&gcm43);
-                                                                    ESP_LOGI(TAG, "      [Try 4] NHKr + swapped: %s", hr == 0 ? "✅" : "❌");
-                                                                    if (hr == 0) { hdr_ok = true; dec_mode = 1; }
-                                                                }
-                                                            }
-                                                            
-                                                            if (!hdr_ok) {
-                                                                ESP_LOGE(TAG, "      ❌ All 4 header decrypt attempts FAILED!");
-                                                                ESP_LOGI(TAG, "      HKr:  %02x%02x%02x%02x...", rs43->header_key_recv[0], rs43->header_key_recv[1], rs43->header_key_recv[2], rs43->header_key_recv[3]);
-                                                                ESP_LOGI(TAG, "      NHKr: %02x%02x%02x%02x...", rs43->next_header_key_recv[0], rs43->next_header_key_recv[1], rs43->next_header_key_recv[2], rs43->next_header_key_recv[3]);
-                                                            } else {
-                                                                ESP_LOGI(TAG, "      ✅ Header decrypt OK! Mode=%s",
-                                                                         dec_mode == 0 ? "SameRatchet" : "AdvanceRatchet");
-                                                                
-                                                                // Step 4: Parse MsgHeader
-                                                                uint16_t mh_ver = (hdr_plain[2] << 8) | hdr_plain[3];
-                                                                uint8_t mh_klen = hdr_plain[4];
-                                                                ESP_LOGI(TAG, "      MsgHeader: ver=%u, keyLen=%u", mh_ver, mh_klen);
-                                                                
-                                                                if (mh_klen != 68) {
-                                                                    ESP_LOGE(TAG, "      ❌ Unexpected DH key len: %u (expected 68)", mh_klen);
-                                                                } else {
-                                                                    // Extract raw X448 key (skip 12-byte SPKI header)
-                                                                    uint8_t peer_dh43[56];
-                                                                    memcpy(peer_dh43, &hdr_plain[17], 56);
-                                                                    ESP_LOGI(TAG, "      Peer DH: %02x%02x%02x%02x%02x%02x%02x%02x...",
-                                                                             peer_dh43[0], peer_dh43[1], peer_dh43[2], peer_dh43[3],
-                                                                             peer_dh43[4], peer_dh43[5], peer_dh43[6], peer_dh43[7]);
-                                                                    
-                                                                    // Parse PN, Ns (skip KEM for v3)
-                                                                    int mhp43 = 5 + mh_klen;
-                                                                    if (mh_ver >= 3) {
-                                                                        uint8_t kem = hdr_plain[mhp43];
-                                                                        if (kem == 0x30) {
-                                                                            mhp43 += 1;  // Nothing
-                                                                        } else if (kem == 0x31) {
-                                                                            mhp43 += 1;
-                                                                            uint8_t ks = hdr_plain[mhp43++];
-                                                                            if (ks == 0x50) {
-                                                                                uint16_t pk_l = (hdr_plain[mhp43] << 8) | hdr_plain[mhp43+1];
-                                                                                mhp43 += 2 + pk_l;
-                                                                            } else if (ks == 0x41) {
-                                                                                uint16_t ct_l = (hdr_plain[mhp43] << 8) | hdr_plain[mhp43+1];
-                                                                                mhp43 += 2 + ct_l;
-                                                                                uint16_t pk_l = (hdr_plain[mhp43] << 8) | hdr_plain[mhp43+1];
-                                                                                mhp43 += 2 + pk_l;
-                                                                            }
-                                                                        }
-                                                                    }
-                                                                    
-                                                                    uint32_t pn43 = (hdr_plain[mhp43] << 24) | (hdr_plain[mhp43+1] << 16) |
-                                                                                    (hdr_plain[mhp43+2] << 8)  | hdr_plain[mhp43+3];
-                                                                    mhp43 += 4;
-                                                                    uint32_t ns43 = (hdr_plain[mhp43] << 24) | (hdr_plain[mhp43+1] << 16) |
-                                                                                    (hdr_plain[mhp43+2] << 8)  | hdr_plain[mhp43+3];
-                                                                    
-                                                                    ESP_LOGI(TAG, "      PN=%u, Ns=%u", pn43, ns43);
-                                                                    
-                                                                    // Step 5: Ratchet Body Decrypt
-                                                                    uint8_t *body_pt = malloc(rm_body_len + 16);
-                                                                    if (body_pt) {
-                                                                        size_t body_pt_len = 0;
-                                                                        int bret = ratchet_decrypt_body(
-                                                                            dec_mode == 0 ? RATCHET_MODE_SAME : RATCHET_MODE_ADVANCE,
-                                                                            peer_dh43, pn43, ns43,
-                                                                            rm_header, (size_t)rm_hdr_len,
-                                                                            rm_auth_tag,
-                                                                            rm_body, rm_body_len,
-                                                                            body_pt, &body_pt_len);
-                                                                        
-                                                                        if (bret == 0) {
-                                                                            ESP_LOGI(TAG, "");
-                                                                            ESP_LOGI(TAG, "      ╔══════════════════════════════════════════════════════╗");
-                                                                            ESP_LOGI(TAG, "      ║  🎉 43b: Q_B RATCHET DECRYPT SUCCESS!                ║");
-                                                                            ESP_LOGI(TAG, "      ╚══════════════════════════════════════════════════════╝");
-                                                                            ESP_LOGI(TAG, "      Plaintext: %zu bytes", body_pt_len);
-                                                                            
-                                                                            // Hex+ASCII dump first 64 bytes
-                                                                            for (int di = 0; di < 64 && di < (int)body_pt_len; di += 16) {
-                                                                                char hx43[64] = {0}; char as43[20] = {0}; int hp = 0;
-                                                                                for (int dj = 0; dj < 16 && (di+dj) < (int)body_pt_len; dj++) {
-                                                                                    uint8_t b = body_pt[di+dj];
-                                                                                    hp += sprintf(&hx43[hp], "%02x ", b);
-                                                                                    as43[dj] = (b >= 0x20 && b < 0x7f) ? (char)b : '.';
-                                                                                }
-                                                                                ESP_LOGI(TAG, "        +%04d: %-48s |%s|", di, hx43, as43);
-                                                                            }
-                                                                            
-                                                                            // Step 6: Parse AgentMessage
-                                                                            if (body_pt_len >= 11) {
-                                                                                uint8_t am_tag = body_pt[0];
-                                                                                ESP_LOGI(TAG, "      AgentMsg tag: 0x%02x '%c'", am_tag,
-                                                                                         (am_tag >= 0x20 && am_tag < 0x7f) ? (char)am_tag : '?');
-                                                                                
-                                                                                if (am_tag == 'M') {
-                                                                                    // 'M' + sndMsgId(8B) + prevMsgHashLen(1B) + [hash] + innerTag
-                                                                                    uint8_t pmh_len = body_pt[9];
-                                                                                    int inner_off = 10 + pmh_len;
-                                                                                    if (inner_off < (int)body_pt_len) {
-                                                                                        uint8_t inner_tag = body_pt[inner_off];
-                                                                                        ESP_LOGI(TAG, "      Inner tag: 0x%02x '%c'", inner_tag,
-                                                                                                 (inner_tag >= 0x20 && inner_tag < 0x7f) ? (char)inner_tag : '?');
-                                                                                        if (inner_tag == 'H') {
-                                                                                            ESP_LOGI(TAG, "");
-                                                                                            ESP_LOGI(TAG, "      🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉");
-                                                                                            ESP_LOGI(TAG, "      🎉  A_HELLO ON REPLY QUEUE!       🎉");
-                                                                                            ESP_LOGI(TAG, "      🎉  BIDIRECTIONAL COMMS VERIFIED!  🎉");
-                                                                                            ESP_LOGI(TAG, "      🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉");
-                                                                                        } else if (inner_tag == 'M') {
-                                                                                            // === 45a: A_MSG received! Extract text ===
-                                                                                            int mb_off = inner_off + 1;
-                                                                                            int mb_len = (int)body_pt_len - mb_off;
-                                                                                            char *json_str = malloc(mb_len + 1);
-                                                                                            if (json_str) {
-                                                                                                memcpy(json_str, &body_pt[mb_off], mb_len);
-                                                                                                json_str[mb_len] = '\0';
-                                                                                                ESP_LOGI(TAG, "      📨 A_MSG msgBody (%d bytes): %.120s", mb_len, json_str);
-                                                                                                char *text_key = strstr(json_str, "\"text\":\"");
-                                                                                                if (text_key) {
-                                                                                                    char *text_start = text_key + 8;
-                                                                                                    char *text_end = strchr(text_start, '"');
-                                                                                                    if (text_end) {
-                                                                                                        *text_end = '\0';
-                                                                                                        ESP_LOGI(TAG, "");
-                                                                                                        ESP_LOGI(TAG, "      ╔══════════════════════════════════════════════════════╗");
-                                                                                                        ESP_LOGI(TAG, "      ║  📨 ESP32 RECEIVED: \"%s\"", text_start);
-                                                                                                        ESP_LOGI(TAG, "      ╚══════════════════════════════════════════════════════╝");
-                                                                                                    }
-                                                                                                }
-                                                                                                free(json_str);
-                                                                                            }
-                                                                                        }
-                                                                                    }
-                                                                                }
-                                                                            }
-                                                                        } else {
-                                                                            ESP_LOGE(TAG, "      ❌ Ratchet body decrypt FAILED (ret=%d)", bret);
-                                                                        }
-                                                                        free(body_pt);
-                                                                    }
-                                                                }
-                                                            }
-                                                            free(hdr_plain);
-                                                        }
-                                                    }
-                                                    // === Ende Auftrag 43b Ratchet ===
+                                                    ESP_LOGI(TAG, "      📨 A_MSG — peer sent a message!");
                                                 } else {
                                                     ESP_LOGI(TAG, "      Tag '%c' — see agent-protocol.md for meaning", rq_agent_tag);
                                                 }
@@ -2253,397 +1988,14 @@ static void smp_connect(void) {
                                     }
                                 }
                                 
-                                // === Auftrag 45a: Listen for incoming chat messages ===
-                                ESP_LOGI(TAG, "");
-                                // === 45b DIAGNOSTICS: Connection + Ratchet state before 45a ===
-                                {
-                                    ratchet_state_t *rs_diag2 = ratchet_get_state();
-                                    ESP_LOGI(TAG, "      [45b] STATE before 45a Listen:");
-                                    ESP_LOGI(TAG, "        msg_num_send=%u  msg_num_recv=%u",
-                                             rs_diag2->msg_num_send, rs_diag2->msg_num_recv);
-                                    ESP_LOGI(TAG, "        chain_key_send: %02x%02x%02x%02x...",
-                                             rs_diag2->chain_key_send[0], rs_diag2->chain_key_send[1],
-                                             rs_diag2->chain_key_send[2], rs_diag2->chain_key_send[3]);
-                                    ESP_LOGI(TAG, "        chain_key_recv: %02x%02x%02x%02x...",
-                                             rs_diag2->chain_key_recv[0], rs_diag2->chain_key_recv[1],
-                                             rs_diag2->chain_key_recv[2], rs_diag2->chain_key_recv[3]);
-                                    // Test if queue connection is alive with a quick read attempt
-                                    ESP_LOGI(TAG, "        Q_B connection alive test (2s timeout)...");
-                                    uint8_t *test_blk = heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
-                                    if (test_blk) {
-                                        int test_len = queue_read_raw(test_blk, SMP_BLOCK_SIZE, 2000);
-                                        if (test_len < 0) {
-                                            ESP_LOGW(TAG, "        Q_B: timeout/error (ret=%d) — connection may be dead", test_len);
-                                        } else {
-                                            uint8_t *tr = test_blk + 2;
-                                            ESP_LOGI(TAG, "        Q_B: got %d bytes! First: %02x%02x%02x = %c%c%c",
-                                                     test_len, tr[0], tr[1], tr[2],
-                                                     (tr[0]>=32&&tr[0]<127)?tr[0]:'.', 
-                                                     (tr[1]>=32&&tr[1]<127)?tr[1]:'.',
-                                                     (tr[2]>=32&&tr[2]<127)?tr[2]:'.');
-                                        }
-                                        free(test_blk);
-                                    }
-                                }
-                                ESP_LOGI(TAG, "      45a: Re-subscribing to Reply Queue...");
-                                if (queue_subscribe()) {
-                                    ESP_LOGI(TAG, "      45a: ✅ SUB OK!");
-                                } else {
-                                    ESP_LOGW(TAG, "      45a: ⚠️ SUB failed — trying reconnect...");
-                                    if (queue_reconnect() && queue_subscribe()) {
-                                        ESP_LOGI(TAG, "      45a: ✅ Reconnect + SUB OK!");
-                                    } else {
-                                        ESP_LOGE(TAG, "      45a: ❌ Cannot re-establish queue!");
-                                    }
-                                }
+                                // === Auftrag 45n: Main loop handles incoming messages ===
+                                // The main receive loop's PHEmpty handler (45n) now processes
+                                // HELLO and A_MSG from the App. No separate listen needed!
                                 ESP_LOGI(TAG, "");
                                 ESP_LOGI(TAG, "      ╔══════════════════════════════════════════════════════╗");
-                                ESP_LOGI(TAG, "      ║  45a: WAITING FOR INCOMING MESSAGES...               ║");
-                                ESP_LOGI(TAG, "      ║  Type a message in the SimpleX App now!              ║");
+                                ESP_LOGI(TAG, "      ║  45n: Returning to Main Loop for incoming messages   ║");
+                                ESP_LOGI(TAG, "      ║  HELLO + Chat will arrive on main connection!        ║");
                                 ESP_LOGI(TAG, "      ╚══════════════════════════════════════════════════════╝");
-                                {
-                                    uint8_t *rx_blk = heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
-                                    if (rx_blk) {
-                                        bool got_msg = false;
-                                        for (int rx = 0; rx < 20 && !got_msg; rx++) {
-                                            if (rx > 0 && rx % 5 == 0)
-                                                ESP_LOGI(TAG, "      45a: ... still waiting ... (%d/20)", rx);
-                                            
-                                            int rx_len = queue_read_raw(rx_blk, SMP_BLOCK_SIZE, 30000);
-                                            if (rx_len < 0) continue;
-                                            
-                                            uint8_t *r45 = rx_blk + 2;
-                                            int p45 = 0;
-                                            if (r45[p45] == 1) p45++;
-                                            p45 += 2;
-                                            int a45l = r45[p45++]; p45 += a45l;
-                                            int s45l = r45[p45++]; p45 += s45l;
-                                            int c45l = r45[p45++]; p45 += c45l;
-                                            int e45l = r45[p45++]; p45 += e45l;
-                                            
-                                            if (p45+1 < rx_len && r45[p45]=='O' && r45[p45+1]=='K') {
-                                                ESP_LOGI(TAG, "      45a: OK"); continue;
-                                            }
-                                            if (p45+2 < rx_len && r45[p45]=='E' && r45[p45+1]=='N' && r45[p45+2]=='D') {
-                                                ESP_LOGI(TAG, "      45a: END (queue empty)"); continue;
-                                            }
-                                            if (!(p45+3 < rx_len && r45[p45]=='M' && r45[p45+1]=='S' && r45[p45+2]=='G')) {
-                                                continue;
-                                            }
-                                            
-                                            // === MSG received! ===
-                                            p45 += 4;
-                                            uint8_t mid45_len = r45[p45++];
-                                            uint8_t mid45[24] = {0};
-                                            if (mid45_len > 24) mid45_len = 24;
-                                            memcpy(mid45, &r45[p45], mid45_len);
-                                            p45 += mid45_len;
-                                            int enc45_len = rx_len - p45;
-                                            
-                                            ESP_LOGI(TAG, "      45a: MSG received! (%d encrypted bytes)", enc45_len);
-                                            
-                                            // --- Server decrypt ---
-                                            uint8_t nonce45[24] = {0};
-                                            memcpy(nonce45, mid45, mid45_len);
-                                            uint8_t *srv45 = malloc(enc45_len);
-                                            if (!srv45) break;
-                                            
-                                            if (crypto_box_open_easy_afternm(srv45, &r45[p45], enc45_len,
-                                                                              nonce45, our_queue.shared_secret) != 0) {
-                                                ESP_LOGE(TAG, "      45a: Server decrypt FAILED!");
-                                                free(srv45); continue;
-                                            }
-                                            int srv45_len = enc45_len - crypto_box_MACBYTES;
-                                            ESP_LOGI(TAG, "      45a: Server decrypt OK (%d bytes)", srv45_len);
-                                            
-                                            // --- Parse envelope ---
-                                            int ep45 = 0;
-                                            uint16_t dl45 = (srv45[0] << 8) | srv45[1];
-                                            if (dl45 > 0 && dl45 < srv45_len) ep45 = 2;
-                                            const uint8_t *env45 = srv45 + ep45;
-                                            size_t env45_len = ep45 ? dl45 : srv45_len;
-                                            
-                                            // --- Find E2E key ---
-                                            int eo45 = 12;
-                                            uint8_t mc45 = env45[eo45++];
-                                            uint8_t me45 = env45[eo45++];
-                                            const uint8_t spki45[] = {0x30,0x2a,0x30,0x05,0x06,0x03,0x2b,0x65,0x6e,0x03,0x21,0x00};
-                                            uint8_t spub45[32] = {0};
-                                            bool hk45 = false;
-                                            
-                                            if (mc45 == '1' && (me45 == ',' || me45 == '0')) {
-                                                if (memcmp(&env45[eo45], spki45, 12) == 0) {
-                                                    memcpy(spub45, &env45[eo45 + 12], 32); hk45 = true;
-                                                }
-                                                eo45 += 44;
-                                            } else if (mc45 == ',' || mc45 == '0') {
-                                                if (reply_queue_e2e_peer_valid) {
-                                                    memcpy(spub45, reply_queue_e2e_peer_public, 32); hk45 = true;
-                                                }
-                                            } else if (mc45 == '1' && me45 == '1') {
-                                                eo45 += 44;
-                                                uint8_t e2l45 = env45[eo45++];
-                                                if (e2l45 == 44 && memcmp(&env45[eo45], spki45, 12) == 0) {
-                                                    memcpy(spub45, &env45[eo45 + 12], 32); hk45 = true;
-                                                }
-                                                eo45 += 44;
-                                            }
-                                            
-                                            if (!hk45) {
-                                                ESP_LOGE(TAG, "      45a: No E2E key found!");
-                                                free(srv45); continue;
-                                            }
-                                            
-                                            // --- E2E decrypt ---
-                                            uint8_t cn45[24];
-                                            memcpy(cn45, &env45[eo45], 24);
-                                            eo45 += 24;
-                                            const uint8_t *e2e_enc45 = &env45[eo45];
-                                            size_t e2e_enc45_len = env45_len - eo45;
-                                            
-                                            uint8_t *e2e_pt45 = malloc(e2e_enc45_len);
-                                            if (!e2e_pt45) { free(srv45); break; }
-                                            
-                                            int dr45 = -1;
-                                            {
-                                                int ns45 = eo45 - 24;
-                                                int nb45 = env45_len - ns45;
-                                                uint8_t *mp45 = malloc(nb45);
-                                                if (mp45) {
-                                                    int dl2_45 = decrypt_client_msg(&env45[ns45], nb45,
-                                                                                     spub45, our_queue.e2e_private, mp45);
-                                                    if (dl2_45 > 0) { dr45 = 0; memcpy(e2e_pt45, mp45, dl2_45); }
-                                                    free(mp45);
-                                                }
-                                            }
-                                            if (dr45 != 0) {
-                                                dr45 = crypto_box_open_easy(e2e_pt45, e2e_enc45, e2e_enc45_len,
-                                                                            cn45, spub45, our_queue.e2e_private);
-                                            }
-                                            if (dr45 != 0) {
-                                                uint8_t dh45[32];
-                                                crypto_scalarmult(dh45, our_queue.e2e_private, spub45);
-                                                dr45 = crypto_secretbox_open_easy(e2e_pt45, e2e_enc45, e2e_enc45_len,
-                                                                                   cn45, dh45);
-                                                sodium_memzero(dh45, 32);
-                                            }
-                                            
-                                            if (dr45 != 0) {
-                                                ESP_LOGE(TAG, "      45a: E2E decrypt FAILED!");
-                                                free(e2e_pt45); free(srv45); continue;
-                                            }
-                                            ESP_LOGI(TAG, "      45a: E2E decrypt OK");
-                                            
-                                            // --- unPad + PrivHeader ---
-                                            uint16_t orig45 = (e2e_pt45[0] << 8) | e2e_pt45[1];
-                                            uint8_t *cm45 = e2e_pt45 + 2;
-                                            
-                                            if (cm45[0] != '_') {
-                                                ESP_LOGW(TAG, "      45a: PrivHeader 0x%02x (not '_')", cm45[0]);
-                                                free(e2e_pt45); free(srv45); continue;
-                                            }
-                                            
-                                            // --- AgentMsgEnvelope ---
-                                            uint8_t *ag45 = cm45 + 1;
-                                            int ag45_len = orig45 - 1;
-                                            if (ag45_len < 3 || ag45[2] != 'M') {
-                                                ESP_LOGI(TAG, "      45a: Agent tag '%c' (not 'M')", ag45_len >= 3 ? ag45[2] : '?');
-                                                free(e2e_pt45); free(srv45); continue;
-                                            }
-                                            
-                                            // --- Ratchet decrypt ---
-                                            uint8_t *erm45 = ag45 + 3;
-                                            int erm45_len = ag45_len - 3;
-                                            
-                                            if (erm45_len < 20 || !ratchet_is_initialized()) {
-                                                ESP_LOGE(TAG, "      45a: Cannot ratchet decrypt");
-                                                free(e2e_pt45); free(srv45); continue;
-                                            }
-                                            
-                                            uint16_t rh45_len = (erm45[0] << 8) | erm45[1];
-                                            const uint8_t *rh45 = &erm45[2];
-                                            const uint8_t *rtag45 = &erm45[2 + rh45_len];
-                                            const uint8_t *rbod45 = &erm45[2 + rh45_len + 16];
-                                            size_t rbod45_len = erm45_len - 2 - rh45_len - 16;
-                                            
-                                            // Parse emHeader
-                                            const uint8_t *ehiv45 = &rh45[2];
-                                            const uint8_t *ehtg45 = &rh45[18];
-                                            int ehbo45; uint16_t ehbl45;
-                                            if (rh45_len > 123) {
-                                                ehbl45 = (rh45[34] << 8) | rh45[35]; ehbo45 = 36;
-                                            } else {
-                                                ehbl45 = rh45[34]; ehbo45 = 35;
-                                            }
-                                            const uint8_t *ehbd45 = &rh45[ehbo45];
-                                            
-                                            // Header decrypt (HKr then NHKr, with rcAD variants)
-                                            ratchet_state_t *rs45 = ratchet_get_state();
-                                            uint8_t *hp45 = malloc(ehbl45 + 16);
-                                            if (!hp45) { free(e2e_pt45); free(srv45); break; }
-                                            
-                                            mbedtls_gcm_context gc45;
-                                            int hr45;
-                                            bool hok45 = false;
-                                            int dm45 = -1;
-                                            
-                                            mbedtls_gcm_init(&gc45);
-                                            mbedtls_gcm_setkey(&gc45, MBEDTLS_CIPHER_ID_AES, rs45->header_key_recv, 256);
-                                            hr45 = mbedtls_gcm_auth_decrypt(&gc45, ehbl45, ehiv45, 16,
-                                                        rs45->assoc_data, 112, ehtg45, 16, ehbd45, hp45);
-                                            mbedtls_gcm_free(&gc45);
-                                            if (hr45 == 0) { hok45 = true; dm45 = 0; }
-                                            
-                                            if (!hok45) {
-                                                mbedtls_gcm_init(&gc45);
-                                                mbedtls_gcm_setkey(&gc45, MBEDTLS_CIPHER_ID_AES, rs45->next_header_key_recv, 256);
-                                                hr45 = mbedtls_gcm_auth_decrypt(&gc45, ehbl45, ehiv45, 16,
-                                                            rs45->assoc_data, 112, ehtg45, 16, ehbd45, hp45);
-                                                mbedtls_gcm_free(&gc45);
-                                                if (hr45 == 0) { hok45 = true; dm45 = 1; }
-                                            }
-                                            
-                                            if (!hok45) {
-                                                uint8_t sw45[112];
-                                                memcpy(sw45, rs45->assoc_data + 56, 56);
-                                                memcpy(sw45 + 56, rs45->assoc_data, 56);
-                                                mbedtls_gcm_init(&gc45);
-                                                mbedtls_gcm_setkey(&gc45, MBEDTLS_CIPHER_ID_AES, rs45->header_key_recv, 256);
-                                                hr45 = mbedtls_gcm_auth_decrypt(&gc45, ehbl45, ehiv45, 16,
-                                                            sw45, 112, ehtg45, 16, ehbd45, hp45);
-                                                mbedtls_gcm_free(&gc45);
-                                                if (hr45 == 0) { hok45 = true; dm45 = 0; }
-                                                if (!hok45) {
-                                                    mbedtls_gcm_init(&gc45);
-                                                    mbedtls_gcm_setkey(&gc45, MBEDTLS_CIPHER_ID_AES, rs45->next_header_key_recv, 256);
-                                                    hr45 = mbedtls_gcm_auth_decrypt(&gc45, ehbl45, ehiv45, 16,
-                                                                sw45, 112, ehtg45, 16, ehbd45, hp45);
-                                                    mbedtls_gcm_free(&gc45);
-                                                    if (hr45 == 0) { hok45 = true; dm45 = 1; }
-                                                }
-                                            }
-                                            
-                                            if (!hok45) {
-                                                ESP_LOGE(TAG, "      45a: Header decrypt FAILED!");
-                                                free(hp45); free(e2e_pt45); free(srv45); continue;
-                                            }
-                                            
-                                            ESP_LOGI(TAG, "      45a: Header OK (%s)", dm45 == 0 ? "Same" : "Advance");
-                                            
-                                            // Parse MsgHeader → DH key + PN + Ns
-                                            uint8_t mkl45 = hp45[4];
-                                            if (mkl45 != 68) {
-                                                ESP_LOGE(TAG, "      45a: Bad DH key len %d", mkl45);
-                                                free(hp45); free(e2e_pt45); free(srv45); continue;
-                                            }
-                                            uint8_t pdh45[56];
-                                            memcpy(pdh45, &hp45[17], 56);
-                                            
-                                            int mhp45 = 5 + mkl45;
-                                            uint16_t mhv45 = (hp45[2] << 8) | hp45[3];
-                                            if (mhv45 >= 3) {
-                                                uint8_t kem45 = hp45[mhp45];
-                                                if (kem45 == 0x30) { mhp45 += 1; }
-                                                else if (kem45 == 0x31) {
-                                                    mhp45 += 1;
-                                                    uint8_t ks45 = hp45[mhp45++];
-                                                    if (ks45 == 0x50) {
-                                                        uint16_t pl45 = (hp45[mhp45] << 8) | hp45[mhp45+1]; mhp45 += 2 + pl45;
-                                                    } else if (ks45 == 0x41) {
-                                                        uint16_t cl45 = (hp45[mhp45] << 8) | hp45[mhp45+1]; mhp45 += 2 + cl45;
-                                                        uint16_t pl45 = (hp45[mhp45] << 8) | hp45[mhp45+1]; mhp45 += 2 + pl45;
-                                                    }
-                                                }
-                                            }
-                                            uint32_t pn45 = (hp45[mhp45]<<24)|(hp45[mhp45+1]<<16)|(hp45[mhp45+2]<<8)|hp45[mhp45+3];
-                                            mhp45 += 4;
-                                            uint32_t ns45_v = (hp45[mhp45]<<24)|(hp45[mhp45+1]<<16)|(hp45[mhp45+2]<<8)|hp45[mhp45+3];
-                                            
-                                            ESP_LOGI(TAG, "      45a: PN=%u, Ns=%u", pn45, ns45_v);
-                                            
-                                            // Body decrypt!
-                                            uint8_t *bpt45 = malloc(rbod45_len + 16);
-                                            if (!bpt45) { free(hp45); free(e2e_pt45); free(srv45); break; }
-                                            size_t bpt45_len = 0;
-                                            
-                                            int br45 = ratchet_decrypt_body(
-                                                dm45 == 0 ? RATCHET_MODE_SAME : RATCHET_MODE_ADVANCE,
-                                                pdh45, pn45, ns45_v,
-                                                rh45, (size_t)rh45_len,
-                                                rtag45, rbod45, rbod45_len,
-                                                bpt45, &bpt45_len);
-                                            
-                                            if (br45 != 0) {
-                                                ESP_LOGE(TAG, "      45a: Ratchet body decrypt FAILED (%d)!", br45);
-                                                free(bpt45); free(hp45); free(e2e_pt45); free(srv45); continue;
-                                            }
-                                            
-                                            ESP_LOGI(TAG, "      45a: Ratchet decrypt OK! (%zu bytes)", bpt45_len);
-                                            
-                                            // --- Parse AgentMessage → extract chat text ---
-                                            if (bpt45_len >= 11 && bpt45[0] == 'M') {
-                                                uint8_t pmhl45 = bpt45[9];
-                                                int ioff45 = 10 + pmhl45;
-                                                if (ioff45 < (int)bpt45_len) {
-                                                    uint8_t itag45 = bpt45[ioff45];
-                                                    if (itag45 == 'M') {
-                                                        int mb45_off = ioff45 + 1;
-                                                        int mb45_len = (int)bpt45_len - mb45_off;
-                                                        char *js45 = malloc(mb45_len + 1);
-                                                        if (js45) {
-                                                            memcpy(js45, &bpt45[mb45_off], mb45_len);
-                                                            js45[mb45_len] = '\0';
-                                                            ESP_LOGI(TAG, "      45a: msgBody: %.200s", js45);
-                                                            char *tk45 = strstr(js45, "\"text\":\"");
-                                                            if (tk45) {
-                                                                char *ts45 = tk45 + 8;
-                                                                char *te45 = strchr(ts45, '"');
-                                                                if (te45) {
-                                                                    *te45 = '\0';
-                                                                    ESP_LOGI(TAG, "");
-                                                                    ESP_LOGI(TAG, "      ╔══════════════════════════════════════════════════════╗");
-                                                                    ESP_LOGI(TAG, "      ║  🎉🎉🎉 ESP32 RECEIVED MESSAGE! 🎉🎉🎉               ║");
-                                                                    ESP_LOGI(TAG, "      ║                                                      ║");
-                                                                    ESP_LOGI(TAG, "      ║  📨 \"%s\"", ts45);
-                                                                    ESP_LOGI(TAG, "      ║                                                      ║");
-                                                                    ESP_LOGI(TAG, "      ║  🏆 BIDIRECTIONAL CHAT ON ESP32! 🏆                   ║");
-                                                                    ESP_LOGI(TAG, "      ╚══════════════════════════════════════════════════════╝");
-                                                                    got_msg = true;
-                                                                }
-                                                            }
-                                                            if (!got_msg) {
-                                                                ESP_LOGI(TAG, "      45a: A_MSG received but no 'text' key in JSON");
-                                                            }
-                                                            free(js45);
-                                                        }
-                                                    } else if (itag45 == 'H') {
-                                                        ESP_LOGI(TAG, "      45a: HELLO received (late arrival)");
-                                                    } else {
-                                                        ESP_LOGI(TAG, "      45a: Inner tag 0x%02x '%c'", itag45,
-                                                                 (itag45 >= 0x20 && itag45 < 0x7f) ? (char)itag45 : '?');
-                                                    }
-                                                }
-                                            } else {
-                                                ESP_LOGI(TAG, "      45a: AgentMsg tag 0x%02x (not 'M')",
-                                                         bpt45_len > 0 ? bpt45[0] : 0);
-                                            }
-                                            
-                                            // === ACK the received message ===
-                                            ESP_LOGI(TAG, "      45a: Sending ACK...");
-                                            queue_send_ack(mid45, mid45_len);
-                                            
-                                            free(bpt45);
-                                            free(hp45);
-                                            free(e2e_pt45);
-                                            free(srv45);
-                                        }
-                                        
-                                        if (!got_msg) {
-                                            ESP_LOGW(TAG, "      45a: No chat message received (timeout after 10 min)");
-                                        }
-                                        free(rx_blk);
-                                    }
-                                }
                                 
                                 skip_42d: ;
                             }
@@ -2651,7 +2003,251 @@ static void smp_connect(void) {
                             // ================================================================
                             
                         } else if (priv_tag == '_') {  // PHEmpty
-                            ESP_LOGI(TAG, "      PHEmpty — kein Auth Key, AgentMsgEnvelope folgt ab offset 1");
+                            // === Auftrag 45n: Full PHEmpty handler in Main Loop ===
+                            // Messages from App (HELLO, A_MSG) come here via main connection!
+                            ESP_LOGI(TAG, "      PHEmpty — AgentMsgEnvelope ab offset 1");
+                            uint8_t *n_agent = client_msg + 1;
+                            int n_agent_len = original_len - 1;
+                            
+                            if (n_agent_len >= 3) {
+                                uint16_t n_agent_ver = (n_agent[0] << 8) | n_agent[1];
+                                char n_agent_tag = n_agent[2];
+                                ESP_LOGI(TAG, "      Agent version: %u, tag: '%c' (0x%02x)", 
+                                         n_agent_ver, n_agent_tag, n_agent_tag);
+                                
+                                if (n_agent_tag == 'H') {
+                                    // ─── A_HELLO ───
+                                    ESP_LOGI(TAG, "");
+                                    ESP_LOGI(TAG, "      ╔══════════════════════════════════════════════════════╗");
+                                    ESP_LOGI(TAG, "      ║  🎉🎉🎉 A_HELLO received on Main Loop! 🎉🎉🎉       ║");
+                                    ESP_LOGI(TAG, "      ║  Contact is now CONNECTED!                           ║");
+                                    ESP_LOGI(TAG, "      ╚══════════════════════════════════════════════════════╝");
+                                    
+                                } else if (n_agent_tag == 'M') {
+                                    // ─── A_MSG → Ratchet Decrypt → Chat Text ───
+                                    ESP_LOGI(TAG, "      📨 A_MSG — ratchet decrypt starting...");
+                                    uint8_t *erm_n = n_agent + 3;
+                                    int erm_n_len = n_agent_len - 3;
+                                    
+                                    if (erm_n_len >= 20 && ratchet_is_initialized()) {
+                                        // Parse EncRatchetMessage structure
+                                        uint16_t rh_n_len = (erm_n[0] << 8) | erm_n[1];
+                                        const uint8_t *rh_n = &erm_n[2];
+                                        const uint8_t *rtag_n = &erm_n[2 + rh_n_len];
+                                        const uint8_t *rbod_n = &erm_n[2 + rh_n_len + 16];
+                                        size_t rbod_n_len = erm_n_len - 2 - rh_n_len - 16;
+                                        
+                                        // Parse emHeader fields
+                                        const uint8_t *ehiv_n = &rh_n[2];
+                                        const uint8_t *ehtg_n = &rh_n[18];
+                                        int ehbo_n; uint16_t ehbl_n;
+                                        if (rh_n_len > 123) {
+                                            ehbl_n = (rh_n[34] << 8) | rh_n[35]; ehbo_n = 36;
+                                        } else {
+                                            ehbl_n = rh_n[34]; ehbo_n = 35;
+                                        }
+                                        const uint8_t *ehbd_n = &rh_n[ehbo_n];
+                                        
+                                        // Header decrypt (try HKr then NHKr)
+                                        ratchet_state_t *rs_n = ratchet_get_state();
+                                        uint8_t *hp_n = malloc(ehbl_n + 16);
+                                        if (hp_n) {
+                                            mbedtls_gcm_context gc_n;
+                                            int hr_n;
+                                            bool hok_n = false;
+                                            int dm_n = -1;
+                                            
+                                            // Try current header key
+                                            mbedtls_gcm_init(&gc_n);
+                                            mbedtls_gcm_setkey(&gc_n, MBEDTLS_CIPHER_ID_AES, rs_n->header_key_recv, 256);
+                                            hr_n = mbedtls_gcm_auth_decrypt(&gc_n, ehbl_n, ehiv_n, 16,
+                                                        rs_n->assoc_data, 112, ehtg_n, 16, ehbd_n, hp_n);
+                                            mbedtls_gcm_free(&gc_n);
+                                            if (hr_n == 0) { hok_n = true; dm_n = 0; }
+                                            
+                                            // Try next header key
+                                            if (!hok_n) {
+                                                mbedtls_gcm_init(&gc_n);
+                                                mbedtls_gcm_setkey(&gc_n, MBEDTLS_CIPHER_ID_AES, rs_n->next_header_key_recv, 256);
+                                                hr_n = mbedtls_gcm_auth_decrypt(&gc_n, ehbl_n, ehiv_n, 16,
+                                                            rs_n->assoc_data, 112, ehtg_n, 16, ehbd_n, hp_n);
+                                                mbedtls_gcm_free(&gc_n);
+                                                if (hr_n == 0) { hok_n = true; dm_n = 1; }
+                                            }
+                                            
+                                            // Try with rcAD (112 bytes)
+                                            if (!hok_n) {
+                                                mbedtls_gcm_init(&gc_n);
+                                                mbedtls_gcm_setkey(&gc_n, MBEDTLS_CIPHER_ID_AES, rs_n->header_key_recv, 256);
+                                                hr_n = mbedtls_gcm_auth_decrypt(&gc_n, ehbl_n, ehiv_n, 16,
+                                                            rs_n->assoc_data, 112, ehtg_n, 16, ehbd_n, hp_n);
+                                                mbedtls_gcm_free(&gc_n);
+                                                if (hr_n == 0) { hok_n = true; dm_n = 0; }
+                                            }
+                                            if (!hok_n) {
+                                                mbedtls_gcm_init(&gc_n);
+                                                mbedtls_gcm_setkey(&gc_n, MBEDTLS_CIPHER_ID_AES, rs_n->next_header_key_recv, 256);
+                                                hr_n = mbedtls_gcm_auth_decrypt(&gc_n, ehbl_n, ehiv_n, 16,
+                                                            rs_n->assoc_data, 112, ehtg_n, 16, ehbd_n, hp_n);
+                                                mbedtls_gcm_free(&gc_n);
+                                                if (hr_n == 0) { hok_n = true; dm_n = 1; }
+                                            }
+                                            
+                                            if (!hok_n) {
+                                                ESP_LOGE(TAG, "      45n: Header decrypt FAILED!");
+                                                free(hp_n);
+                                            } else {
+                                                ESP_LOGI(TAG, "      45n: Header OK (%s)", dm_n == 0 ? "Same" : "Advance");
+                                                
+                                                // Parse MsgHeader -> DH key + PN + Ns
+                                                uint8_t mkl_n = hp_n[4];
+                                                if (mkl_n != 68) {
+                                                    ESP_LOGE(TAG, "      45n: Bad DH key len %d", mkl_n);
+                                                    free(hp_n);
+                                                } else {
+                                                    uint8_t pdh_n[56];
+                                                    memcpy(pdh_n, &hp_n[17], 56);
+                                                    
+                                                    int mhp_n = 5 + mkl_n;
+                                                    uint16_t mhv_n = (hp_n[2] << 8) | hp_n[3];
+                                                    if (mhv_n >= 3) {
+                                                        uint8_t kem_n = hp_n[mhp_n];
+                                                        if (kem_n == 0x30) { mhp_n += 1; }
+                                                        else if (kem_n == 0x31) {
+                                                            mhp_n += 1;
+                                                            uint8_t ks_n = hp_n[mhp_n++];
+                                                            if (ks_n == 0x50) {
+                                                                uint16_t pl_n = (hp_n[mhp_n] << 8) | hp_n[mhp_n+1]; mhp_n += 2 + pl_n;
+                                                            } else if (ks_n == 0x41) {
+                                                                uint16_t cl_n = (hp_n[mhp_n] << 8) | hp_n[mhp_n+1]; mhp_n += 2 + cl_n;
+                                                                uint16_t pl_n = (hp_n[mhp_n] << 8) | hp_n[mhp_n+1]; mhp_n += 2 + pl_n;
+                                                            }
+                                                        }
+                                                    }
+                                                    uint32_t pn_n = (hp_n[mhp_n]<<24)|(hp_n[mhp_n+1]<<16)|(hp_n[mhp_n+2]<<8)|hp_n[mhp_n+3];
+                                                    mhp_n += 4;
+                                                    uint32_t ns_n = (hp_n[mhp_n]<<24)|(hp_n[mhp_n+1]<<16)|(hp_n[mhp_n+2]<<8)|hp_n[mhp_n+3];
+                                                    
+                                                    ESP_LOGI(TAG, "      45n: PN=%u, Ns=%u", pn_n, ns_n);
+                                                    
+                                                    // Body decrypt
+                                                    uint8_t *bpt_n = malloc(rbod_n_len + 16);
+                                                    if (bpt_n) {
+                                                        size_t bpt_n_len = 0;
+                                                        int br_n = ratchet_decrypt_body(
+                                                            dm_n == 0 ? RATCHET_MODE_SAME : RATCHET_MODE_ADVANCE,
+                                                            pdh_n, pn_n, ns_n,
+                                                            rh_n, (size_t)rh_n_len,
+                                                            rtag_n, rbod_n, rbod_n_len,
+                                                            bpt_n, &bpt_n_len);
+                                                        
+                                                        if (br_n != 0) {
+                                                            ESP_LOGE(TAG, "      45n: Ratchet body decrypt FAILED (%d)!", br_n);
+                                                        } else {
+                                                            ESP_LOGI(TAG, "      45n: Ratchet decrypt OK! (%zu bytes)", bpt_n_len);
+                                                            
+                                                            // Parse AgentMessage → extract chat text
+                                                            if (bpt_n_len >= 11 && bpt_n[0] == 'M') {
+                                                                uint8_t pmhl_n = bpt_n[9];
+                                                                int ioff_n = 10 + pmhl_n;
+                                                                if (ioff_n < (int)bpt_n_len) {
+                                                                    uint8_t itag_n = bpt_n[ioff_n];
+                                                                    if (itag_n == 'M') {
+                                                                        int mb_off = ioff_n + 1;
+                                                                        int mb_len = (int)bpt_n_len - mb_off;
+                                                                        char *js_n = malloc(mb_len + 1);
+                                                                        if (js_n) {
+                                                                            memcpy(js_n, &bpt_n[mb_off], mb_len);
+                                                                            js_n[mb_len] = '\0';
+                                                                            ESP_LOGI(TAG, "      45n: msgBody: %.200s", js_n);
+                                                                            char *tk_n = strstr(js_n, "\"text\":\"");
+                                                                            if (tk_n) {
+                                                                                char *ts_n = tk_n + 8;
+                                                                                char *te_n = strchr(ts_n, '"');
+                                                                                if (te_n) {
+                                                                                    *te_n = '\0';
+                                                                                    ESP_LOGI(TAG, "");
+                                                                                    ESP_LOGI(TAG, "      ╔══════════════════════════════════════════════════════╗");
+                                                                                    ESP_LOGI(TAG, "      ║  🎉🎉🎉 ESP32 RECEIVED MESSAGE! 🎉🎉🎉               ║");
+                                                                                    ESP_LOGI(TAG, "      ║                                                      ║");
+                                                                                    ESP_LOGI(TAG, "      ║  📨 \"%s\"", ts_n);
+                                                                                    ESP_LOGI(TAG, "      ║                                                      ║");
+                                                                                    ESP_LOGI(TAG, "      ║  🏆 BIDIRECTIONAL CHAT ON ESP32! 🏆                   ║");
+                                                                                    ESP_LOGI(TAG, "      ╚══════════════════════════════════════════════════════╝");
+                                                                                }
+                                                                            }
+                                                                            free(js_n);
+                                                                        }
+                                                                    } else if (itag_n == 'H') {
+                                                                        ESP_LOGI(TAG, "      45n: HELLO inside ratchet (late)");
+                                                                    }
+                                                                }
+                                                            } else {
+                                                                // Dump for debug
+                                                                ESP_LOGI(TAG, "      45n: Ratchet plain (not 'M'): first=%02x len=%zu",
+                                                                         bpt_n_len > 0 ? bpt_n[0] : 0, bpt_n_len);
+                                                            }
+                                                        }
+                                                        free(bpt_n);
+                                                    }
+                                                    free(hp_n);
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        ESP_LOGW(TAG, "      45n: Cannot ratchet decrypt (len=%d, init=%d)",
+                                                 erm_n_len, ratchet_is_initialized());
+                                    }
+                                    
+                                } else {
+                                    ESP_LOGI(TAG, "      Agent tag '%c' — not HELLO or MSG", n_agent_tag);
+                                }
+                            }
+                            
+                            // === 45n: Send ACK on MAIN connection ===
+                            ESP_LOGI(TAG, "      45n: Sending ACK on main connection...");
+                            {
+                                uint8_t n_ack_body[64];
+                                int n_ap = 0;
+                                n_ack_body[n_ap++] = 1;  // version
+                                n_ack_body[n_ap++] = 'A';
+                                n_ack_body[n_ap++] = our_queue.rcv_id_len;
+                                memcpy(&n_ack_body[n_ap], our_queue.rcv_id, our_queue.rcv_id_len);
+                                n_ap += our_queue.rcv_id_len;
+                                n_ack_body[n_ap++] = 'A';
+                                n_ack_body[n_ap++] = 'C';
+                                n_ack_body[n_ap++] = 'K';
+                                n_ack_body[n_ap++] = ' ';
+                                n_ack_body[n_ap++] = msgIdLen;
+                                memcpy(&n_ack_body[n_ap], msg_id, msgIdLen);
+                                n_ap += msgIdLen;
+                                
+                                uint8_t n_to_sign[128];
+                                int n_sp = 0;
+                                n_to_sign[n_sp++] = 32;
+                                memcpy(&n_to_sign[n_sp], session_id, 32);
+                                n_sp += 32;
+                                memcpy(&n_to_sign[n_sp], n_ack_body, n_ap);
+                                n_sp += n_ap;
+                                
+                                uint8_t n_sig[crypto_sign_BYTES];
+                                crypto_sign_detached(n_sig, NULL, n_to_sign, n_sp, our_queue.rcv_auth_private);
+                                
+                                uint8_t n_trans[192];
+                                int n_tp = 0;
+                                n_trans[n_tp++] = crypto_sign_BYTES;
+                                memcpy(&n_trans[n_tp], n_sig, crypto_sign_BYTES);
+                                n_tp += crypto_sign_BYTES;
+                                n_trans[n_tp++] = 32;
+                                memcpy(&n_trans[n_tp], session_id, 32);
+                                n_tp += 32;
+                                memcpy(&n_trans[n_tp], n_ack_body, n_ap);
+                                n_tp += n_ap;
+                                
+                                smp_write_command_block(&ssl, block, n_trans, n_tp);
+                                ESP_LOGI(TAG, "      45n: ACK sent!");
+                            }
+                            // === Ende Auftrag 45n ===
                         } else {
                             ESP_LOGE(TAG, "      UNBEKANNTER PrivHeader: 0x%02x '%c'",
                                      priv_tag, (priv_tag >= 0x20 && priv_tag < 0x7f) ? priv_tag : '?');

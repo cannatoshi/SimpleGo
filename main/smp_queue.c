@@ -621,6 +621,13 @@ int queue_encode_info(uint8_t *buf, int max_len) {
     return p;
 }
 
+// Pending message buffer: stores MSG received during ACK/SUB reads
+static struct {
+    uint8_t *data;
+    int len;
+    bool valid;
+} pending_msg = {0};
+
 // ============== Subscribe ==============
 
 bool queue_subscribe(void) {
@@ -699,47 +706,41 @@ bool queue_subscribe(void) {
     if (content_len >= 0) {
         uint8_t *resp = block + 2;
 
-        // Parse SMP transport to find command
-        int rp = 0;
-        if (rp < content_len && resp[rp] == 1) rp++;  // txCount
-        rp += 2;  // txLen
-        int al = resp[rp++]; rp += al;  // auth
-        int sl = resp[rp++]; rp += sl;  // sess
-        int cl = resp[rp++]; rp += cl;  // corr
-        int el = resp[rp++]; rp += el;  // entity
-
-        if (rp + 1 < content_len && resp[rp] == 'O' && resp[rp+1] == 'K') {
-            ESP_LOGI(TAG, "   ✅ Subscribed!");
-            free(block);
-            return true;
-        }
-
-        if (rp + 2 < content_len && resp[rp] == 'E' && resp[rp+1] == 'N' && resp[rp+2] == 'D') {
-            ESP_LOGI(TAG, "   ✅ Subscribed (END — queue empty)!");
-            free(block);
-            return true;
-        }
-
-        if (rp + 2 < content_len && resp[rp] == 'M' && resp[rp+1] == 'S' && resp[rp+2] == 'G') {
-            // Server delivered a pending MSG instead of OK — SUB was accepted implicitly.
-            // Store this MSG for later processing via queue_read_raw().
-            ESP_LOGI(TAG, "   ✅ Subscribed (server delivered pending MSG)");
-            ESP_LOGI(TAG, "   📬 Storing MSG in pending buffer (%d bytes)", content_len + 2);
-
-            pending_msg.data = malloc(content_len + 2);
-            if (pending_msg.data) {
-                memcpy(pending_msg.data, block, content_len + 2);
-                pending_msg.len = content_len + 2;
-                pending_msg.valid = true;
+        // Scan for OK
+        for (int i = 0; i < content_len - 1; i++) {
+            if (resp[i] == 'O' && resp[i+1] == 'K') {
+                ESP_LOGI(TAG, "   ✅ Subscribed!");
+                free(block);
+                return true;
             }
-            free(block);
-            return true;
         }
 
-        ESP_LOGW(TAG, "   ⚠️ SUB response at offset %d: %02x%02x '%c%c'",
-                 rp, resp[rp], rp+1 < content_len ? resp[rp+1] : 0,
-                 (resp[rp] >= 32 && resp[rp] < 127) ? (char)resp[rp] : '.',
-                 (rp+1 < content_len && resp[rp+1] >= 32 && resp[rp+1] < 127) ? (char)resp[rp+1] : '.');
+        // Scan for END
+        for (int i = 0; i < content_len - 2; i++) {
+            if (resp[i] == 'E' && resp[i+1] == 'N' && resp[i+2] == 'D') {
+                ESP_LOGI(TAG, "   ✅ Subscribed (END — queue empty)!");
+                free(block);
+                return true;
+            }
+        }
+
+        // Scan for MSG (pending message — buffer it!)
+        for (int i = 0; i < content_len - 2; i++) {
+            if (resp[i] == 'M' && resp[i+1] == 'S' && resp[i+2] == 'G') {
+                ESP_LOGI(TAG, "   ✅ Subscribed (server delivered pending MSG)");
+                ESP_LOGI(TAG, "   📬 Storing MSG in pending buffer (%d bytes)", content_len + 2);
+                pending_msg.data = malloc(content_len + 2);
+                if (pending_msg.data) {
+                    memcpy(pending_msg.data, block, content_len + 2);
+                    pending_msg.len = content_len + 2;
+                    pending_msg.valid = true;
+                }
+                free(block);
+                return true;
+            }
+        }
+
+        ESP_LOGW(TAG, "   ⚠️ SUB response (%d bytes): no OK/END/MSG found", content_len);
     }
 
     free(block);
@@ -866,15 +867,8 @@ bool queue_send_key(const uint8_t *peer_auth_key_spki, int key_len) {
 
 // ======== Auftrag 42d: Read from Reply Queue ========
 
-// Pending message buffer: stores MSG received during ACK/SUB reads
-static struct {
-    uint8_t *data;
-    int len;
-    bool valid;
-} pending_msg = {0};
-
 int queue_read_raw(uint8_t *buf, int buf_size, int timeout_ms) {
-    // Check pending buffer first (MSG caught during ACK)
+    // Check pending buffer first (MSG caught during ACK/SUB)
     if (pending_msg.valid && pending_msg.data && pending_msg.len > 2) {
         int total = pending_msg.len;
         int copy_len = total < buf_size ? total : buf_size;
@@ -883,7 +877,7 @@ int queue_read_raw(uint8_t *buf, int buf_size, int timeout_ms) {
         pending_msg.data = NULL;
         pending_msg.len = 0;
         pending_msg.valid = false;
-        int content_len = total - 2;  // smp_read_block returns content_len, data at buf+2
+        int content_len = total - 2;
         ESP_LOGI(TAG, "   📬 Returning pending MSG from buffer (content_len=%d)", content_len);
         return content_len;
     }
@@ -894,6 +888,26 @@ int queue_read_raw(uint8_t *buf, int buf_size, int timeout_ms) {
     }
     return smp_read_block(&queue_conn.ssl, buf, timeout_ms);
 }
+
+// === Auftrag 45m: Raw TLS read bypass (no parser) ===
+int queue_raw_tls_read(uint8_t *buf, int buf_size, int timeout_ms) {
+    if (!queue_conn.connected) {
+        ESP_LOGE(TAG, "queue_raw_tls_read: not connected!");
+        return -1;
+    }
+    mbedtls_ssl_conf_read_timeout(&queue_conn.conf, timeout_ms);
+    int ret = mbedtls_ssl_read(&queue_conn.ssl, buf, buf_size);
+    return ret;
+}
+
+bool queue_has_pending_msg(int *out_len) {
+    if (pending_msg.valid && pending_msg.data && pending_msg.len > 0) {
+        if (out_len) *out_len = pending_msg.len;
+        return true;
+    }
+    return false;
+}
+// === Ende Auftrag 45m ===
 
 // ======== Ende Auftrag 42d ========
 
@@ -969,55 +983,50 @@ bool queue_send_ack(const uint8_t *msg_id, int msg_id_len) {
     if (content_len >= 0) {
         uint8_t *resp = block + 2;
         
-        // Parse SMP transport to find command type
-        int rp = 0;
-        if (rp < content_len && resp[rp] == 1) rp++;  // txCount
-        rp += 2;  // txLen
-        int al = resp[rp++]; rp += al;  // auth
-        int sl = resp[rp++]; rp += sl;  // sess
-        int cl = resp[rp++]; rp += cl;  // corr
-        int el = resp[rp++]; rp += el;  // entity
-        
-        if (rp + 1 < content_len && resp[rp] == 'O' && resp[rp+1] == 'K') {
-            ESP_LOGI(TAG, "   ✅ ACK accepted!");
-            free(block);
-            return true;
-        }
-        
-        if (rp + 2 < content_len && resp[rp] == 'M' && resp[rp+1] == 'S' && resp[rp+2] == 'G') {
-            // Got a MSG instead of OK — ACK was accepted, server immediately delivered next message
-            ESP_LOGI(TAG, "   ✅ ACK accepted (implicit — server sent next MSG)");
-            ESP_LOGI(TAG, "   📬 Storing MSG in pending buffer (%d bytes)", content_len + 2);
-            
-            // Store the full block (including 2-byte header) for later queue_read_raw()
-            pending_msg.data = malloc(content_len + 2);
-            if (pending_msg.data) {
-                memcpy(pending_msg.data, block, content_len + 2);
-                pending_msg.len = content_len + 2;
-                pending_msg.valid = true;
+        // Scan for OK
+        for (int i = 0; i < content_len - 1; i++) {
+            if (resp[i] == 'O' && resp[i+1] == 'K') {
+                ESP_LOGI(TAG, "   ✅ ACK accepted!");
+                free(block);
+                return true;
             }
-            free(block);
-            return true;
         }
         
-        if (rp + 2 < content_len && resp[rp] == 'E' && resp[rp+1] == 'N' && resp[rp+2] == 'D') {
-            ESP_LOGI(TAG, "   ✅ ACK accepted (got END — queue empty)");
-            free(block);
-            return true;
+        // Scan for MSG (ACK accepted implicitly, server sent next message)
+        for (int i = 0; i < content_len - 2; i++) {
+            if (resp[i] == 'M' && resp[i+1] == 'S' && resp[i+2] == 'G') {
+                ESP_LOGI(TAG, "   ✅ ACK accepted (implicit — server sent next MSG)");
+                ESP_LOGI(TAG, "   📬 Storing MSG in pending buffer (%d bytes)", content_len + 2);
+                pending_msg.data = malloc(content_len + 2);
+                if (pending_msg.data) {
+                    memcpy(pending_msg.data, block, content_len + 2);
+                    pending_msg.len = content_len + 2;
+                    pending_msg.valid = true;
+                }
+                free(block);
+                return true;
+            }
         }
         
-        if (rp + 2 < content_len && resp[rp] == 'E' && resp[rp+1] == 'R' && resp[rp+2] == 'R') {
-            ESP_LOGE(TAG, "   ❌ ACK error: ERR");
-            free(block);
-            return false;
+        // Scan for END
+        for (int i = 0; i < content_len - 2; i++) {
+            if (resp[i] == 'E' && resp[i+1] == 'N' && resp[i+2] == 'D') {
+                ESP_LOGI(TAG, "   ✅ ACK accepted (got END — queue empty)");
+                free(block);
+                return true;
+            }
         }
         
-        // Unknown response — log it
-        ESP_LOGW(TAG, "   ⚠️ ACK: unexpected response at offset %d: %02x%02x%02x '%c%c%c'",
-                 rp, resp[rp], resp[rp+1], resp[rp+2],
-                 (resp[rp]>=32&&resp[rp]<127)?(char)resp[rp]:'.',
-                 (resp[rp+1]>=32&&resp[rp+1]<127)?(char)resp[rp+1]:'.',
-                 (resp[rp+2]>=32&&resp[rp+2]<127)?(char)resp[rp+2]:'.');
+        // Scan for ERR
+        for (int i = 0; i < content_len - 2; i++) {
+            if (resp[i] == 'E' && resp[i+1] == 'R' && resp[i+2] == 'R') {
+                ESP_LOGE(TAG, "   ❌ ACK error: ERR");
+                free(block);
+                return false;
+            }
+        }
+        
+        ESP_LOGW(TAG, "   ⚠️ ACK response (%d bytes): no OK/MSG/END/ERR found", content_len);
     }
     
     ESP_LOGW(TAG, "   ⚠️ ACK response timeout or parse error");
