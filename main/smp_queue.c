@@ -11,6 +11,7 @@
 #include "smp_network.h"
 #include "smp_crypto.h"
 #include <string.h>
+#include <stdio.h>
 #include <unistd.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -382,8 +383,8 @@ bool queue_create(const char *host, int port) {
     
     int p = 0;
     
-    // Skip transport wrapper
-    if (resp[p] == 1) p++;  // txCount
+    // 47d: txCount is a sequence counter, always consume
+    p++;  // txCount
     p += 2;  // txLen
     
     int authLen = resp[p++];
@@ -573,48 +574,34 @@ int queue_encode_info(uint8_t *buf, int max_len) {
     memcpy(&buf[p], our_queue.e2e_public, 32);
     p += 32;
     
-    // ================================================================
-    // CONSISTENCY TEST: Alle 3 E2E Public Keys müssen identisch sein!
-    // ================================================================
-    uint8_t derived_public[32];
-    crypto_scalarmult_base(derived_public, our_queue.e2e_private);
-    
-    ESP_LOGE(TAG, "");
-    ESP_LOGE(TAG, "   ╔═══════════════════════════════════════════════════════╗");
-    ESP_LOGE(TAG, "   ║  🧪 E2E PUBLIC KEY CONSISTENCY TEST                   ║");
-    ESP_LOGE(TAG, "   ╚═══════════════════════════════════════════════════════╝");
-    
-    ESP_LOGE(TAG, "   [1] our_queue.e2e_public (stored):");
-    printf("       ");
-    for (int i = 0; i < 32; i++) printf("%02x", our_queue.e2e_public[i]);
-    printf("\n");
-    
-    ESP_LOGE(TAG, "   [2] Key being sent in AgentConnInfoReply:");
-    printf("       ");
-    for (int i = 0; i < 32; i++) printf("%02x", our_queue.e2e_public[i]);
-    printf("\n");
-    
-    ESP_LOGE(TAG, "   [3] crypto_scalarmult_base(e2e_private):");
-    printf("       ");
-    for (int i = 0; i < 32; i++) printf("%02x", derived_public[i]);
-    printf("\n");
-    
-    // Check if all match
-    bool match_1_3 = (memcmp(our_queue.e2e_public, derived_public, 32) == 0);
-    
-    if (match_1_3) {
-        ESP_LOGI(TAG, "   ✅ ALL KEYS MATCH!");
-    } else {
-        ESP_LOGE(TAG, "   ❌ MISMATCH DETECTED!");
-        ESP_LOGE(TAG, "   [1] vs [3]: %s", match_1_3 ? "MATCH" : "DIFFERENT!");
+    // 47e: SMPQueueInfo Wire-Format Verification
+    ESP_LOGW(TAG, "");
+    ESP_LOGW(TAG, "47e: === OUR SMPQueueInfo WIRE FORMAT ===");
+    ESP_LOGW(TAG, "47e: Total serialized: %d bytes", p);
+    ESP_LOGW(TAG, "47e: server: %s:%d", our_queue.server_host, our_queue.server_port);
+    ESP_LOGW(TAG, "47e: sndId (%d): %02x%02x%02x%02x...",
+             our_queue.snd_id_len,
+             our_queue.snd_id[0], our_queue.snd_id[1],
+             our_queue.snd_id[2], our_queue.snd_id[3]);
+    ESP_LOGW(TAG, "47e: e2e_public (in QueueInfo): %02x%02x%02x%02x %02x%02x%02x%02x",
+             our_queue.e2e_public[0], our_queue.e2e_public[1],
+             our_queue.e2e_public[2], our_queue.e2e_public[3],
+             our_queue.e2e_public[4], our_queue.e2e_public[5],
+             our_queue.e2e_public[6], our_queue.e2e_public[7]);
+    ESP_LOGW(TAG, "47e: e2e_private (for decrypt):  %02x%02x%02x%02x %02x%02x%02x%02x",
+             our_queue.e2e_private[0], our_queue.e2e_private[1],
+             our_queue.e2e_private[2], our_queue.e2e_private[3],
+             our_queue.e2e_private[4], our_queue.e2e_private[5],
+             our_queue.e2e_private[6], our_queue.e2e_private[7]);
+
+    // Full hex dump of serialized QueueInfo
+    ESP_LOGW(TAG, "47e: Serialized QueueInfo hex dump:");
+    for (int i = 0; i < p; i += 16) {
+        char hex[64] = {0}; int hx = 0;
+        for (int j = 0; j < 16 && (i+j) < p; j++)
+            hx += sprintf(&hex[hx], "%02x ", buf[i+j]);
+        ESP_LOGW(TAG, "  +%04d: %s", i, hex);
     }
-    ESP_LOGE(TAG, "");
-    
-    // Also log private key for full traceability
-    ESP_LOGE(TAG, "   🟠 ENCODE_INFO e2e_private FULL:");
-    printf("      ");
-    for (int i = 0; i < 32; i++) printf("%02x", our_queue.e2e_private[i]);
-    printf("\n");
     ESP_LOGW(TAG, "");
 
     ESP_LOGI(TAG, "   Encoded SMPQueueInfo: %d bytes", p);
