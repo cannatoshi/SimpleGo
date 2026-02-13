@@ -2,38 +2,33 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-08 - Session 23 (🎉 CONNECTED! First SimpleX on Microcontroller!)**
+**Updated: 2026-02-13 - Session 24 (🏆 First Chat Message from Microcontroller!)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 23 - 🎉 CONNECTED! HISTORIC MILESTONE!
-================================================
+SESSION 24 - 🏆 FIRST CHAT MESSAGE! MILESTONE #2!
+===================================================
 
-First SimpleX connection on a microcontroller achieved!
-ESP32-S3 shows "Connected" in SimpleX App.
+"Hello from ESP32!" displayed in SimpleX App.
 
-Session 23 Achievements:
-  - ZERO new bugs (all 31 previous bugs were sufficient!)
-  - Complete 7-step handshake verified and working
-  - Role clarification: ESP32=Bob (Accepting), App=Alice (Initiating)
-  - Tag correction: We send 'D', App sends 'I' (not vice versa!)
-  - Legacy Path: PHConfirmation 'K' requires KEY + HELLO
-  - KEY command: Recipient command, signed with rcv_private_auth_key
-  - TLS reconnect: Required after timeout during Confirmation processing
+Session 24 Achievements:
+  - ZERO new bugs (31 total remain sufficient!)
+  - First A_MSG chat message sent and displayed
+  - Q_B Ratchet decrypt working (PQ-Kyber graceful degradation)
+  - Session 23 correction: "HELLO on Q_B" was false positive
+  - ACK protocol fully documented
+  - pending_msg buffer for response multiplexing
+  - Aschenputtel verified all Queue IDs correct
 
-Complete Handshake:
-  1. App: NEW → Q_A, Invitation
-  2. ESP32→App: SKEY + CONF Tag 'D' (Q_B + Profile)
-  3. App: processConf → CONF Event
-  4. App: LET/Accept Confirmation
-  5. App→ESP32: KEY on Q_A + SKEY on Q_B + Tag 'I'
-  6. ESP32: Reconnect + SUB + KEY + HELLO
-  7. Both: CON → "CONNECTED" 🎉
+Open Bug (ROOT CAUSE found late in session):
+  - App doesn't fully activate connection
+  - ESP32 sends work, App receives not delivered
+  - Late discovery: Socket routing bug (SUB on main ssl, read from queue_conn.ssl)
 
-Next: Bidirectional Chat Messages
+Next: Session 25 — Refactoring + Bug Fix
 ```
 
 ---
@@ -833,7 +828,210 @@ Server Response:
 
 ---
 
-*Quick Reference v17.0*  
-*Last updated: February 8, 2026 - Session 23*  
-*Status: 🎉 CONNECTED! First SimpleX on Microcontroller!*  
-*Next: Bidirectional Chat Messages*
+## 18. Session 24 Key Insights Summary — 🏆 First Chat Message!
+
+1. **msgBody must be ChatMessage JSON** — Raw UTF-8 fails with "error parsing chat message"
+2. **Session 23 "HELLO on Q_B" was FALSE POSITIVE** — Random 0x48 in ciphertext, not HELLO!
+3. **ACK is critical flow control** — Missing ACK blocks ALL further MSG delivery
+4. **ACK is Recipient Command** — Signed with rcv_private_auth_key
+5. **Response multiplexing** — OK, MSG, END can interleave on subscribed queues
+6. **pending_msg buffer needed** — Catch MSG during ACK/SUB reads
+7. **PQ-Kyber in wild** — App sends emHeaderLen=2346, graceful degradation works!
+8. **Scan-based > Parser-based** — Simple "find OK/MSG" beats offset calculations
+9. **One checkmark ≠ delivered** — Server accepted, but not delivered to recipient
+10. **App may not fully activate** — Shows "Connected" but doesn't send to Q_B
+
+---
+
+## 19. A_MSG Wire Format (Session 24)
+
+### 19.1 Complete AgentMessage Structure
+
+```
+AgentMessage for A_MSG:
+Offset  Size   Field               Value/Encoding
+──────────────────────────────────────────────────────────
+0       1      AgentMessage tag    'M' (0x4D)
+1       8      sndMsgId            Int64 BE (8 bytes!)
+9       1      prevMsgHash len     0x00 (first) or 0x20 (subsequent)
+10      0|32   prevMsgHash data    empty or SHA-256 hash
+10|42   1      AMessage tag        'M' (0x4D) for A_MSG
+11|43   N      msgBody             ChatMessage JSON (Tail)
+```
+
+### 19.2 sndMsgId Encoding
+
+```
+sndMsgId = Int64 = 2×Word32 big-endian (8 bytes total!)
+NOT Word16 as other fields!
+
+First message: 0x0000000000000001
+Second:        0x0000000000000002
+...
+```
+
+### 19.3 prevMsgHash Encoding
+
+```
+First message:
+  len = 0x00 (1 byte)
+  data = empty (0 bytes)
+  
+Subsequent messages:
+  len = 0x20 (32 decimal)
+  data = SHA-256 of previous message (32 bytes)
+
+This is message chaining for integrity!
+```
+
+---
+
+## 20. ChatMessage JSON Format (Session 24)
+
+### 20.1 Basic Text Message
+
+```json
+{
+  "v": "1",
+  "event": "x.msg.new",
+  "params": {
+    "content": {
+      "type": "text",
+      "text": "Hello from ESP32!"
+    }
+  }
+}
+```
+
+Minified (as sent):
+```
+{"v":"1","event":"x.msg.new","params":{"content":{"type":"text","text":"Hello from ESP32!"}}}
+```
+
+### 20.2 Event Types
+
+```
+"x.msg.new"      — New message (text, file, image, voice)
+"x.msg.update"   — Edit existing message
+"x.msg.del"      — Delete message
+"x.file"         — File transfer
+"x.info"         — System/info message
+```
+
+### 20.3 Content Types
+
+```
+Text:   {"type": "text", "text": "..."}
+File:   {"type": "file", "text": "caption", ...}
+Image:  {"type": "image", ...}
+Voice:  {"type": "voice", "duration": 5, "text": ""}
+```
+
+---
+
+## 21. ACK Protocol (Session 24)
+
+### 21.1 SMP Flow Control
+
+```
+1. Server has MSG for queue
+2. Client subscribes (SUB)
+3. Server delivers MSG, sets delivered=Just(msgId)
+4. Server BLOCKS further delivery until ACK
+5. Client sends ACK
+6. Server clears flag
+7. If more messages: delivers next immediately
+```
+
+### 21.2 ACK Wire Format
+
+```
+ACK body: "ACK " + [1B len][N bytes msgId]
+
+Example:
+  msgId = "abc123" (6 bytes)
+  body = "ACK " + 0x06 + "abc123"
+  
+Signed with: rcv_private_auth_key (Recipient Command!)
+```
+
+### 21.3 ACK Response
+
+```
+"OK"      — Queue now empty, no more messages
+"MSG ..." — Next message delivered immediately!
+
+This is why pending_msg buffer is needed!
+```
+
+### 21.4 Agent-Level ACK Timing
+
+```
+Message Type              ACK Timing
+─────────────────────────────────────────────
+Confirmation (Tag 'D')    Immediately (auto)
+Confirmation (Tag 'I')    Immediately (auto)
+HELLO                     Immediately + Delete
+A_MSG                     Deferred (app decides)
+A_RCVD                    Deferred
+A_DEL                     Immediately
+```
+
+---
+
+## 22. Response Multiplexing (Session 24)
+
+### 22.1 Problem
+
+```
+On subscribed connections, server can send at ANY time:
+  - Responses: OK, ERR
+  - Notifications: MSG, END
+
+Our code might:
+  - Send SUB, expect OK, receive MSG → confused!
+  - Send ACK, expect OK, receive MSG → confused!
+```
+
+### 22.2 Solution: pending_msg Buffer
+
+```c
+// Global buffer for caught messages
+static pending_msg_t pending_msg = {0};
+
+// In queue_subscribe():
+if (find_in_response("MSG")) {
+    store_pending_msg(block, len);  // Save for later
+    return true;  // Still success!
+}
+
+// In queue_read_raw():
+if (pending_msg.has_pending) {
+    return_pending();  // Return buffered MSG first
+}
+return mbedtls_ssl_read(...);
+```
+
+### 22.3 Scan-Based Detection
+
+```c
+// Simple and reliable (beats complex parsers!)
+for (int i = 0; i < len - 2; i++) {
+    if (resp[i] == 'M' && resp[i+1] == 'S' && resp[i+2] == 'G') {
+        return FOUND_MSG;
+    }
+}
+for (int i = 0; i < len - 1; i++) {
+    if (resp[i] == 'O' && resp[i+1] == 'K') {
+        return FOUND_OK;
+    }
+}
+```
+
+---
+
+*Quick Reference v18.0*  
+*Last updated: February 13, 2026 - Session 24*  
+*Status: 🏆 First Chat Message from Microcontroller!*  
+*Open: Bidirectional communication (App → ESP32)*  
+*Next: Session 25 — Refactoring + Bug Fix*

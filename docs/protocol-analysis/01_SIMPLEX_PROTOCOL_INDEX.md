@@ -2,24 +2,27 @@
 
 **Project:** SimpleGo - Native ESP32 SMP Implementation  
 **Version:** v0.1.17-alpha  
-**Last Updated:** 2026-02-08 (Session 23 — 🎉 CONNECTED!)
+**Last Updated:** 2026-02-13 (Session 24 — 🏆 First Chat Message!)
 
 ---
 
-## 🎉 HISTORIC MILESTONE: CONNECTED!
+## 🏆 MILESTONE #2: First Chat Message! (Session 24)
 
-On February 8, 2026, Session 23 achieved **the world's first SimpleX connection on a microcontroller!**
+On February 11, 2026, Session 24 achieved **the world's first chat message from a microcontroller!**
 
-The ESP32-S3 shows "Connected" in the SimpleX App.
+"Hello from ESP32!" displayed in the SimpleX App.
 
-**Complete protocol chain working:** TLS → SMP → E2E → Ratchet → Zstd → JSON → KEY → HELLO → CON ✅  
-**ALL 31 bugs fixed, ZERO new bugs in Session 23!**
+**Two milestones achieved:**
+- Session 23: 🎉 CONNECTED — First SimpleX connection on ESP32
+- Session 24: 🏆 First A_MSG — First chat message from ESP32
+
+**Open:** Bidirectional communication (App → ESP32 blocked)
 
 ---
 
 ## Documentation Structure
 
-The complete protocol analysis (~32,000+ lines, 410+ sections) is split into 20 parts:
+The complete protocol analysis (~34,000+ lines, 424+ sections) is split into 21 parts:
 
 | Part | File | Lines | Content |
 |------|------|-------|---------|
@@ -42,8 +45,9 @@ The complete protocol analysis (~32,000+ lines, 410+ sections) is split into 20 
 | 17 | [19_PART17_SESSION_20.md](19_PART17_SESSION_20.md) | ~600 | 🎉 Body Decrypt! Peer Profile! |
 | 18 | [20_PART18_SESSION_21.md](20_PART18_SESSION_21.md) | ~700 | v3 Format + HELLO Debugging |
 | 19 | [21_PART19_SESSION_22.md](21_PART19_SESSION_22.md) | ~650 | Reply Queue Flow Discovery |
-| **20** | [**22_PART20_SESSION_23.md**](22_PART20_SESSION_23.md) | **~700** | **🎉 CONNECTED! Historic Milestone!** |
-| **Total** | | **~32,000+** | **410+ Sections** |
+| 20 | [22_PART20_SESSION_23.md](22_PART20_SESSION_23.md) | ~700 | 🎉 CONNECTED! Historic Milestone! |
+| **21** | [**23_PART21_SESSION_24.md**](23_PART21_SESSION_24.md) | **~800** | **🏆 First Chat Message! Milestone #2!** |
+| **Total** | | **~34,000+** | **424+ Sections** |
 
 ---
 
@@ -51,9 +55,9 @@ The complete protocol analysis (~32,000+ lines, 410+ sections) is split into 20 
 
 | Document | Lines | Description |
 |----------|-------|-------------|
-| [README.md](README.md) | ~600 | Project overview and navigation |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,900 | All 31 bugs documented, 95 lessons |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,100 | Constants, wire formats, verified values |
+| [README.md](README.md) | ~700 | Project overview and navigation |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~2,000 | All 31 bugs documented, 109 lessons |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,200 | Constants, wire formats, verified values |
 
 ---
 
@@ -81,6 +85,7 @@ The complete protocol analysis (~32,000+ lines, 410+ sections) is split into 20 
 | 21 | Feb 6-7, 2026 | HELLO | v3 Format (Bugs #20-26) |
 | 22 | Feb 7, 2026 | DISCOVERY | Reply Queue Flow (Bugs #27-31) |
 | **23** | **Feb 7-8, 2026** | **CONNECTED** | **🎉 First SimpleX on Microcontroller!** |
+| **24** | **Feb 11-13, 2026** | **FIRST A_MSG** | **🏆 First Chat Message!** |
 
 ---
 
@@ -135,13 +140,41 @@ The complete protocol analysis (~32,000+ lines, 410+ sections) is split into 20 
 | HELLO Format bugs | 7 | S21 |
 | E2E Version/KEM/NHK bugs | 5 | S22 |
 
-**Lessons Learned: 95** (documented in BUG_TRACKER.md)
+**Lessons Learned: 109** (documented in BUG_TRACKER.md)
 
-**🎉 Session 23: ZERO new bugs — the crypto was already correct!**
+**Session 23 & 24: ZERO new bugs — milestones achieved with solid crypto!**
 
 ---
 
 ## Protocol Discoveries
+
+### Session 24: A_MSG Format + ChatMessage JSON
+```
+A_MSG Wire Format:
+  [1B 'M'][8B sndMsgId Int64][1B prevHash len][0|32B hash]
+  [1B 'M' A_MSG tag][Tail: ChatMessage JSON]
+
+ChatMessage JSON (required!):
+  {"v":"1","event":"x.msg.new","params":{"content":{"type":"text","text":"..."}}}
+  
+Raw UTF-8 fails: "error parsing chat message: not enough input"
+```
+
+### Session 24: ACK Protocol
+```
+SMP Flow Control:
+  1. Server delivers MSG → blocks until ACK
+  2. Missing ACK = queue backs up!
+  3. ACK is Recipient Command (rcv_private_auth_key)
+  4. ACK response: OK (empty) or MSG (next message)
+```
+
+### Session 24: Session 23 Correction
+```
+Session 23: "HELLO on Q_B" → FALSE POSITIVE!
+Reality: Random 0x48 in Ratchet ciphertext
+Actual Q_B content: Tag 'I' ConnInfo (with full Ratchet decrypt)
+```
 
 ### Session 23: 7-Step Handshake (VERIFIED WORKING!)
 ```
@@ -225,17 +258,45 @@ SimpleGo is confirmed as the **FIRST native SMP protocol implementation** outsid
 
 ---
 
-## Next Steps (Post-Connection)
+## Next Steps (Session 25)
 
-Now that **CONNECTED** is achieved, the next phase focuses on:
+### Phase 1: Code Refactoring
+```
+main.c from 2400 lines → ~150 lines
 
-1. **Bidirectional Chat Messages** — Send and receive actual chat messages
-2. **Message Persistence** — Store messages on ESP32 flash
-3. **UI Integration** — Display on LilyGo T-Deck screen
-4. **Multiple Contacts** — Handle more than one connection
-5. **Reconnection Logic** — Handle connection drops gracefully
-6. **Post-Quantum Upgrade** — Implement SNTRUP761 KEM exchange
+Extract into separate files:
+  - smp_msg_handler.c
+  - smp_agent_handler.c
+  - smp_chat.c
+  - smp_listen.c
+```
+
+### Phase 2: Bidirectional Bug Fix
+```
+Open Bug: App doesn't send to Q_B
+
+Evidence:
+  - ESP32 → App: Works (message displays)
+  - App → ESP32: Blocked (server has zero messages)
+  - Queue IDs verified correct
+
+Hypothesis:
+  Format error in AgentConfirmation or HELLO
+  causes App to not fully activate connection
+
+Analysis needed:
+  - What does App validate after our messages?
+  - What triggers full bidirectional activation?
+```
+
+### Phase 3: Full Bidirectional
+```
+Third milestone: Receive messages from App
+  - Fix format error
+  - Receive A_MSG on Q_B
+  - Display on T-Deck screen
+```
 
 ---
 
-*Index updated: 2026-02-08 Session 23 — 🎉 CONNECTED!*
+*Index updated: 2026-02-13 Session 24 — 🏆 First Chat Message!*

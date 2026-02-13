@@ -1012,6 +1012,7 @@ If NHKr succeeds, it triggers AdvanceRatchet and promotes NHKr→HKr.
 | Feb 6-7 | S21 | #20-#26 HELLO format + v3 format (7 bugs!) |
 | **Feb 7** | **S22** | **#27-#31 E2E version, KEM parser, NHK promotion (5 bugs!)** |
 | **Feb 7-8** | **S23** | **🎉 ZERO new bugs — CONNECTED!** |
+| **Feb 11-13** | **S24** | **🏆 ZERO new bugs — First Chat Message!** |
 
 ---
 
@@ -1145,6 +1146,21 @@ If NHKr succeeds, it triggers AdvanceRatchet and promotes NHKr→HKr.
 93. **Assumptions must be verified with logs** - Tag 'D' branch never triggered = wrong assumption! (Session 23)
 94. **Complete handshake is 7 steps** - Not 3, not 5, exactly 7 steps for Legacy Path! (Session 23)
 95. **CONNECTED requires BOTH HELLOs** - We send on Q_A, App sends on Q_B, then CON! (Session 23)
+96. **Session 23 "HELLO on Q_B" was FALSE POSITIVE** - Random 0x48 in ciphertext, no actual HELLO! (Session 24)
+97. **msgBody must be ChatMessage JSON** - Raw UTF-8 fails: "error parsing chat message"! (Session 24)
+98. **ChatMessage format** - `{"v":"1","event":"x.msg.new","params":{"content":{"type":"text","text":"..."}}}` (Session 24)
+99. **SMP ACK is flow control** - Missing ACK blocks ALL further MSG delivery! (Session 24)
+100. **ACK is Recipient Command** - Signed with rcv_private_auth_key, like KEY and SUB! (Session 24)
+101. **ACK response can be MSG** - Server immediately delivers next message if pending! (Session 24)
+102. **Response multiplexing on subscribed queues** - OK, MSG, END can interleave at any time! (Session 24)
+103. **pending_msg buffer needed** - Catch MSG during ACK/SUB, return on next read! (Session 24)
+104. **PQ-Kyber in the wild** - App sends emHeaderLen=2346, our graceful degradation works! (Session 24)
+105. **Scan-based > Parser-based** - Simple "find OK/MSG" beats complex offset calculation! (Session 24)
+106. **Claude Code: NO git access** - Creates chaos, branches, undeclared structs! (Session 24)
+107. **Aschenputtel for log analysis** - Byte-for-byte verification, keeps strategy chat clean! (Session 24)
+108. **One checkmark = server accepted, not delivered** - App sends but ESP32 doesn't receive! (Session 24)
+109. **App may not fully activate connection** - Shows "Connected" but doesn't send to Q_B! (Session 24)
+110. **Socket routing bug (late discovery)** - subscribe_all_contacts() SUBs on main ssl, listen reads queue_conn.ssl! (Session 24)
 
 ---
 
@@ -1180,8 +1196,39 @@ Step   Queue   Direction      Content
 
 ---
 
-*Bug Tracker v18.0*  
-*Last updated: February 8, 2026 - Session 23*  
+## Session 24: First Chat Message — MILESTONE #2! 🏆
+
+Session 24 achieved the second historic milestone: **First chat message from a microcontroller!**
+
+"Hello from ESP32!" displayed in SimpleX App.
+
+### Key Discoveries
+
+1. **msgBody format:** Must be ChatMessage JSON, not raw UTF-8
+2. **Session 23 correction:** "HELLO on Q_B" was false positive (was Tag 'I' ConnInfo)
+3. **ACK protocol:** Critical flow control, missing ACK blocks all delivery
+4. **PQ-Kyber:** App sends PQ headers, our graceful degradation works
+5. **Bidirectional blocked:** App doesn't send to Q_B despite "Connected" status
+
+### Open Bug → ROOT CAUSE FOUND (Late in Session)
+
+```
+Initially believed: Format error in our messages causes silent discard.
+
+Late discovery at session end:
+  subscribe_all_contacts() subscribes Reply Queue on main ssl connection.
+  Listen-Loop reads from queue_conn.ssl (separate connection).
+  Messages delivered to wrong socket!
+
+Fix for Session 25:
+  A) Process Q_B messages in Main Receive Loop
+  B) Don't SUB Q_B in subscribe_all_contacts()
+```
+
+---
+
+*Bug Tracker v19.0*  
+*Last updated: February 13, 2026 - Session 24*  
 *Total bugs documented: 31 (31 FIXED)*  
-*95 lessons learned!*  
-*🎉 CONNECTED with ZERO new bugs!*
+*110 lessons learned!*  
+*🏆 MILESTONE #2: First Chat Message from Microcontroller!*

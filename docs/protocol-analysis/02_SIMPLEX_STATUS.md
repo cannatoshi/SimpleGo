@@ -1,30 +1,28 @@
-# SimpleGo - Current Status (2026-02-08)
+# SimpleGo - Current Status (2026-02-13)
 
 **Project:** Native SimpleX SMP Client for ESP32  
 **Version:** v0.1.17-alpha  
-**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (410+ sections, 20 parts)
+**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (424+ sections, 21 parts)
 
 ---
 
-## 🎉 HISTORIC MILESTONE: CONNECTED! (2026-02-08 Session 23)
+## 🏆 MILESTONE #2: First Chat Message! (2026-02-11 Session 24)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
 
-  🎉🎉🎉 FIRST SIMPLEX CONNECTION ON A MICROCONTROLLER! 🎉🎉🎉
+  🏆🏆🏆 FIRST CHAT MESSAGE FROM A MICROCONTROLLER! 🏆🏆🏆
 
   ┌─────────────────────────────────────────────────────────────────────────┐
   │                                                                         │
-  │   SimpleX App shows: "ESP32 — Connected"                               │
+  │   SimpleX App shows: "Hello from ESP32!"                               │
   │                                                                         │
-  │   The world's first native third-party implementation of the           │
-  │   SimpleX protocol has successfully established a complete             │
-  │   bidirectional connection.                                            │
+  │   The world's first chat message sent from a microcontroller           │
+  │   through the complete SimpleX encryption stack.                       │
   │                                                                         │
-  │   Date: February 8, 2026 ~17:36 UTC                                    │
+  │   Date: February 11, 2026                                              │
   │   Platform: ESP32-S3 (LilyGo T-Deck)                                   │
-  │   Protocol: SimpleX Messaging Protocol (SMP)                           │
-  │   Encryption: X3DH + Double Ratchet + X448 + AES-256-GCM               │
+  │   Stack: Double Ratchet → AgentMsgEnvelope → E2E → SEND → App         │
   │                                                                         │
   └─────────────────────────────────────────────────────────────────────────┘
 
@@ -36,87 +34,147 @@
 ## 🎯 Current Status
 
 ```
-COMPLETE CONNECTION FLOW:
-ESP32 ◄──► TLS 1.3 ◄──► SMP Server ◄──► SimpleX App ◄──► "CONNECTED" 🎉
-          ✅            ✅              ✅                 ✅
+COMMUNICATION FLOW:
+ESP32 ──► "Hello from ESP32!" ──► App ✅ WORKS!
+ESP32 ◄── App messages ◄── App ❌ BLOCKED (server empty)
 ```
 
 ---
 
-## ✅ What Works — EVERYTHING!
+## ✅ What Works — Send Direction
 
-| Layer | Component | Status | Session |
-|-------|-----------|--------|---------|
-| 0 | TLS 1.3 Handshake | ✅ | S1-3 |
-| 1 | SMP Transport (rcvDhSecret) | ✅ | S4-8 |
-| 2 | E2E Decrypt (e2eDhSecret + cmNonce) | ✅ | S18 |
-| 2.5 | unPad Layer | ✅ | S19 |
-| 3 | ClientMessage Parse | ✅ | S19 |
-| 4 | EncRatchetMessage Parse (dynamic KEM) | ✅ | S19, S22 |
-| 5 | Double Ratchet Header Decrypt | ✅ | S19, S22 |
-| 6 | Double Ratchet Body Decrypt | ✅ | S20, S22 |
-| 7 | ConnInfo Parse + Zstd | ✅ | S20 |
-| 8 | Peer Profile JSON | ✅ | S20 |
-| 9a | TLS Reconnect to Reply Queue | ✅ | S23 |
-| 9b | SUB Command (re-subscribe) | ✅ | S23 |
-| 9c | KEY Command (authorize sender) | ✅ | S23 |
-| 10 | HELLO (ESP32 → App on Q_A) | ✅ | S23 |
-| 11 | HELLO (App → ESP32 on Q_B) | ✅ | S23 |
-| **12** | **CON — "CONNECTED"** | **✅** | **S23** |
+| Component | Status | Session |
+|-----------|--------|---------|
+| TLS 1.3 + SMP | ✅ | S1-8 |
+| E2E Encryption | ✅ | S18 |
+| Double Ratchet | ✅ | S19-22 |
+| AgentMsgEnvelope | ✅ | S24 |
+| ChatMessage JSON | ✅ | S24 |
+| SEND Command | ✅ | S24 |
+| App Display | ✅ | S24 |
 
-**Result:** `"displayName": "cannatoshi"` on ESP32 + **CONNECTED** in App! 🎉
+**Result:** "Hello from ESP32!" displays in SimpleX App! 🏆
 
 ---
 
-## 📊 Session 23 — The Journey to CONNECTED
+## ❌ What's Blocked — Receive Direction
 
-### Phase 1: Codebase Analysis
-- Claude Code documented 4-layer model (SMP → Server Encrypt → E2E → Ratchet)
-- SMPQueueInfo wire format fully documented
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Q_B Ratchet Decrypt | ✅ | Tag 'I' ConnInfo works |
+| Q_B Listen Loop | ✅ | Connection alive |
+| Server Messages | ❌ | Zero messages for Q_B |
+| App → ESP32 | ❌ | App sends (1 checkmark) but not delivered |
 
-### Phase 2: Role Correction — Tag 'I' not 'D'!
-- **CRITICAL:** App sends Tag `'I'` (AgentConnInfo), NOT Tag `'D'`!
-- We send `'D'` (with Reply Queue), App sends `'I'` (profile only)
-- Session 22's assumption was WRONG
+**Root Cause (discovered late in session):** `subscribe_all_contacts()` SUBs on main `ssl`, but listen reads from `queue_conn.ssl`!
 
-### Phase 3: Handshake Flow Clarification
-- 7-step flow identified and verified
-- Legacy Path (PHConfirmation 'K') requires KEY + HELLO
-- Modern Path (PHEmpty '_') would skip HELLO
-
-### Phase 4: PrivHeader Identification
-- Log showed: `PrivHeader tag: 0x4B 'K' = PHConfirmation`
-- Confirms Legacy Path — KEY + HELLO needed!
-
-### Phase 5: KEY Command
-- TLS connection timed out during processing
-- Solution: Reconnect → SUB → KEY
-- Server responded: OK ✅
-
-### Phase 6: HELLO + CONNECTED!
-- ESP32 sends HELLO on Q_A
-- App sends HELLO on Q_B
-- **Both sides: CON → "CONNECTED"!** 🎉
+**Fix for Session 25:** Process Q_B in Main Receive Loop, or don't SUB Q_B in subscribe_all_contacts().
 
 ---
 
-## 📊 Complete 7-Step Handshake (Verified!)
+## 📊 Session 24 Achievements
+
+### 1. First Chat Message! 🏆
+
+```c
+// ChatMessage JSON format (required!)
+const char *msg = "{\"v\":\"1\",\"event\":\"x.msg.new\","
+                  "\"params\":{\"content\":{\"type\":\"text\","
+                  "\"text\":\"Hello from ESP32!\"}}}";
+```
+
+### 2. Session 23 Correction
 
 ```
-Step   Queue   Direction      Content                           Status
-──────────────────────────────────────────────────────────────────────────
-1.     —       App            NEW → Q_A, Invitation QR           ✅
-2a.    Q_A     ESP32→App      SKEY (Register Sender Auth)        ✅
-2b.    Q_A     ESP32→App      CONF Tag 'D' (Q_B + Profile)       ✅
-3.     —       App            processConf → CONF Event           ✅
-4.     —       App            LET/Accept Confirmation            ✅
-5a.    Q_A     App            KEY on Q_A (senderKey)             ✅
-5b.    Q_B     App→ESP32      SKEY on Q_B                        ✅
-5c.    Q_B     App→ESP32      Tag 'I' (App Profile)              ✅
-6a.    Q_B     ESP32          Reconnect + SUB + KEY              ✅
-6b.    Q_A     ESP32→App      HELLO                              ✅
-6c.    Q_B     App→ESP32      HELLO                              ✅
-7.     —       Both           CON — "CONNECTED" 🎉               ✅
+Session 23: "HELLO received on Q_B" → FALSE POSITIVE!
+Reality: Random 0x48 byte in Ratchet ciphertext matched 'H'
+Actual Q_B content: Tag 'I' ConnInfo (after full Ratchet decrypt)
+```
+
+### 3. ACK Protocol Documented
+
+```
+SMP Flow Control:
+  Server delivers MSG → blocks until ACK
+  Missing ACK = queue backs up, no further delivery
+  ACK is Recipient Command (rcv_private_auth_key)
+  ACK response: OK (empty) or MSG (next message)
+```
+
+### 4. PQ-Kyber Graceful Degradation
+
+```
+App sends: emHeaderLen=2346 (Post-Quantum Kyber)
+We send:   emHeaderLen=124 (pure DH, KEM Nothing)
+Result:    Both directions decrypt successfully!
+```
+
+### 5. Queue IDs Verified
+
+```
+Aschenputtel byte-for-byte comparison:
+  sndId    ✅ IDENTICAL
+  rcvId    ✅ IDENTICAL  
+  Server   ✅ IDENTICAL
+  keyHash  ✅ IDENTICAL
+  e2e_pub  ✅ IDENTICAL
+
+Conclusion: Queue IDs are NOT the problem.
+```
+
+---
+
+## 📐 Quick Reference - A_MSG Format (S24)
+
+```
+AgentMessage for A_MSG:
+Offset  Size   Field               Value
+──────────────────────────────────────────────────────────
+0       1      AgentMessage tag    'M' (0x4D)
+1       8      sndMsgId            Int64 BE (starts at 1)
+9       1      prevMsgHash len     0x00 (first) or 0x20
+10      0|32   prevMsgHash data    empty or SHA-256
+10|42   1      AMessage tag        'M' (0x4D) for A_MSG
+11|43   N      msgBody             ChatMessage JSON (Tail)
+```
+
+---
+
+## 📐 Quick Reference - ChatMessage JSON (S24)
+
+```json
+{
+  "v": "1",
+  "event": "x.msg.new",
+  "params": {
+    "content": {
+      "type": "text",
+      "text": "Hello from ESP32!"
+    }
+  }
+}
+```
+
+Event types: `x.msg.new`, `x.msg.update`, `x.msg.del`, `x.file`, `x.info`
+Content types: `text`, `file`, `image`, `voice`
+
+---
+
+## 📐 Quick Reference - ACK Protocol (S24)
+
+```
+ACK Wire Format:
+  "ACK " + [1B len][N bytes msgId]
+  Signed with: rcv_private_auth_key (Recipient Command)
+
+ACK Response:
+  "OK"      — Queue empty
+  "MSG ..." — Next message delivered immediately!
+
+Agent-Level Timing:
+  Confirmation  → ACK immediately (auto)
+  HELLO         → ACK immediately + Delete
+  A_MSG         → ACK deferred (app decides)
 ```
 
 ---
@@ -125,131 +183,24 @@ Step   Queue   Direction      Content                           Status
 
 **Total: 31 bugs found and fixed (ALL IN SESSIONS 4-22)**
 
-**🎉 Session 23: ZERO new bugs! The crypto was already correct!**
+**Sessions 23 & 24: ZERO new bugs — milestones achieved with solid crypto!**
 
-| Sessions | Bugs | Category |
-|----------|------|----------|
-| S4 | #1-8 | Wire format, length prefixes, KDF order |
-| S5 | #9 | wolfSSL X448 byte order |
-| S6 | #10-12 | SMPQueueInfo encoding |
-| S8 | #13-14 | AAD prefix, IV assignment |
-| S9 | #15-16 | HSalsa20, A_CRYPTO |
-| S10C | #17 | cmNonce vs msgId |
-| S12-18 | #18 | Reply Queue E2E (ONE LINE FIX!) |
-| S19-20 | #19 | header_key_recv overwritten |
-| S21 | #20-26 | HELLO format + v3 EncRatchetMessage |
-| S22 | #27-31 | E2E v3, KEM parser, NHK promotion |
-| **S23** | **ZERO** | **🎉 CONNECTED!** |
-
-**Lessons Learned: 95** (documented in BUG_TRACKER.md)
+**Lessons Learned: 110** (documented in BUG_TRACKER.md)
 
 ---
 
-## 📐 Quick Reference - Constants (Updated S23)
+## 📝 Key Learnings Session 24
 
-```c
-// Version Numbers
-#define AGENT_VERSION               7      // AgentConfirmation
-#define AGENT_MSG_VERSION           1      // AgentMessage (HELLO etc.)
-#define E2E_VERSION                 2
-#define RATCHET_VERSION             3      // Changed v2→v3 in S21!
-#define VERSION_MIN_CONFIRMATION    3      // Must match RATCHET_VERSION! S22
-
-// Header Sizes (DYNAMIC in v3+PQ!)
-#define EM_HEADER_SIZE_V2           123    // v2: 1-byte prefix
-#define EM_HEADER_SIZE_V3           124    // v3: 2-byte prefix
-// v3+PQ: ~2346 bytes (variable, calculate dynamically!)
-
-// Other Sizes
-#define MSG_HEADER_SIZE             88     // MsgHeader (padded, without PQ)
-#define RCAD_SIZE                   112    // Associated Data (rcAD)
-#define PAYLOAD_AAD_SIZE_V2         235    // rcAD + emHeader v2
-#define PAYLOAD_AAD_SIZE_V3         236    // rcAD + emHeader v3
-
-// Padding
-#define PADDING_CONNINFO            14832  // ConnInfo (Tag 'D' or 'I')
-#define PADDING_HELLO               15840  // HELLO / A_MSG (non-PQ)
-
-// SNTRUP761 Post-Quantum KEM (S22)
-#define SNTRUP761_PUBKEY_SIZE       1158
-#define SNTRUP761_CIPHERTEXT_SIZE   1039
-#define SNTRUP761_SECRET_SIZE       32
-```
-
----
-
-## 📐 Quick Reference - KEY Command (S23)
-
-```
-KEY Body: "KEY " + senderKey
-
-senderKey:
-  [1B len=0x2C] + [44B Ed25519 X.509 SPKI DER]
-
-Full body: "KEY " + 0x2C + peer_sender_auth_key[44]
-Total: 4 + 1 + 44 = 49 bytes
-
-Signed with: rcv_private_auth_key (OUR recipient private key!)
-This is a RECIPIENT command — we authorize senders on OUR queue.
-
-Server Response:
-  OK    → Sender authorized successfully
-  ERR   → Authorization failed
-```
-
----
-
-## 📐 Quick Reference - Roles (S23)
-
-```
-Role          Party    Creates          Sends Tag
-────────────────────────────────────────────────────────
-Accepting     ESP32    Reply Queue (B)  'D' (with Q_B)
-Initiating    App      Contact Queue    'I' (profile only)
-
-Bob (ESP32):
-  - Creates Reply Queue → sends in Tag 'D'
-  - Sends HELLO on Contact Queue (Q_A)
-  - Authorizes App with KEY command
-
-Alice (App):
-  - Creates Invitation → Contact Queue (Q_A)
-  - Sends Tag 'I' (profile only, no queue)
-  - Sends HELLO on Reply Queue (Q_B)
-```
-
----
-
-## 📐 Quick Reference - Legacy vs Modern Path (S23)
-
-```
-PHConfirmation 'K' (0x4B) → Legacy Path:
-  ✓ Requires KEY command on Reply Queue
-  ✓ Requires HELLO exchange (both directions)
-  ✓ This is what we use!
-
-PHEmpty '_' (0x5F) → Modern Path (senderCanSecure):
-  ✗ Only ACK, CON immediate
-  ✗ No HELLO needed
-  ✗ NOT what the App uses with us!
-
-Session 22's "No HELLO needed" theory was WRONG for Legacy Path!
-```
-
----
-
-## 📝 Key Learnings Session 23
-
-1. **Role clarity:** ESP32 = Bob (Accepting), App = Alice (Initiating)
-2. **Tag 'D' vs 'I':** We send 'D' (with Reply Queue), App sends 'I' (profile only)
-3. **Legacy Path:** PHConfirmation 'K' → KEY + HELLO required
-4. **KEY is Recipient Command:** Signed with rcv_private_auth_key
-5. **TLS timeout matters:** Reconnect before KEY command
-6. **Sequence critical:** KEY before HELLO
-7. **Reconnect sequence:** TLS → SUB → KEY
-8. **7-step handshake:** Exactly 7 steps for Legacy Path
-9. **CONNECTED needs BOTH HELLOs:** We send on Q_A, App sends on Q_B
-10. **Session 22 assumption was WRONG:** Legacy Path needs HELLO!
+1. **msgBody must be ChatMessage JSON** — Raw UTF-8 fails!
+2. **Session 23 "HELLO on Q_B" was FALSE POSITIVE** — Random byte match
+3. **SMP ACK is critical flow control** — Missing ACK blocks delivery
+4. **ACK is Recipient Command** — Signed with rcv_private_auth_key
+5. **Response multiplexing** — OK/MSG/END can interleave anytime
+6. **pending_msg buffer needed** — Catch MSG during ACK/SUB
+7. **PQ-Kyber graceful degradation works** — App sends 2346B headers
+8. **Scan-based > Parser-based** — Simple "find OK/MSG" wins
+9. **One checkmark ≠ delivered** — Server accepted, not delivered
+10. **App may not fully activate** — Shows "Connected" but Q_B empty
 
 ---
 
@@ -260,22 +211,39 @@ Session 22's "No HELLO needed" theory was WRONG for Legacy Path!
 | `01_SIMPLEX_PROTOCOL_INDEX.md` | Navigation index |
 | `02_SIMPLEX_STATUS.md` | This file - quick status |
 | `README.md` | Project overview |
-| `BUG_TRACKER.md` | All 31 bugs, 95 lessons |
+| `BUG_TRACKER.md` | All 31 bugs, 109 lessons |
 | `QUICK_REFERENCE.md` | Constants, wire formats |
-| `03-21_PART*.md` | Sessions 1-22 documentation |
-| `22_PART20_SESSION_23.md` | **🎉 CONNECTED!** |
+| `03-22_PART*.md` | Sessions 1-23 documentation |
+| `23_PART21_SESSION_24.md` | **🏆 First Chat Message!** |
 
 ---
 
-## 🎯 Next Steps (Post-Connection)
+## 🎯 Next Steps (Session 25)
 
-1. **Bidirectional Chat Messages** — Send and receive actual chat messages
-2. **Message Persistence** — Store messages on ESP32 flash
-3. **UI Integration** — Display on LilyGo T-Deck screen
-4. **Multiple Contacts** — Handle more than one connection
-5. **Reconnection Logic** — Handle connection drops gracefully
-6. **Post-Quantum Upgrade** — Implement SNTRUP761 KEM exchange
+### Phase 1: Code Refactoring
+```
+main.c from 2400 lines → ~150 lines
+Extract: msg_handler, agent_handler, chat, listen
+```
+
+### Phase 2: Bidirectional Bug Fix
+```
+Haskell analysis:
+  - What does App validate?
+  - What triggers full activation?
+  - What causes silent discard?
+  
+(Note: Late-session discovery suggests socket routing issue)
+```
+
+### Phase 3: Full Bidirectional
+```
+Third milestone: Receive messages from App
+  - Fix format/socket issue
+  - Receive A_MSG on Q_B
+  - Display on T-Deck
+```
 
 ---
 
-*Status updated: 2026-02-08 Session 23 — 🎉 FIRST SIMPLEX CONNECTION ON A MICROCONTROLLER!*
+*Status updated: 2026-02-13 Session 24 — 🏆 FIRST CHAT MESSAGE FROM A MICROCONTROLLER!*

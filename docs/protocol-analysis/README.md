@@ -14,47 +14,50 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
   🎉🎉🎉 FIRST SIMPLEX CONNECTION ON A MICROCONTROLLER! 🎉🎉🎉
 
   SimpleX App shows: "ESP32 — Connected"
-
-  Platform: ESP32-S3 (LilyGo T-Deck)
   Date: February 8, 2026 ~17:36 UTC
-  
-  The world's first native third-party implementation of the
-  SimpleX protocol has successfully established a complete
-  bidirectional connection.
 
 ═══════════════════════════════════════════════════════════════════════════════
 ```
 
-## Current Status (2026-02-08 Session 23)
+## 🏆 MILESTONE #2: First Chat Message! (2026-02-11 Session 24)
 
 ```
-SESSION 23 - 🎉 CONNECTED! HISTORIC MILESTONE!
-================================================
+═══════════════════════════════════════════════════════════════════════════════
 
-ZERO NEW BUGS! All 31 previous bugs were sufficient!
+  🏆🏆🏆 FIRST CHAT MESSAGE FROM A MICROCONTROLLER! 🏆🏆🏆
 
-Complete 7-Step Handshake Verified:
-  1. App: NEW → Q_A, Invitation                       ✅
-  2. ESP32→App: SKEY + CONF Tag 'D' (Q_B + Profile)   ✅
-  3. App: processConf → CONF Event                    ✅
-  4. App: LET/Accept Confirmation                     ✅
-  5. App→ESP32: KEY + SKEY + Tag 'I'                  ✅
-  6. ESP32: Reconnect + SUB + KEY + HELLO             ✅
-  7. Both: CON → "CONNECTED" 🎉                       ✅
+  SimpleX App shows: "Hello from ESP32!"
+  Date: February 11, 2026
+  Stack: Double Ratchet → AgentMsgEnvelope → E2E → SEND → App
 
-Key Discoveries:
-  - ESP32 = Bob (Accepting), App = Alice (Initiating)
-  - We send Tag 'D' (Reply Queue), App sends Tag 'I' (profile only)
-  - Legacy Path (PHConfirmation 'K') requires KEY + HELLO
-  - Session 22's "No HELLO" theory was WRONG for Legacy Path
+═══════════════════════════════════════════════════════════════════════════════
+```
 
-ALL LAYERS COMPLETE:
-  ✅ Layer 0-8: Receive Chain (TLS → Profile JSON)
-  ✅ Layer 9: Reconnect + SUB + KEY
-  ✅ Layer 10-11: HELLO Exchange
-  ✅ Layer 12: CON — "CONNECTED"
+## Current Status (2026-02-13 Session 24)
 
-NEXT: Bidirectional Chat Messages
+```
+SESSION 24 - 🏆 FIRST CHAT MESSAGE! MILESTONE #2!
+===================================================
+
+"Hello from ESP32!" displayed in SimpleX App!
+
+Session 24 Achievements:
+  - ZERO new bugs (31 total remain sufficient!)
+  - First A_MSG chat message sent and displayed
+  - ChatMessage JSON format discovered
+  - Q_B Ratchet decrypt working (PQ-Kyber graceful degradation)
+  - Session 23 correction: "HELLO on Q_B" was false positive
+  - ACK protocol fully documented and implemented
+  - pending_msg buffer for response multiplexing
+  - Aschenputtel verified all Queue IDs correct
+
+Open Bug:
+  - App doesn't fully activate connection
+  - ESP32 → App works (message displays)
+  - App → ESP32 blocked (server has zero messages for Q_B)
+  - Hypothesis: Format error in AgentConfirmation or HELLO
+
+NEXT: Session 25 — Refactoring + Bidirectional Bug Fix
 ```
 
 ---
@@ -101,11 +104,12 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [19_PART17_SESSION_20.md](19_PART17_SESSION_20.md) | ~600 | Body Decrypt SUCCESS! Peer Profile! |
 | [20_PART18_SESSION_21.md](20_PART18_SESSION_21.md) | ~700 | v3 Format + HELLO Debugging |
 | [21_PART19_SESSION_22.md](21_PART19_SESSION_22.md) | ~650 | Reply Queue Flow Discovery |
-| [22_PART20_SESSION_23.md](22_PART20_SESSION_23.md) | ~700 | **🎉 CONNECTED! Historic Milestone!** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1900 | Complete bug documentation (31 bugs, 95 lessons) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1100 | Constants, wire formats, verified values |
+| [22_PART20_SESSION_23.md](22_PART20_SESSION_23.md) | ~700 | 🎉 CONNECTED! Historic Milestone! |
+| [23_PART21_SESSION_24.md](23_PART21_SESSION_24.md) | ~800 | **🏆 First Chat Message! Milestone #2!** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~2000 | Complete bug documentation (31 bugs, 109 lessons) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1200 | Constants, wire formats, verified values |
 
-**Total: ~32,000+ lines of detailed protocol analysis**
+**Total: ~34,000+ lines of detailed protocol analysis**
 
 ---
 
@@ -134,6 +138,64 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | 21 | Feb 6-7 | v3 Format + HELLO Debugging (7 bugs!) | #20-#26 |
 | **22** | **Feb 7** | **Reply Queue Flow Discovery (5 bugs!)** | **#27-#31** |
 | **23** | **Feb 7-8** | **🎉 CONNECTED! Historic Milestone!** | **ZERO new!** |
+| **24** | **Feb 11-13** | **🏆 First Chat Message! Milestone #2!** | **ZERO new!** |
+
+---
+
+## Session 24 Key Achievements — 🏆 First Chat Message!
+
+### 1. ZERO New Bugs — Again!
+
+All 31 bugs from Sessions 4-22 remain sufficient. Session 23 and 24 achieved milestones with ZERO new bugs!
+
+### 2. First Chat Message from Microcontroller
+
+```
+"Hello from ESP32!" displayed in SimpleX App!
+
+Required: ChatMessage JSON format (not raw UTF-8)
+  {"v":"1","event":"x.msg.new","params":{"content":{"type":"text","text":"Hello from ESP32!"}}}
+```
+
+### 3. Session 23 Correction
+
+```
+Session 23: "HELLO received on Q_B" → FALSE POSITIVE!
+Reality: Random 0x48 byte in Ratchet ciphertext matched 'H'
+Actual: Tag 'I' ConnInfo (after implementing Q_B Ratchet decrypt)
+```
+
+### 4. ACK Protocol Documented
+
+```
+SMP Flow Control:
+  - Server delivers MSG → blocks until ACK
+  - Missing ACK = queue backs up, no further delivery
+  - ACK is Recipient Command (signed with rcv_private_auth_key)
+  - ACK response can be OK (empty) or MSG (next message)
+```
+
+### 5. PQ-Kyber Graceful Degradation Verified
+
+```
+App sends: emHeaderLen=2346 (Post-Quantum Kyber)
+Our sends: emHeaderLen=124 (pure DH, KEM Nothing)
+Result: Both directions work! Graceful degradation successful.
+```
+
+### 6. Open Bug: Bidirectional Blocked
+
+```
+Symptom:
+  - ESP32 → App: Works! Message displays.
+  - App → ESP32: Blocked. Server has zero messages for Q_B.
+
+Hypothesis:
+  Format error in AgentConfirmation or HELLO causes
+  App to not fully activate the connection.
+
+Next: Haskell source analysis in Session 25
+```
 
 ---
 
