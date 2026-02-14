@@ -90,6 +90,44 @@ bool send_chat_message(
 );
 
 /**
+ * Send a delivery receipt (A_RCVD) to peer.
+ * Auftrag 49b: Enables double-check marks in SimpleX app.
+ *
+ * Uses same encrypt chain as A_MSG but with:
+ *   - Receipt payload ('V' tag) instead of message ('M' tag)
+ *   - Silent flag (no push notification)
+ *   - CorrId = 'R'
+ *
+ * @param ssl               TLS context for peer connection
+ * @param block             Work buffer (SMP_BLOCK_SIZE)
+ * @param session_id        Current session ID (32 bytes)
+ * @param peer_queue_id     Peer's queue ID
+ * @param peer_queue_id_len Length of peer's queue ID
+ * @param peer_dh_public    Peer's X25519 DH public key (32 bytes)
+ * @param our_dh_private    Our X25519 DH private key (32 bytes)
+ * @param our_dh_public     Our X25519 DH public key (32 bytes)
+ * @param ratchet           Ratchet state for encryption
+ * @param snd_auth_private  Ed25519 private key for signing SEND (64 bytes)
+ * @param peer_snd_msg_id   The sndMsgId from the received message
+ * @param msg_hash          SHA256 hash of the decrypted body (32 bytes)
+ * @return true on success
+ */
+bool send_receipt_message(
+    mbedtls_ssl_context *ssl,
+    uint8_t *block,
+    const uint8_t *session_id,
+    const uint8_t *peer_queue_id,
+    int peer_queue_id_len,
+    const uint8_t *peer_dh_public,
+    const uint8_t *our_dh_private,
+    const uint8_t *our_dh_public,
+    ratchet_state_t *ratchet,
+    const uint8_t *snd_auth_private,
+    uint64_t peer_snd_msg_id,
+    const uint8_t *msg_hash
+);
+
+/**
  * Parse a decrypted message to check if it's HELLO.
  *
  * @param data       Decrypted message data
