@@ -13,54 +13,18 @@ message(STATUS "========================================")
 message(STATUS "  SimpleGo - Building for: ${SIMPLEGO_DEVICE}")
 message(STATUS "========================================")
 
-# Core protocol sources (device-independent)
-set(CORE_SOURCES
-    "main.c"
-    "smp_ack.c"
-    "smp_agent.c"
-    "smp_contacts.c"
-    "smp_e2e.c"
-    "simplex_crypto.c"
-    "smp_crypto.c"
-    "smp_globals.c"
-    "smp_network.c"
-    "smp_parser.c"
-    "smp_peer.c"
-    "smp_queue.c"
-    "smp_utils.c"
-    "smp_wifi.c"
-    "smp_x448.c"
-    "smp_ratchet.c"
-    "smp_handshake.c"
-    "smp_storage.c"
-)
-
-# UI sources (device-independent)
-set(UI_SOURCES
-    "ui/ui_manager.c"
-    "ui/ui_theme.c"
-    "ui/screens/ui_splash.c"
-    "ui/screens/ui_main.c"
-    "ui/screens/ui_chat.c"
-    "ui/screens/ui_contacts.c"
-    "ui/screens/ui_connect.c"
-    "ui/screens/ui_settings.c"
-    "ui/screens/ui_developer.c"
-)
-
-# HAL implementation sources (device-specific)
-file(GLOB HAL_IMPL_SOURCES "${DEVICE_DIR}/hal_impl/*.c")
-
-# Combine all sources
-set(ALL_SOURCES
-    ${CORE_SOURCES}
-    ${UI_SOURCES}
-    ${HAL_IMPL_SOURCES}
-)
-
 idf_component_register(
-    SRCS
-        ${ALL_SOURCES}
+    SRC_DIRS
+        "."
+        "protocol"
+        "crypto"
+        "net"
+        "state"
+        "util"
+        "ui"
+        "ui/screens"
+        "ui/widgets"
+        "${DEVICE_DIR}/hal_impl"
     INCLUDE_DIRS
         "include"
         "hal"
@@ -89,8 +53,3 @@ idf_component_register(
         fatfs
         vfs
 )
-
-# Log what we found
-message(STATUS "Core sources: ${CORE_SOURCES}")
-message(STATUS "UI sources: ${UI_SOURCES}")
-message(STATUS "HAL sources: ${HAL_IMPL_SOURCES}")

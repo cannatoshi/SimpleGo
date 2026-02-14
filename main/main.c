@@ -67,6 +67,7 @@ extern bool queue_has_pending_msg(int *out_len);
 #include "tdeck_display.h"
 #include "tdeck_lvgl.h"
 #include "tdeck_touch.h"
+#include "tdeck_keyboard.h"  // Auftrag 50d: T-Deck keyboard
 
 // UI System
 #include "ui_manager.h"
@@ -77,6 +78,51 @@ static const char *TAG = "SMP";
 
 // Auftrag 50b: Session restoration flag (set in app_main, read in smp_connect)
 static bool session_restored = false;
+
+// Auftrag 50d: Keyboard → SMP thread communication via FreeRTOS Queue
+#include "freertos/queue.h"
+static QueueHandle_t kbd_msg_queue = NULL;   // char[256] messages from kbd task
+
+static void keyboard_task(void *arg)
+{
+    (void)arg;
+    static char buf[256] = {0};
+    int pos = 0;
+    
+    ESP_LOGI("KBD_TASK", "⌨️ Keyboard task started (polling every 50ms)");
+    
+    while (1) {
+        char key = tdeck_keyboard_read();
+        
+        if (key != 0) {
+            if (key == '\r' || key == '\n') {
+                // Enter → send buffered message
+                if (pos > 0) {
+                    buf[pos] = '\0';
+                    ESP_LOGI("KBD_TASK", "⌨️ ENTER → \"%s\"", buf);
+                    // Send copy to main loop via queue (don't block)
+                    xQueueSend(kbd_msg_queue, buf, 0);
+                    pos = 0;
+                    buf[0] = '\0';
+                }
+            } else if (key == 0x08) {
+                // Backspace
+                if (pos > 0) {
+                    pos--;
+                    buf[pos] = '\0';
+                }
+                ESP_LOGI("KBD_TASK", "⌨️ Buffer: \"%s\"", buf);
+            } else if (key >= 0x20 && key < 0x7F && pos < 254) {
+                // Printable character
+                buf[pos++] = key;
+                buf[pos] = '\0';
+                ESP_LOGI("KBD_TASK", "⌨️ Buffer: \"%s\"", buf);
+            }
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
 
 // ============== CONFIG ==============
 #define SMP_HOST      "smp1.simplexonflux.com"
@@ -251,7 +297,25 @@ static void smp_connect(void) {
     ESP_LOGI(TAG, "");
     
     while (1) {
-        content_len = smp_read_block(&ssl, block, 60000);
+        // Auftrag 50d: Check keyboard queue (non-blocking)
+        char kbd_msg[256];
+        while (kbd_msg_queue && xQueueReceive(kbd_msg_queue, kbd_msg, 0) == pdTRUE) {
+            ESP_LOGI(TAG, "⌨️ Sending: \"%s\"", kbd_msg);
+            contact_t *msg_contact = &contacts_db.contacts[0];
+            if (peer_send_chat_message(msg_contact, kbd_msg)) {
+                ESP_LOGI(TAG, "   ✅ Keyboard message sent!");
+            } else {
+                ESP_LOGE(TAG, "   ❌ Keyboard message send failed!");
+            }
+        }
+
+        content_len = smp_read_block(&ssl, block, 5000);
+        
+        if (content_len == -2) {
+            // Timeout — loop back to poll keyboard
+            continue;
+        }
+        
         ESP_LOGW(TAG, "47b: MAIN LOOP received block, content_len=%d", content_len);
         
         // 47e: Dump first 64 bytes of EVERY received block
@@ -263,11 +327,6 @@ static void smp_connect(void) {
                     hx += sprintf(&hex[hx], "%02x ", block[i+j]);
                 ESP_LOGW(TAG, "  +%04d: %s", i, hex);
             }
-        }
-        
-        if (content_len == -2) {
-            ESP_LOGI(TAG, "   ... still waiting ...");
-            continue;
         }
         
         if (content_len < 0) {
@@ -611,8 +670,21 @@ void app_main(void) {
                 ESP_LOGW(TAG, "Touch init failed - continuing without touch");
             }
             
+            // Auftrag 50d: Keyboard init (I2C bus shared with touch)
+            ESP_LOGI(TAG, "Initializing Keyboard...");
+            ret = tdeck_keyboard_init();
+            if (ret == ESP_OK) {
+                ESP_LOGI(TAG, "Keyboard input enabled! ⌨️");
+                // Create message queue + background polling task
+                kbd_msg_queue = xQueueCreate(4, 256);  // 4 messages, 256 bytes each
+                xTaskCreate(keyboard_task, "kbd_task", 4096, NULL, 5, NULL);
+            } else {
+                ESP_LOGW(TAG, "Keyboard init failed - continuing without keyboard");
+            }
+
             ESP_LOGI(TAG, "Initializing UI...");
             ui_manager_init();
+            
             tdeck_lvgl_start();
             
             vTaskDelay(pdMS_TO_TICKS(50));
