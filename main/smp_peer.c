@@ -24,6 +24,7 @@
 #include "smp_ratchet.h"   // NEU
 #include "smp_queue.h"     // NEU: Für unsere Queue
 #include "smp_handshake.h"
+#include "smp_storage.h"   // Auftrag 50c: NVS persistence
 
 static const char *TAG = "SMP_PEER";
 
@@ -728,6 +729,9 @@ bool send_agent_confirmation(contact_t *contact) {
                     ESP_LOGW(TAG, "   ⚠️  No peer DH key available, skipping HELLO");
                 }
 
+                // Auftrag 50c: Persist peer state after successful handshake
+                peer_save_state();
+
                 free(transmission);
                 free(send_body);
                 free(client_msg);
@@ -909,4 +913,79 @@ bool peer_send_receipt(contact_t *contact, uint64_t peer_snd_msg_id, const uint8
 
     free(block);
     return ok;
+}
+
+// ============== Persistence (Auftrag 50c) ==============
+
+bool peer_save_state(void) {
+    if (!pending_peer.valid) {
+        ESP_LOGW(TAG, "peer_save_state: pending_peer not valid, skipping");
+        return false;
+    }
+
+    esp_err_t ret = smp_storage_save_blob_sync("peer_00", &pending_peer, sizeof(peer_queue_t));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ peer_save_state FAILED: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    ESP_LOGI(TAG, "💾 Peer state saved: 'peer_00' (%zu bytes)", sizeof(peer_queue_t));
+    ESP_LOGI(TAG, "   host: %s:%d, queueId: %02x%02x%02x%02x... (%d)",
+             pending_peer.host, pending_peer.port,
+             pending_peer.queue_id[0], pending_peer.queue_id[1],
+             pending_peer.queue_id[2], pending_peer.queue_id[3],
+             pending_peer.queue_id_len);
+    return true;
+}
+
+bool peer_load_state(void) {
+    if (!smp_storage_exists("peer_00")) {
+        ESP_LOGI(TAG, "peer_load_state: 'peer_00' not found — no peer info");
+        return false;
+    }
+
+    size_t loaded_len = 0;
+    peer_queue_t loaded;
+    esp_err_t ret = smp_storage_load_blob("peer_00", &loaded, sizeof(peer_queue_t), &loaded_len);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ peer_load_state FAILED: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    if (loaded_len != sizeof(peer_queue_t)) {
+        ESP_LOGE(TAG, "❌ peer_load_state: size mismatch! got %zu, expected %zu",
+                 loaded_len, sizeof(peer_queue_t));
+        return false;
+    }
+    if (!loaded.valid) {
+        ESP_LOGW(TAG, "❌ peer_load_state: loaded state has valid=false!");
+        return false;
+    }
+    if (loaded.host[0] == '\0' || loaded.port == 0) {
+        ESP_LOGW(TAG, "❌ peer_load_state: host or port empty!");
+        return false;
+    }
+    if (loaded.queue_id_len <= 0 || loaded.queue_id_len > 32) {
+        ESP_LOGW(TAG, "❌ peer_load_state: invalid queue_id_len=%d", loaded.queue_id_len);
+        return false;
+    }
+
+    // Accept loaded state
+    memcpy(&pending_peer, &loaded, sizeof(peer_queue_t));
+
+    // Set peer_state reconnect info so send functions can reconnect
+    strncpy(peer_state.last_host, pending_peer.host, sizeof(peer_state.last_host) - 1);
+    peer_state.last_host[sizeof(peer_state.last_host) - 1] = '\0';
+    peer_state.last_port = pending_peer.port;
+
+    ESP_LOGI(TAG, "📂 Peer state restored: 'peer_00' (%zu bytes)", loaded_len);
+    ESP_LOGI(TAG, "   host: %s:%d, queueId: %02x%02x%02x%02x... (%d)",
+             pending_peer.host, pending_peer.port,
+             pending_peer.queue_id[0], pending_peer.queue_id[1],
+             pending_peer.queue_id[2], pending_peer.queue_id[3],
+             pending_peer.queue_id_len);
+    ESP_LOGI(TAG, "   dh: %s, e2e: %s",
+             pending_peer.has_dh ? "✅" : "❌",
+             pending_peer.has_e2e ? "✅" : "❌");
+    return true;
 }

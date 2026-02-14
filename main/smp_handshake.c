@@ -26,6 +26,7 @@
 #include "esp_heap_caps.h"
 #include "esp_random.h"
 #include "mbedtls/sha256.h"
+#include "smp_storage.h"   // Auftrag 50d: NVS persistence
 
 static const char *TAG = "SMP_HAND";
 
@@ -597,6 +598,9 @@ bool send_hello_message(
             // Update prev_msg_hash for next message
             mbedtls_sha256(hello_plain, hello_plain_len, handshake_state.prev_msg_hash, 0);
             
+            // Auftrag 50d: Persist msg_id + prev_msg_hash
+            handshake_save_state();
+            
             return true;
         }
     }
@@ -842,6 +846,9 @@ static bool encrypt_and_send_agent_msg(
             
             // Update prev_msg_hash for next message
             mbedtls_sha256(msg_plain, msg_plain_len, handshake_state.prev_msg_hash, 0);
+            
+            // Auftrag 50d: Persist msg_id + prev_msg_hash (Evgeny's Rule: before next send!)
+            handshake_save_state();
             
             return true;
         }
@@ -1166,4 +1173,60 @@ bool is_connected(void) {
 
 void reset_handshake_state(void) {
     memset(&handshake_state, 0, sizeof(handshake_state));
+}
+
+// ============== Persistence (Auftrag 50d) ==============
+
+// Compact struct for NVS — only the fields needed after reboot
+typedef struct {
+    uint64_t msg_id;
+    uint8_t prev_msg_hash[32];
+    uint8_t valid;  // 1 = valid
+} handshake_persist_t;
+
+bool handshake_save_state(void) {
+    handshake_persist_t data;
+    data.msg_id = handshake_state.msg_id;
+    memcpy(data.prev_msg_hash, handshake_state.prev_msg_hash, 32);
+    data.valid = 1;
+
+    esp_err_t ret = smp_storage_save_blob_sync("hand_00", &data, sizeof(data));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ handshake_save_state FAILED: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    ESP_LOGI(TAG, "💾 Handshake state saved: msg_id=%llu, hash=%02x%02x%02x%02x...",
+             (unsigned long long)data.msg_id,
+             data.prev_msg_hash[0], data.prev_msg_hash[1],
+             data.prev_msg_hash[2], data.prev_msg_hash[3]);
+    return true;
+}
+
+bool handshake_load_state(void) {
+    if (!smp_storage_exists("hand_00")) {
+        ESP_LOGI(TAG, "handshake_load_state: 'hand_00' not found");
+        return false;
+    }
+
+    handshake_persist_t data;
+    size_t loaded_len = 0;
+    esp_err_t ret = smp_storage_load_blob("hand_00", &data, sizeof(data), &loaded_len);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ handshake_load_state FAILED: %s", esp_err_to_name(ret));
+        return false;
+    }
+    if (loaded_len != sizeof(data) || !data.valid) {
+        ESP_LOGW(TAG, "❌ handshake_load_state: invalid (len=%zu, valid=%d)", loaded_len, data.valid);
+        return false;
+    }
+
+    handshake_state.msg_id = data.msg_id;
+    memcpy(handshake_state.prev_msg_hash, data.prev_msg_hash, 32);
+
+    ESP_LOGI(TAG, "📂 Handshake state restored: msg_id=%llu, hash=%02x%02x%02x%02x...",
+             (unsigned long long)data.msg_id,
+             data.prev_msg_hash[0], data.prev_msg_hash[1],
+             data.prev_msg_hash[2], data.prev_msg_hash[3]);
+    return true;
 }

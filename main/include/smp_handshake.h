@@ -178,4 +178,23 @@ bool is_hello_received(void);
 bool is_connected(void);
 void reset_handshake_state(void);
 
+// ============== Persistence (Auftrag 50d) ==============
+
+/**
+ * Save handshake send-state (msg_id + prev_msg_hash) to NVS.
+ * NVS key: "hand_00" (contact 0, expandable later).
+ * Must be called after every successful SEND (Evgeny's Rule).
+ *
+ * @return true on success
+ */
+bool handshake_save_state(void);
+
+/**
+ * Load handshake send-state from NVS.
+ * Restores msg_id and prev_msg_hash so next send has correct sequence.
+ *
+ * @return true on success
+ */
+bool handshake_load_state(void);
+
 #endif // SMP_HANDSHAKE_H

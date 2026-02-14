@@ -60,6 +60,7 @@ extern int queue_raw_tls_read(uint8_t *buf, int buf_size, int timeout_ms);
 extern bool queue_has_pending_msg(int *out_len);
 #include "smp_x448.h"
 #include "smp_queue.h"
+#include "smp_handshake.h"  // Auftrag 50d: handshake_load_state
 #include "simplex_crypto.h"
 
 // T-Deck Display Driver
@@ -372,12 +373,6 @@ static void smp_connect(void) {
 
                 // === Post-Confirmation: KEY + HELLO + Read Reply (42d) ===
                 if (has_peer_sender_auth) {
-                    // Auftrag 50b: Skip KEY+HELLO if session already established
-                    if (session_restored) {
-                        ESP_LOGW(TAG, "⚠️ 50b: Skipping KEY+HELLO — session already restored");
-                        goto skip_42d;
-                    }
-
                     ESP_LOGI(TAG, "   Reconnecting to Reply Queue for KEY...");
 
                     if (!queue_reconnect()) {
@@ -646,10 +641,14 @@ void app_main(void) {
 
         bool ratchet_ok = ratchet_load_state(0);
         bool queue_ok = queue_load_credentials();
+        bool peer_ok = peer_load_state();
+        bool hand_ok = handshake_load_state();
 
         if (ratchet_ok && queue_ok) {
             session_restored = true;
-            ESP_LOGI(TAG, "✅ Session restored! Skipping queue creation.");
+            ESP_LOGI(TAG, "✅ Session restored! Skipping queue creation. (peer=%s, hand=%s)",
+                     peer_ok ? "✅" : "⚠️",
+                     hand_ok ? "✅" : "⚠️");
         } else {
             ESP_LOGW(TAG, "⚠️ Partial restore failed (ratchet=%d, queue=%d) — fresh start",
                      ratchet_ok, queue_ok);
