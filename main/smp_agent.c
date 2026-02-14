@@ -16,6 +16,8 @@
 #include "esp_log.h"
 #include "mbedtls/gcm.h"
 #include "smp_ratchet.h"
+#include "smp_peer.h"
+#include "mbedtls/sha256.h"
 #include "zstd.h"
 
 static const char *TAG = "SMP_AGENT";
@@ -545,6 +547,37 @@ static bool handle_empty(const uint8_t *client_msg, uint16_t original_len,
         if (ratchet_decrypt_message(erm, erm_len, 0, &body, &body_len)) {
             ESP_LOGD(TAG, "Ratchet decrypt OK (%zu bytes)", body_len);
             extract_chat_text(body, body_len);
+            
+            // Auftrag 49b: Trigger delivery receipt for chat messages
+            // Parse peer's sndMsgId and send receipt for ✓✓
+            if (body_len >= 11 && body[0] == 'M') {
+                // Parse peer_snd_msg_id from bytes [1-8] (Int64 BE)
+                uint64_t peer_snd_msg_id = 0;
+                for (int i = 1; i <= 8; i++) {
+                    peer_snd_msg_id = (peer_snd_msg_id << 8) | body[i];
+                }
+                
+                // Check inner tag: only send receipt for actual chat messages ('M'), not HELLO ('H')
+                uint8_t pmh_len = body[9];
+                int inner_off = 10 + pmh_len;
+                if (inner_off < (int)body_len && body[inner_off] == 'M') {
+                    // Compute SHA256 hash of the decrypted body
+                    uint8_t msg_hash[32];
+                    mbedtls_sha256(body, body_len, msg_hash, 0);
+                    
+                    ESP_LOGI(TAG, "📬 Receipt data: peer_sndMsgId=%llu, hash=%02x%02x%02x%02x...",
+                             (unsigned long long)peer_snd_msg_id,
+                             msg_hash[0], msg_hash[1], msg_hash[2], msg_hash[3]);
+                    
+                    // Send receipt (reconnects if needed)
+                    if (contact) {
+                        peer_send_receipt(contact, peer_snd_msg_id, msg_hash);
+                    } else {
+                        ESP_LOGW(TAG, "⚠️  Cannot send receipt: contact is NULL");
+                    }
+                }
+            }
+            
             free(body);
             return true;
         }

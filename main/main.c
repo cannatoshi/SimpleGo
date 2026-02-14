@@ -352,8 +352,9 @@ static void smp_connect(void) {
                     &e2e_plain, &e2e_plain_len);
 
                 if (e2e_ret == 0 && e2e_plain) {
-                    smp_agent_process_message(e2e_plain, e2e_plain_len, NULL,
-                                               peer_sender_auth_key, &has_peer_sender_auth);
+                    smp_agent_process_message(e2e_plain, e2e_plain_len,
+                           &contacts_db.contacts[0],
+                           peer_sender_auth_key, &has_peer_sender_auth);
                     free(e2e_plain);
                 }
 
@@ -432,8 +433,9 @@ static void smp_connect(void) {
                                 // Dummy params — auth key already extracted above
                                 uint8_t dummy_key[44];
                                 bool dummy_auth = false;
-                                smp_agent_process_message(rq_plain, rq_plain_len, NULL,
-                                                           dummy_key, &dummy_auth);
+                                smp_agent_process_message(rq_plain, rq_plain_len,
+                                                            &contacts_db.contacts[0],
+                                                            dummy_key, &dummy_auth);
                                 free(rq_plain);
                             }
 
