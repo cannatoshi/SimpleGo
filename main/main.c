@@ -53,6 +53,7 @@
 #include "smp_e2e.h"
 #include "smp_agent.h"
 #include "smp_wifi.h"
+#include "smp_storage.h"
 
 extern bool peer_send_hello(contact_t *contact);
 extern int queue_raw_tls_read(uint8_t *buf, int buf_size, int timeout_ms);
@@ -72,6 +73,9 @@ extern bool queue_has_pending_msg(int *out_len);
 #include "ui_theme.h"
 
 static const char *TAG = "SMP";
+
+// Auftrag 50b: Session restoration flag (set in app_main, read in smp_connect)
+static bool session_restored = false;
 
 // ============== CONFIG ==============
 #define SMP_HOST      "smp1.simplexonflux.com"
@@ -197,13 +201,21 @@ static void smp_connect(void) {
     // ========== Step 4: Load or Create Contacts ==========
     ESP_LOGI(TAG, "[4/5] Loading contacts...");
     
-    // Fresh start for testing - comment out in production!
-    ESP_LOGW(TAG, "      Clearing old contacts for fresh test...");
-    clear_all_contacts();
+    if (!session_restored) {
+        // Fresh start for testing - comment out in production!
+        ESP_LOGW(TAG, "      Clearing old contacts for fresh test...");
+        clear_all_contacts();
+    } else {
+        ESP_LOGI(TAG, "      Session restored — keeping persisted contacts");
+    }
     
     load_contacts_from_nvs();
     
     if (contacts_db.num_contacts == 0) {
+        if (session_restored) {
+            ESP_LOGE(TAG, "      ⚠️ Session restored but no contacts found! Falling back to fresh start...");
+            session_restored = false;
+        }
         ESP_LOGI(TAG, "      No contacts found - creating 'ESP32'...");
         int idx = add_contact(&ssl, block, session_id, "ESP32");
         if (idx < 0) {
@@ -360,6 +372,12 @@ static void smp_connect(void) {
 
                 // === Post-Confirmation: KEY + HELLO + Read Reply (42d) ===
                 if (has_peer_sender_auth) {
+                    // Auftrag 50b: Skip KEY+HELLO if session already established
+                    if (session_restored) {
+                        ESP_LOGW(TAG, "⚠️ 50b: Skipping KEY+HELLO — session already restored");
+                        goto skip_42d;
+                    }
+
                     ESP_LOGI(TAG, "   Reconnecting to Reply Queue for KEY...");
 
                     if (!queue_reconnect()) {
@@ -573,6 +591,11 @@ void app_main(void) {
     }
     ESP_ERROR_CHECK(ret);
 
+    // Storage Phase 1: NVS only (before display, no SPI conflict)
+    smp_storage_init();
+    smp_storage_print_info();
+    smp_storage_self_test();
+
     // Display + LVGL Init
     ESP_LOGI(TAG, "Initializing Display...");
     ret = tdeck_display_init();
@@ -602,6 +625,9 @@ void app_main(void) {
         }
     }
 
+    // Storage Phase 2: SD card (after display owns SPI bus)
+    smp_storage_init_sd();
+
     smp_wifi_init();
 
     ESP_LOGI(TAG, "Waiting for WiFi...");
@@ -610,21 +636,47 @@ void app_main(void) {
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
 
-    // Create Reply Queue
-    ESP_LOGI(TAG, "Creating reply queue on %s:%d...", SMP_HOST, SMP_PORT);
-    
-    if (!queue_create(SMP_HOST, SMP_PORT)) {
-        ESP_LOGE(TAG, "Failed to create reply queue!");
-        ESP_LOGW(TAG, "  Continuing without reply queue...");
+    // ========== Auftrag 50b: Session Restoration or Fresh Start ==========
+    if (smp_storage_exists("rat_00") && smp_storage_exists("queue_our")) {
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
+        ESP_LOGI(TAG, "║  📂 RESTORING PREVIOUS SESSION                               ║");
+        ESP_LOGI(TAG, "╚══════════════════════════════════════════════════════════════╝");
+        ESP_LOGI(TAG, "");
+
+        bool ratchet_ok = ratchet_load_state(0);
+        bool queue_ok = queue_load_credentials();
+
+        if (ratchet_ok && queue_ok) {
+            session_restored = true;
+            ESP_LOGI(TAG, "✅ Session restored! Skipping queue creation.");
+        } else {
+            ESP_LOGW(TAG, "⚠️ Partial restore failed (ratchet=%d, queue=%d) — fresh start",
+                     ratchet_ok, queue_ok);
+            session_restored = false;
+        }
     } else {
-        ESP_LOGI(TAG, "Reply queue created! sndId: %02x%02x%02x%02x... (%d bytes)",
-                 our_queue.snd_id[0], our_queue.snd_id[1],
-                 our_queue.snd_id[2], our_queue.snd_id[3],
-                 our_queue.snd_id_len);
+        ESP_LOGI(TAG, "No previous session found — fresh start");
+        session_restored = false;
     }
-    
-    queue_disconnect();
-    vTaskDelay(pdMS_TO_TICKS(500));
+
+    if (!session_restored) {
+        // Create Reply Queue (fresh start only)
+        ESP_LOGI(TAG, "Creating reply queue on %s:%d...", SMP_HOST, SMP_PORT);
+        
+        if (!queue_create(SMP_HOST, SMP_PORT)) {
+            ESP_LOGE(TAG, "Failed to create reply queue!");
+            ESP_LOGW(TAG, "  Continuing without reply queue...");
+        } else {
+            ESP_LOGI(TAG, "Reply queue created! sndId: %02x%02x%02x%02x... (%d bytes)",
+                     our_queue.snd_id[0], our_queue.snd_id[1],
+                     our_queue.snd_id[2], our_queue.snd_id[3],
+                     our_queue.snd_id_len);
+        }
+        
+        queue_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
 
     smp_connect();
 

@@ -32,6 +32,7 @@ set(CORE_SOURCES
     "smp_x448.c"
     "smp_ratchet.c"
     "smp_handshake.c"
+    "smp_storage.c"
 )
 
 # UI sources (device-independent)
@@ -84,6 +85,9 @@ idf_component_register(
         esp_timer
         lvgl
         zstd
+        sdmmc
+        fatfs
+        vfs
 )
 
 # Log what we found

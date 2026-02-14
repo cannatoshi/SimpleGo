@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include "esp_log.h"
 #include "sodium.h"
-#include "smp_queue.h"        // our_queue
+#include "smp_queue.h"        // our_queue, queue_save_credentials
 #include "smp_types.h"        // reply_queue_e2e_peer_public/valid
 #include "simplex_crypto.h"   // simplex_secretbox_open_debug
 
@@ -245,6 +245,11 @@ int smp_e2e_decrypt_reply_message(
         ESP_LOGE(TAG, "No sender key found");
         free(server_plain);
         return -3;
+    }
+
+    // Auftrag 50b: Persist E2E key after extraction so it survives reboot
+    if (reply_queue_e2e_peer_valid) {
+        queue_save_credentials();
     }
 
     // 48a: Compact E2E key diagnostic

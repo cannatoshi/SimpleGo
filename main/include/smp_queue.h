@@ -103,6 +103,26 @@ int queue_encode_info(uint8_t *buf, int max_len);
  */
 void queue_disconnect(void);
 
+// ============== Persistence (Auftrag 50b) ==============
+
+/**
+ * Save queue credentials to NVS.
+ * Saves our_queue struct ("queue_our") + reply queue E2E peer key ("queue_e2e").
+ * Uses save_blob_sync for Write-Before-Send safety.
+ *
+ * @return true on success
+ */
+bool queue_save_credentials(void);
+
+/**
+ * Load queue credentials from NVS.
+ * Restores our_queue + reply queue E2E peer key.
+ * Validates our_queue.valid before accepting.
+ *
+ * @return true on success (queue credentials restored)
+ */
+bool queue_load_credentials(void);
+
 // Reply Queue E2E peer public key (from AgentConnInfoReply)
 extern uint8_t reply_queue_e2e_peer_public[32];
 extern bool reply_queue_e2e_peer_valid;

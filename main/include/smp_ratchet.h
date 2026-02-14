@@ -190,6 +190,28 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
                          const uint8_t *em_body, size_t em_body_len,
                          uint8_t *plaintext, size_t *pt_len);
 
+// ============== Persistence (Auftrag 50b) ==============
+
+/**
+ * Save ratchet state to NVS for the given contact index.
+ * Uses smp_storage_save_blob_sync() for Write-Before-Send safety.
+ * NVS key: "rat_XX" (max 15 chars, XX = contact index 00-31)
+ *
+ * @param contact_idx  Contact index (0-31)
+ * @return true on success
+ */
+bool ratchet_save_state(uint8_t contact_idx);
+
+/**
+ * Load ratchet state from NVS for the given contact index.
+ * Validates size and initialized flag before accepting.
+ * On failure, ratchet stays uninitialized (normal handshake flow).
+ *
+ * @param contact_idx  Contact index (0-31)
+ * @return true on success (ratchet state restored)
+ */
+bool ratchet_load_state(uint8_t contact_idx);
+
 // ============== State Access / Debug ==============
 
 /**

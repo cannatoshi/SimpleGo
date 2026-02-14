@@ -10,6 +10,7 @@
 #include "smp_types.h"
 #include "smp_network.h"
 #include "smp_crypto.h"
+#include "smp_storage.h"
 #include <string.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -491,6 +492,9 @@ bool queue_create(const char *host, int port) {
         
         our_queue.valid = true;
         
+        // Auftrag 50b Q2: Persist queue credentials after creation
+        queue_save_credentials();
+
         ESP_LOGI(TAG, "");
         ESP_LOGI(TAG, "╔══════════════════════════════════════════════════════════════╗");
         ESP_LOGI(TAG, "║   ✅ QUEUE CREATED SUCCESSFULLY!                             ║");
@@ -1043,6 +1047,90 @@ bool queue_reconnect(void) {
 }
 
 // ======== Ende Auftrag 42c ========
+
+// ============== Persistence (Auftrag 50b) ==============
+
+bool queue_save_credentials(void) {
+    if (!our_queue.valid) {
+        ESP_LOGW(TAG, "queue_save_credentials: queue not valid, skipping");
+        return false;
+    }
+
+    // Save our_queue struct
+    esp_err_t ret = smp_storage_save_blob_sync("queue_our", &our_queue, sizeof(our_queue_t));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ queue_save_credentials('queue_our') FAILED: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    // Save reply queue E2E peer key (separate blob — set later during handshake)
+    uint8_t e2e_blob[33];  // 32 bytes key + 1 byte valid flag
+    memcpy(e2e_blob, reply_queue_e2e_peer_public, 32);
+    e2e_blob[32] = reply_queue_e2e_peer_valid ? 1 : 0;
+    ret = smp_storage_save_blob_sync("queue_e2e", e2e_blob, sizeof(e2e_blob));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ queue_save_credentials('queue_e2e') FAILED: %s", esp_err_to_name(ret));
+        return false;
+    }
+
+    ESP_LOGI(TAG, "💾 Queue credentials saved: our_queue (%zu bytes) + E2E peer (valid=%d)",
+             sizeof(our_queue_t), reply_queue_e2e_peer_valid);
+    ESP_LOGI(TAG, "   rcvId: %02x%02x%02x%02x... sndId: %02x%02x%02x%02x...",
+             our_queue.rcv_id[0], our_queue.rcv_id[1], our_queue.rcv_id[2], our_queue.rcv_id[3],
+             our_queue.snd_id[0], our_queue.snd_id[1], our_queue.snd_id[2], our_queue.snd_id[3]);
+    return true;
+}
+
+bool queue_load_credentials(void) {
+    if (!smp_storage_exists("queue_our")) {
+        ESP_LOGI(TAG, "queue_load_credentials: 'queue_our' not found — fresh start");
+        return false;
+    }
+
+    // Load our_queue into temporary, validate, then accept
+    our_queue_t loaded;
+    size_t loaded_len = 0;
+    esp_err_t ret = smp_storage_load_blob("queue_our", &loaded, sizeof(our_queue_t), &loaded_len);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ queue_load_credentials: load failed: %s", esp_err_to_name(ret));
+        return false;
+    }
+    if (loaded_len != sizeof(our_queue_t)) {
+        ESP_LOGE(TAG, "❌ queue_load_credentials: size mismatch! got %zu, expected %zu",
+                 loaded_len, sizeof(our_queue_t));
+        return false;
+    }
+    if (!loaded.valid) {
+        ESP_LOGW(TAG, "❌ queue_load_credentials: loaded queue has valid=false!");
+        return false;
+    }
+
+    // Accept
+    memcpy(&our_queue, &loaded, sizeof(our_queue_t));
+
+    // Load reply queue E2E peer key (optional — may not be set yet)
+    uint8_t e2e_blob[33];
+    size_t e2e_len = 0;
+    ret = smp_storage_load_blob("queue_e2e", e2e_blob, sizeof(e2e_blob), &e2e_len);
+    if (ret == ESP_OK && e2e_len == 33) {
+        memcpy(reply_queue_e2e_peer_public, e2e_blob, 32);
+        reply_queue_e2e_peer_valid = (e2e_blob[32] == 1);
+        ESP_LOGI(TAG, "   E2E peer key restored (valid=%d)", reply_queue_e2e_peer_valid);
+    } else {
+        ESP_LOGW(TAG, "   E2E peer key not found — will be set during handshake");
+        reply_queue_e2e_peer_valid = false;
+    }
+
+    ESP_LOGI(TAG, "📂 Queue credentials restored: our_queue (%zu bytes)",
+             loaded_len);
+    ESP_LOGI(TAG, "   rcvId (%d): %02x%02x%02x%02x... sndId (%d): %02x%02x%02x%02x...",
+             our_queue.rcv_id_len,
+             our_queue.rcv_id[0], our_queue.rcv_id[1], our_queue.rcv_id[2], our_queue.rcv_id[3],
+             our_queue.snd_id_len,
+             our_queue.snd_id[0], our_queue.snd_id[1], our_queue.snd_id[2], our_queue.snd_id[3]);
+    ESP_LOGI(TAG, "   server: %s:%d", our_queue.server_host, our_queue.server_port);
+    return true;
+}
 
 // ============== Disconnect ==============
 

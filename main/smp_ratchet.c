@@ -16,6 +16,7 @@
 #include "smp_ratchet.h"
 #include "smp_x448.h"
 #include "smp_crypto.h"
+#include "smp_storage.h"
 #include <string.h>
 #include "esp_log.h"
 #include "esp_random.h"
@@ -253,6 +254,9 @@ bool ratchet_init_sender(const uint8_t *peer_dh_public, const x448_keypair_t *ou
     ratchet_state.prev_chain_len = 0;
     ratchet_state.initialized = true;
 
+    // Auftrag 50b R2: Persist initial ratchet state after X3DH
+    ratchet_save_state(0);
+
     ESP_LOGI(TAG, "✅ Ratchet initialized");
     return true;
 }
@@ -446,6 +450,9 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     free(padded_payload);
     free(encrypted_payload);
 
+    // Auftrag 50b R3: Evgeny's Rule — persist BEFORE caller sends over network
+    ratchet_save_state(0);
+
     ESP_LOGI(TAG, "✅ Encrypted %zu bytes (padded to %zu) -> %zu bytes", pt_len, padded_msg_len, *out_len);
     return 0;
 }
@@ -498,6 +505,7 @@ int ratchet_self_decrypt_test(const uint8_t *ciphertext, size_t ct_len,
 
 int ratchet_decrypt(const uint8_t *ciphertext, size_t ct_len,
                     uint8_t *plaintext, size_t *pt_len) {
+    ESP_LOGW(TAG, "⚠️ DEPRECATED: ratchet_decrypt() called — use ratchet_decrypt_body() instead");
     ESP_LOGI(TAG, "🔓 Decrypting message (%zu bytes)...", ct_len);
     
     int p = 0;
@@ -969,12 +977,92 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
                  ratchet_state.chain_key_recv[6], ratchet_state.chain_key_recv[7]);
     }
 
+    // Auftrag 50b R4/R5: Persist ratchet state after successful decrypt
+    ratchet_save_state(0);
+
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔═══════════════════════════════════════════════════════╗");
     ESP_LOGI(TAG, "║  🎉 PHASE 2b BODY DECRYPT SUCCESS!                    ║");
     ESP_LOGI(TAG, "╚═══════════════════════════════════════════════════════╝");
 
     return 0;
+}
+
+// ============== Persistence (Auftrag 50b) ==============
+
+bool ratchet_save_state(uint8_t contact_idx) {
+    if (contact_idx > 31) {
+        ESP_LOGE(TAG, "ratchet_save_state: invalid contact_idx %d", contact_idx);
+        return false;
+    }
+    if (!ratchet_state.initialized) {
+        ESP_LOGW(TAG, "ratchet_save_state: state not initialized, skipping");
+        return false;
+    }
+
+    char key[16];
+    snprintf(key, sizeof(key), "rat_%02u", contact_idx);
+
+    esp_err_t ret = smp_storage_save_blob_sync(key, &ratchet_state, sizeof(ratchet_state_t));
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ ratchet_save_state('%s') FAILED: %s", key, esp_err_to_name(ret));
+        return false;
+    }
+
+    ESP_LOGI(TAG, "💾 Ratchet state saved: '%s' (%zu bytes) | send=%u recv=%u",
+             key, sizeof(ratchet_state_t),
+             ratchet_state.msg_num_send, ratchet_state.msg_num_recv);
+    return true;
+}
+
+bool ratchet_load_state(uint8_t contact_idx) {
+    if (contact_idx > 31) {
+        ESP_LOGE(TAG, "ratchet_load_state: invalid contact_idx %d", contact_idx);
+        return false;
+    }
+
+    char key[16];
+    snprintf(key, sizeof(key), "rat_%02u", contact_idx);
+
+    if (!smp_storage_exists(key)) {
+        ESP_LOGI(TAG, "ratchet_load_state: '%s' not found — fresh start", key);
+        return false;
+    }
+
+    size_t loaded_len = 0;
+    ratchet_state_t loaded;
+    esp_err_t ret = smp_storage_load_blob(key, &loaded, sizeof(ratchet_state_t), &loaded_len);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "❌ ratchet_load_state('%s') FAILED: %s", key, esp_err_to_name(ret));
+        return false;
+    }
+
+    // Validate loaded data
+    if (loaded_len != sizeof(ratchet_state_t)) {
+        ESP_LOGE(TAG, "❌ ratchet_load_state: size mismatch! got %zu, expected %zu",
+                 loaded_len, sizeof(ratchet_state_t));
+        return false;
+    }
+    if (!loaded.initialized) {
+        ESP_LOGW(TAG, "❌ ratchet_load_state: loaded state has initialized=false!");
+        return false;
+    }
+
+    // Accept loaded state
+    memcpy(&ratchet_state, &loaded, sizeof(ratchet_state_t));
+
+    ESP_LOGI(TAG, "📂 Ratchet state restored: '%s' (%zu bytes) | send=%u recv=%u",
+             key, loaded_len,
+             ratchet_state.msg_num_send, ratchet_state.msg_num_recv);
+    printf("   root_key:  "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
+    printf("   hk_send:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
+    printf("   hk_recv:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
+    printf("   ck_send:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_send[i]); printf("...\n");
+    printf("   ck_recv:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_recv[i]); printf("...\n");
+    printf("   dh_self:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("...\n");
+    printf("   dh_peer:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.dh_peer[i]); printf("...\n");
+
+    return true;
 }
 
 // ============== Getters ==============
