@@ -469,6 +469,7 @@ bool send_hello_message(
     }
     int enc_envelope_len = E2E_ENC_HELLO_LENGTH + crypto_box_MACBYTES;
     
+    sodium_memzero(padded, E2E_ENC_HELLO_LENGTH);  // Auftrag 51b
     free(padded);  // No longer needed after encryption
 
     memcpy(&client_msg[cmp], enc_envelope, enc_envelope_len);
@@ -741,6 +742,7 @@ static bool encrypt_and_send_agent_msg(
         return false;
     }
     int enc_len = E2E_PADDED_LENGTH + crypto_box_MACBYTES;
+    sodium_memzero(padded, E2E_PADDED_LENGTH);  // Auftrag 51b
     free(padded);
     
     memcpy(&client_msg[cmp], enc_buf, enc_len);
