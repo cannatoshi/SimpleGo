@@ -6,6 +6,24 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
+## 🎯 LATEST: Bidirectional Chat + Receipts! (2026-02-14 Session 25)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  🎯🎯🎯 BIDIRECTIONAL ENCRYPTED CHAT + DELIVERY RECEIPTS! 🎯🎯🎯
+
+  THREE MILESTONES in ONE Valentine's Day Session:
+    • Milestone 3: First App message decrypted on ESP32
+    • Milestone 4: Bidirectional encrypted chat
+    • Milestone 5: Delivery receipts (✓✓)
+
+  Refactoring: main.c 2440 → 611 lines (−75%)
+  Date: February 14, 2026
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
 ## 🎉 HISTORIC MILESTONE: CONNECTED! (2026-02-08 Session 23)
 
 ```
@@ -33,31 +51,26 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 ═══════════════════════════════════════════════════════════════════════════════
 ```
 
-## Current Status (2026-02-13 Session 24)
+## Current Status (2026-02-14 Session 25)
 
 ```
-SESSION 24 - 🏆 FIRST CHAT MESSAGE! MILESTONE #2!
+SESSION 25 - 🎯 BIDIRECTIONAL CHAT + RECEIPTS!
 ===================================================
 
-"Hello from ESP32!" displayed in SimpleX App!
+THREE MILESTONES ACHIEVED:
+  • Milestone 3: First App message decrypted on ESP32
+  • Milestone 4: Bidirectional encrypted chat ESP32 ↔ App
+  • Milestone 5: Delivery receipts (✓✓) working!
 
-Session 24 Achievements:
-  - ZERO new bugs (31 total remain sufficient!)
-  - First A_MSG chat message sent and displayed
-  - ChatMessage JSON format discovered
-  - Q_B Ratchet decrypt working (PQ-Kyber graceful degradation)
-  - Session 23 correction: "HELLO on Q_B" was false positive
-  - ACK protocol fully documented and implemented
-  - pending_msg buffer for response multiplexing
-  - Aschenputtel verified all Queue IDs correct
+Session 25 Achievements:
+  - 8 bugs fixed (5 critical, 3 high)
+  - Nonce offset corrected (13, not 14)
+  - Ratchet state persistence fixed
+  - Receipt wire format corrected
+  - main.c refactored: 2440 → 611 lines (−75%)
+  - 4 new modules: smp_ack, smp_wifi, smp_e2e, smp_agent
 
-Open Bug:
-  - App doesn't fully activate connection
-  - ESP32 → App works (message displays)
-  - App → ESP32 blocked (server has zero messages for Q_B)
-  - Hypothesis: Format error in AgentConfirmation or HELLO
-
-NEXT: Session 25 — Refactoring + Bidirectional Bug Fix
+NEXT: Message persistence, UI integration, multiple contacts
 ```
 
 ---
@@ -83,8 +96,8 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 
 | Document | Lines | Description |
 |----------|-------|-------------|
-| [01_SIMPLEX_PROTOCOL_INDEX.md](01_SIMPLEX_PROTOCOL_INDEX.md) | ~100 | Navigation index |
-| [02_SIMPLEX_STATUS.md](02_SIMPLEX_STATUS.md) | ~250 | Current status summary |
+| [01_SIMPLEX_PROTOCOL_INDEX.md](01_SIMPLEX_PROTOCOL_INDEX.md) | ~310 | Navigation index |
+| [02_SIMPLEX_STATUS.md](02_SIMPLEX_STATUS.md) | ~330 | Current status summary |
 | [03_PART1_INTRO_SESSIONS_1-2.md](03_PART1_INTRO_SESSIONS_1-2.md) | ~2300 | Foundation, TLS 1.3, basic SMP |
 | [04_PART2_SESSIONS_3-4.md](04_PART2_SESSIONS_3-4.md) | ~1000 | Wire format, bugs #1-8 |
 | [05_PART3_SESSIONS_5-6.md](05_PART3_SESSIONS_5-6.md) | ~800 | X448 breakthrough, SMPQueueInfo |
@@ -103,13 +116,14 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [18_PART16_SESSION_19.md](18_PART16_SESSION_19.md) | ~550 | Header Decrypt SUCCESS! |
 | [19_PART17_SESSION_20.md](19_PART17_SESSION_20.md) | ~600 | Body Decrypt SUCCESS! Peer Profile! |
 | [20_PART18_SESSION_21.md](20_PART18_SESSION_21.md) | ~700 | v3 Format + HELLO Debugging |
-| [21_PART19_SESSION_22.md](21_PART19_SESSION_22.md) | ~650 | Reply Queue Flow Discovery |
-| [22_PART20_SESSION_23.md](22_PART20_SESSION_23.md) | ~700 | 🎉 CONNECTED! Historic Milestone! |
-| [23_PART21_SESSION_24.md](23_PART21_SESSION_24.md) | ~800 | **🏆 First Chat Message! Milestone #2!** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~2000 | Complete bug documentation (31 bugs, 109 lessons) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1200 | Constants, wire formats, verified values |
+| [21_PART19_SESSION_22.md](21_PART19_SESSION_22.md) | ~600 | Reply Queue Flow Discovery |
+| [22_PART20_SESSION_23.md](22_PART20_SESSION_23.md) | ~570 | 🎉 CONNECTED! Historic Milestone! |
+| [23_PART21_SESSION_24.md](23_PART21_SESSION_24.md) | ~600 | 🏆 First Chat Message! Milestone #2! |
+| [24_PART22_SESSION_25.md](24_PART22_SESSION_25.md) | ~480 | **🎯 Bidirectional + Receipts! M3,4,5!** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1300 | Complete bug documentation (39 bugs, 112 lessons) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1130 | Constants, wire formats, verified values |
 
-**Total: ~34,000+ lines of detailed protocol analysis**
+**Total: ~20,000+ lines of detailed protocol analysis (Session docs + reference docs)**
 
 ---
 
@@ -139,6 +153,63 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | **22** | **Feb 7** | **Reply Queue Flow Discovery (5 bugs!)** | **#27-#31** |
 | **23** | **Feb 7-8** | **🎉 CONNECTED! Historic Milestone!** | **ZERO new!** |
 | **24** | **Feb 11-13** | **🏆 First Chat Message! Milestone #2!** | **ZERO new!** |
+| **25** | **Feb 13-14** | **🎯 Bidirectional + Receipts! M3,4,5!** | **8 bugs!** |
+
+---
+
+## Session 25 Key Achievements — 🎯 Bidirectional + Receipts!
+
+### 1. THREE MILESTONES IN ONE SESSION!
+
+```
+Milestone 3: First App message decrypted on ESP32
+Milestone 4: Bidirectional encrypted chat ESP32 ↔ App
+Milestone 5: Delivery receipts (✓✓) working!
+```
+
+### 2. Massive Refactoring
+
+```
+main.c: 2440 → 611 lines (−75%)
+
+New modules:
+  - smp_ack.c/h      ACK handling
+  - smp_wifi.c/h     WiFi initialization
+  - smp_e2e.c/h      E2E envelope decryption
+  - smp_agent.c/h    Agent protocol layer
+```
+
+### 3. Critical Bug Fixes (8 total)
+
+```
+Nonce Offset:     14 → 13 (brute-force discovered)
+Ratchet State:    Copy → Pointer (persistence bug)
+Chain KDF:        Relative → Absolute skip
+Receipt count:    Word16 → Word8
+Receipt rcptInfo: Word32 → Word16
+txCount Parser:   Hardcoded → Variable
+Heap Overflow:    malloc(256) → dynamic
+NULL Guard:       contact check for Reply Queue
+```
+
+### 4. Key Discovery: Nonce Offset 13
+
+```
+Session 24 believed: Byte [12] = corrId '0' → use cache
+Session 25 discovered: Byte [12] = first nonce byte!
+
+Brute-force scan: ✅ DECRYPT OK at nonce_offset=13!
+```
+
+### 5. Receipt Wire Format
+
+```
+A_RCVD ('V') payload:
+  'M' + APrivHeader + 'V' + count(Word8) + [AMessageReceipt...]
+
+AMessageReceipt:
+  agentMsgId(8B) + msgHash(1+32B) + rcptInfo(Word16)
+```
 
 ---
 
@@ -183,18 +254,13 @@ Our sends: emHeaderLen=124 (pure DH, KEM Nothing)
 Result: Both directions work! Graceful degradation successful.
 ```
 
-### 6. Open Bug: Bidirectional Blocked
+### 6. Bug Fixed in Session 25
 
 ```
-Symptom:
-  - ESP32 → App: Works! Message displays.
-  - App → ESP32: Blocked. Server has zero messages for Q_B.
+Session 24 Hypothesis: Format error in AgentConfirmation or HELLO
+Session 25 Discovery: Nonce offset was 14 instead of 13!
 
-Hypothesis:
-  Format error in AgentConfirmation or HELLO causes
-  App to not fully activate the connection.
-
-Next: Haskell source analysis in Session 25
+Brute-force scan found the truth, bidirectional now works!
 ```
 
 ---

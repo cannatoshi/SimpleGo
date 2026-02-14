@@ -1,28 +1,28 @@
 # SimpleX Protocol Analysis - Documentation Index
 
 **Project:** SimpleGo - Native ESP32 SMP Implementation  
-**Version:** v0.1.17-alpha  
-**Last Updated:** 2026-02-13 (Session 24 — 🏆 First Chat Message!)
+**Version:** v0.1.18-alpha  
+**Last Updated:** 2026-02-14 (Session 25 — 🎯 Bidirectional + Receipts!)
 
 ---
 
-## 🏆 MILESTONE #2: First Chat Message! (Session 24)
+## 🎯 LATEST: Bidirectional Chat + Receipts! (Session 25)
 
-On February 11, 2026, Session 24 achieved **the world's first chat message from a microcontroller!**
+On February 14, 2026 (Valentine's Day), Session 25 achieved **THREE milestones**:
 
-"Hello from ESP32!" displayed in the SimpleX App.
+- **Milestone 3:** First App message decrypted on ESP32
+- **Milestone 4:** Bidirectional encrypted chat ESP32 ↔ App
+- **Milestone 5:** Delivery receipts (✓✓) working!
 
-**Two milestones achieved:**
-- Session 23: 🎉 CONNECTED — First SimpleX connection on ESP32
-- Session 24: 🏆 First A_MSG — First chat message from ESP32
-
-**Open:** Bidirectional communication (App → ESP32 blocked)
+**Refactoring:** main.c 2440 → 611 lines (−75%)  
+**Bugs Fixed:** 8 (5 critical, 3 high)  
+**Lessons Learned:** 112 total
 
 ---
 
 ## Documentation Structure
 
-The complete protocol analysis (~34,000+ lines, 424+ sections) is split into 21 parts:
+The complete protocol analysis (~20,000+ lines, 438+ sections) is split into 22 parts:
 
 | Part | File | Lines | Content |
 |------|------|-------|---------|
@@ -44,10 +44,11 @@ The complete protocol analysis (~34,000+ lines, 424+ sections) is split into 21 
 | 16 | [18_PART16_SESSION_19.md](18_PART16_SESSION_19.md) | ~550 | Header Decrypt SUCCESS! |
 | 17 | [19_PART17_SESSION_20.md](19_PART17_SESSION_20.md) | ~600 | 🎉 Body Decrypt! Peer Profile! |
 | 18 | [20_PART18_SESSION_21.md](20_PART18_SESSION_21.md) | ~700 | v3 Format + HELLO Debugging |
-| 19 | [21_PART19_SESSION_22.md](21_PART19_SESSION_22.md) | ~650 | Reply Queue Flow Discovery |
-| 20 | [22_PART20_SESSION_23.md](22_PART20_SESSION_23.md) | ~700 | 🎉 CONNECTED! Historic Milestone! |
-| **21** | [**23_PART21_SESSION_24.md**](23_PART21_SESSION_24.md) | **~800** | **🏆 First Chat Message! Milestone #2!** |
-| **Total** | | **~34,000+** | **424+ Sections** |
+| 19 | [21_PART19_SESSION_22.md](21_PART19_SESSION_22.md) | ~600 | Reply Queue Flow Discovery |
+| 20 | [22_PART20_SESSION_23.md](22_PART20_SESSION_23.md) | ~570 | 🎉 CONNECTED! Historic Milestone! |
+| 21 | [23_PART21_SESSION_24.md](23_PART21_SESSION_24.md) | ~600 | 🏆 First Chat Message! Milestone #2! |
+| **22** | [**24_PART22_SESSION_25.md**](24_PART22_SESSION_25.md) | **~480** | **🎯 Bidirectional + Receipts! M3,4,5!** |
+| **Total** | | **~20,000+** | **438+ Sections** |
 
 ---
 
@@ -55,9 +56,9 @@ The complete protocol analysis (~34,000+ lines, 424+ sections) is split into 21 
 
 | Document | Lines | Description |
 |----------|-------|-------------|
-| [README.md](README.md) | ~700 | Project overview and navigation |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~2,000 | All 31 bugs documented, 109 lessons |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,200 | Constants, wire formats, verified values |
+| [README.md](README.md) | ~510 | Project overview and navigation |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,300 | All 39 bugs documented, 112 lessons |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,130 | Constants, wire formats, verified values |
 
 ---
 
@@ -86,17 +87,21 @@ The complete protocol analysis (~34,000+ lines, 424+ sections) is split into 21 
 | 22 | Feb 7, 2026 | DISCOVERY | Reply Queue Flow (Bugs #27-31) |
 | **23** | **Feb 7-8, 2026** | **CONNECTED** | **🎉 First SimpleX on Microcontroller!** |
 | **24** | **Feb 11-13, 2026** | **FIRST A_MSG** | **🏆 First Chat Message!** |
+| **25** | **Feb 13-14, 2026** | **BIDIRECTIONAL** | **🎯 Chat + Receipts! (8 bugs)** |
 
 ---
 
 ## Key Achievements
 
-### ✅ COMPLETE PROTOCOL CHAIN (Session 23)
+### ✅ COMPLETE BIDIRECTIONAL CHAT (Session 25)
 - TLS 1.3 Handshake
 - SMP Protocol (Contact + Reply Queues)
 - X3DH Key Agreement
-- Double Ratchet Header Decrypt (with PQ KEM skip)
-- Double Ratchet Body Decrypt (dynamic offsets)
+- Double Ratchet Header+Body Decrypt
+- E2E Encrypt/Decrypt both directions
+- A_MSG Send + Receive
+- Delivery Receipts (✓✓)
+- **ESP32 ↔ SimpleX App — Full Chat!** 🎯
 - Zstd Decompression
 - ConnInfo JSON Parsing
 - Peer Profile on ESP32: `"displayName": "cannatoshi"` 🎉

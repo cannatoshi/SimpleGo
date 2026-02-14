@@ -45,7 +45,7 @@ App-Status von "Connecting..." auf "Connected" bringen.
 
 ## 386. Bugs Fixed (Session 22)
 
-### 386.1 Bug #27: E2E Version Mismatch (Auftrag 31a) — CRITICAL
+### 386.1 Bug #27: E2E Version Mismatch (Task 31a) — CRITICAL
 
 **Session:** 22  
 **Component:** `smp_x448.c` E2ERatchetParams encoding  
@@ -80,7 +80,7 @@ buf[p++] = 0x30;  // KEM Nothing ('0' = 0x30)
 
 ---
 
-### 386.2 Bug #28: KEM Parser Crash (Auftrag 33b)
+### 386.2 Bug #28: KEM Parser Crash (Task 33b)
 
 **Session:** 22  
 **Component:** `smp_ratchet.c` MsgHeader parser  
@@ -128,7 +128,7 @@ if (kem_tag == '0') {  // Nothing
 
 ---
 
-### 386.3 Bug #29: Body Decrypt Pointer-Arithmetik (Auftrag 34a)
+### 386.3 Bug #29: Body Decrypt Pointer-Arithmetik (Task 34a)
 
 **Session:** 22  
 **Component:** `main.c` body decrypt offset calculation  
@@ -172,7 +172,7 @@ uint8_t *emBody = &encrypted[emHeader_size + 16];
 
 ---
 
-### 386.4 Bug #30: HKs/NHKs Init + Promotion (Auftrag 31b extended)
+### 386.4 Bug #30: HKs/NHKs Init + Promotion (Task 31b extended)
 
 **Session:** 22  
 **Component:** `smp_ratchet.c` header key management  
@@ -215,7 +215,7 @@ memcpy(ratchet_state.next_header_key_send, kdf_output + 64, 32);  // New NHKs fr
 
 ---
 
-### 386.5 Bug #31: Phase 2a Try-Order (Auftrag 35a)
+### 386.5 Bug #31: Phase 2a Try-Order (Task 35a)
 
 **Session:** 22  
 **Component:** `main.c` header decrypt try sequence  
@@ -268,7 +268,7 @@ else if (try_header_decrypt(next_header_key_recv, ...)) {
 
 ### 387.1 Modern SimpleX Protocol Needs NO HELLO!
 
-Claude Code Auftrag 35a analyzed the complete Agent-Level Connection Flow and 
+Claude Code Task 35a analyzed the complete Agent-Level Connection Flow and 
 discovered: **The modern SimpleX protocol (v2 with `senderCanSecure = True`, 
 `QMMessaging`) does not require HELLO messages!**
 
@@ -366,7 +366,7 @@ KEM Nothing, the ratchet falls back to pure DH — no error, no abort.
 
 ## 390. Files Changed (Session 22)
 
-| File | Aufträge | Description |
+| File | Tasks | Description |
 |------|----------|-------------|
 | `smp_x448.c` | 31a | E2E v3 + KEM Nothing in e2e_encode_params() |
 | `smp_ratchet.c` | 31b, 33b | NHK Init/Promotion + KEM Parser + v3 Offsets |
@@ -410,53 +410,53 @@ KEM Nothing, the ratchet falls back to pure DH — no error, no abort.
 
 ---
 
-## 392. Session 22 Erkenntnisse (Key Discoveries)
+## 392. Session 22 Discoveries (Key Discoveries)
 
-### 392.1 Erkenntnis 1: Modern Protocol Flow
+### 392.1 Discovery 1: Modern Protocol Flow
 
 Modern SimpleX (v2 + `senderCanSecure = True`) does NOT need HELLO.
 Instead, AgentConnInfo must be sent on the Reply Queue.
 
-### 392.2 Erkenntnis 2: Reply Queue Info Location
+### 392.2 Discovery 2: Reply Queue Info Location
 
 `smpReplyQueues` are in the innermost layer: inside the ratchet-decrypted 
 `AgentConnInfoReply` with tag `'D'` (0x44).
 
-### 392.3 Erkenntnis 3: SNTRUP761 for PQ
+### 392.3 Discovery 3: SNTRUP761 for PQ
 
 SimpleX uses SNTRUP761 (not Kyber) with 1158B pubkey, 1039B ciphertext.
 
-### 392.4 Erkenntnis 4: PQ-Graceful-Degradation
+### 392.4 Discovery 4: PQ-Graceful-Degradation
 
 v3 + KEM Nothing = "PQ-capable, not yet active". App responds with KEM Proposed.
 Reply with KEM Nothing → graceful fallback to pure DH.
 
-### 392.5 Erkenntnis 5: E2E Version Consistency
+### 392.5 Discovery 5: E2E Version Consistency
 
 `version_min` in AgentConfirmation MUST match `RATCHET_VERSION` used for encryption.
 Mismatch causes decoder to use wrong format.
 
-### 392.6 Erkenntnis 6: Dynamic Header Sizes
+### 392.6 Discovery 6: Dynamic Header Sizes
 
 v3+PQ headers can be 2346 bytes (vs 123/124 for v2/v3 without PQ).
 All offset calculations must be dynamic based on ehVersion and KEM presence.
 
-### 392.7 Erkenntnis 7: NHK Storage at Init
+### 392.7 Discovery 7: NHK Storage at Init
 
 `next_header_key_send` must be stored in ratchet state during initialization,
 not kept as local variable.
 
-### 392.8 Erkenntnis 8: nhk = NHKr, not HKr
+### 392.8 Discovery 8: nhk = NHKr, not HKr
 
 The `nhk` from X3DH HKDF output is `next_header_key_recv` (NHKr), which promotes 
 to `header_key_recv` (HKr) on first AdvanceRatchet.
 
-### 392.9 Erkenntnis 9: NHKs→HKs Promotion
+### 392.9 Discovery 9: NHKs→HKs Promotion
 
 After DH ratchet step: first promote `HKs ← NHKs`, then set `NHKs ← KDF output`.
 Do NOT set KDF output directly as HKs.
 
-### 392.10 Erkenntnis 10: Header Decrypt Try-Order
+### 392.10 Discovery 10: Header Decrypt Try-Order
 
 Must try keys in order:
 1. HKr (SameRatchet) — same DH, chain forward
@@ -531,7 +531,7 @@ Layer 11: Connection Established ("Connected")                 ⏳ Final Goal
 | Metric | Value |
 |--------|-------|
 | Duration | 1 chat session |
-| Aufträge completed | 5 (31a, 31b, 33b, 34a, 35a) |
+| Tasks completed | 5 (31a, 31b, 33b, 34a, 35a) |
 | Bugs found & fixed | 5 (Bug #27-#31) |
 | Claude Code Analyses | Multiple (Connection Flow, KEM format, NHK promotion) |
 | Protocol Discovery | Modern flow needs no HELLO |

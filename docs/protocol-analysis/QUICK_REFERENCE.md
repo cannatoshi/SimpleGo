@@ -2,33 +2,28 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-13 - Session 24 (🏆 First Chat Message from Microcontroller!)**
+**Updated: 2026-02-14 - Session 25 (🎯 Bidirectional Chat + Delivery Receipts!)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 24 - 🏆 FIRST CHAT MESSAGE! MILESTONE #2!
-===================================================
+SESSION 25 - 🎯 BIDIRECTIONAL CHAT + RECEIPTS! MILESTONES 3,4,5!
+================================================================
 
-"Hello from ESP32!" displayed in SimpleX App.
+ESP32 ↔ SimpleX App — Full encrypted chat with ✓✓!
 
-Session 24 Achievements:
-  - ZERO new bugs (31 total remain sufficient!)
-  - First A_MSG chat message sent and displayed
-  - Q_B Ratchet decrypt working (PQ-Kyber graceful degradation)
-  - Session 23 correction: "HELLO on Q_B" was false positive
-  - ACK protocol fully documented
-  - pending_msg buffer for response multiplexing
-  - Aschenputtel verified all Queue IDs correct
+Session 25 Achievements:
+  - THREE MILESTONES: App→ESP32 decrypt, bidirectional, receipts
+  - 8 bugs fixed (5 critical, 3 high)
+  - Nonce offset corrected: 14 → 13
+  - Ratchet state persistence: copy → pointer
+  - Receipt wire format: count=Word8, rcptInfo=Word16
+  - Refactoring: main.c 2440 → 611 lines (−75%)
+  - 4 new modules: smp_ack, smp_wifi, smp_e2e, smp_agent
 
-Open Bug (ROOT CAUSE found late in session):
-  - App doesn't fully activate connection
-  - ESP32 sends work, App receives not delivered
-  - Late discovery: Socket routing bug (SUB on main ssl, read from queue_conn.ssl)
-
-Next: Session 25 — Refactoring + Bug Fix
+Valentine's Day Session — From one-way to two-way! 🎯
 ```
 
 ---
@@ -1030,8 +1025,109 @@ for (int i = 0; i < len - 1; i++) {
 
 ---
 
-*Quick Reference v18.0*  
-*Last updated: February 13, 2026 - Session 24*  
-*Status: 🏆 First Chat Message from Microcontroller!*  
-*Open: Bidirectional communication (App → ESP32)*  
-*Next: Session 25 — Refactoring + Bug Fix*
+## 23. Session 25 Key Insights — Bidirectional + Receipts
+
+### 23.1 Nonce Offset Discovery
+
+```
+Session 24 believed: Byte [12] = corrId tag '0' → use cache
+Session 25 discovered: Byte [12] = first nonce byte!
+
+Regular Q_B messages: [12B header][nonce@13][ciphertext]
+
+Brute-force scan proved it:
+  for (int offset = 0; offset < 30; offset++) {
+      memcpy(nonce, &block[offset], 24);
+      ret = crypto_box_open_easy(...);
+      if (ret == 0) {
+          ESP_LOGI(TAG, "DECRYPT OK at nonce_offset=%d!", offset);
+          // → offset=13 works!
+      }
+  }
+```
+
+### 23.2 Ratchet State Persistence
+
+```c
+// WRONG — works on copy, changes lost after function returns:
+void decrypt_body(...) {
+    ratchet_state_t rs = *ratchet_get_state();  // COPY!
+    // ... modify rs.chain_key_recv ...
+    // rs goes out of scope → changes lost!
+}
+
+// CORRECT — works on pointer, changes persist:
+void decrypt_body(...) {
+    ratchet_state_t *rs = ratchet_get_state();  // POINTER!
+    // ... modify rs->chain_key_recv ...
+    // Global state updated!
+}
+```
+
+### 23.3 Chain KDF Skip Calculation
+
+```c
+// WRONG — relative calculation:
+for (int i = 0; i < (msg_num - rs->msg_num_recv); i++) {
+    chain_kdf(...);
+}
+
+// CORRECT — absolute calculation:
+int skip_from = rs->msg_num_recv;
+for (int i = skip_from; i < msg_num; i++) {
+    chain_kdf(...);
+}
+```
+
+### 23.4 Receipt Wire Format
+
+```
+A_RCVD ('V') payload:
+  [1B 'M' AgentMessage tag]
+  [8B sndMsgId Int64 BE]
+  [1B prevMsgHash len][0|32B hash]
+  [1B 'V' A_RCVD tag]
+  [1B count Word8]              ← NOT Word16!
+  [AMessageReceipt...]
+
+AMessageReceipt:
+  [8B agentMsgId Int64 BE]
+  [1B msgHash len][32B SHA256]
+  [2B rcptInfo Word16 Large]    ← NOT Word32!
+
+Our mistake: count=Word16 (2B), rcptInfo=Word32 (4B) → +3 bytes
+Result: 90 bytes instead of 87 → App reads count=0 → ignores receipt
+```
+
+### 23.5 txCount Parser Fix
+
+```c
+// WRONG — drops messages after re-SUB:
+if (resp[p] != 1) continue;  // Only accepts txCount=1
+
+// CORRECT — accepts any txCount:
+uint8_t tx_count = resp[p];  // Just read it
+// Server sends txCount=2,3,... after re-SUB
+```
+
+### 23.6 Refactoring Result
+
+```
+main.c before:  2440 lines (monolith)
+main.c after:    611 lines (session loop + init)
+Reduction:      −75%
+
+New modules:
+  - smp_ack.c/h      52 lines   ACK handling
+  - smp_wifi.c/h     65 lines   WiFi initialization
+  - smp_e2e.c/h      294 lines  E2E envelope decryption
+  - smp_agent.c/h    638 lines  Agent protocol layer
+```
+
+---
+
+*Quick Reference v19.0*  
+*Last updated: February 14, 2026 - Session 25*  
+*Status: 🎯 Bidirectional Chat + Delivery Receipts!*  
+*All 5 Milestones Achieved!*  
+*Next: Message persistence, UI, multiple contacts*

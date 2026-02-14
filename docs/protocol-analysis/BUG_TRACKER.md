@@ -1,6 +1,6 @@
 # Bug Tracker
 
-## Complete Documentation of All 31 Bugs
+## Complete Documentation of All 39 Bugs
 
 This document provides detailed documentation of all bugs discovered during SimpleGo development, including the incorrect code, correct code, and root cause analysis.
 
@@ -36,13 +36,21 @@ This document provides detailed documentation of all bugs discovered during Simp
 | 24 | DH Key for HELLO | 21 | FIXED |
 | 25 | PubHeader Nothing encoding | 21 | FIXED |
 | 26 | v2/v3 EncRatchetMessage format | 21 | FIXED |
-| **27** | **E2E Version Mismatch** | **22** | **FIXED** |
-| **28** | **KEM Parser Crash** | **22** | **FIXED** |
-| **29** | **Body Decrypt Pointer-Arithmetik** | **22** | **FIXED** |
-| **30** | **HKs/NHKs Init + Promotion** | **22** | **FIXED** |
-| **31** | **Phase 2a Try-Order** | **22** | **FIXED** |
+| 27 | E2E Version Mismatch | 22 | FIXED |
+| 28 | KEM Parser Crash | 22 | FIXED |
+| 29 | Body Decrypt Pointer-Arithmetik | 22 | FIXED |
+| 30 | HKs/NHKs Init + Promotion | 22 | FIXED |
+| 31 | Phase 2a Try-Order | 22 | FIXED |
+| **32** | **Heap Overflow PQ Headers** | **25** | **FIXED** |
+| **33** | **txCount Hardcoded** | **25** | **FIXED** |
+| **34** | **Nonce Offset Wrong** | **25** | **FIXED** |
+| **35** | **Ratchet State Copy** | **25** | **FIXED** |
+| **36** | **Chain KDF Skip Relative** | **25** | **FIXED** |
+| **37** | **Receipt count=Word16** | **25** | **FIXED** |
+| **38** | **Receipt rcptInfo=Word32** | **25** | **FIXED** |
+| **39** | **NULL contact Reply Queue** | **25** | **FIXED** |
 
-**Total: 31 bugs documented, 31 FIXED**
+**Total: 39 bugs documented, 39 FIXED**
 
 ---
 
@@ -1161,6 +1169,8 @@ If NHKr succeeds, it triggers AdvanceRatchet and promotes NHKr→HKr.
 108. **One checkmark = server accepted, not delivered** - App sends but ESP32 doesn't receive! (Session 24)
 109. **App may not fully activate connection** - Shows "Connected" but doesn't send to Q_B! (Session 24)
 110. **Socket routing bug (late discovery)** - subscribe_all_contacts() SUBs on main ssl, listen reads queue_conn.ssl! (Session 24)
+111. **App's own messages are the best protocol reference** - Byte comparison beats source analysis! (Session 25)
+112. **Test NULL pointers in extended code paths** - New features may use previously-unused parameters! (Session 25)
 
 ---
 
@@ -1227,8 +1237,65 @@ Fix for Session 25:
 
 ---
 
-*Bug Tracker v19.0*  
-*Last updated: February 13, 2026 - Session 24*  
-*Total bugs documented: 31 (31 FIXED)*  
-*110 lessons learned!*  
-*🏆 MILESTONE #2: First Chat Message from Microcontroller!*
+## Session 25: Bidirectional Chat + Receipts — MILESTONES 3, 4, 5! 🎯
+
+Session 25 achieved **THREE milestones** in the Valentine's Day session:
+- Milestone 3: First App message decrypted on ESP32
+- Milestone 4: Bidirectional encrypted chat
+- Milestone 5: Delivery receipts (✓✓)
+
+### Bugs Fixed (8 total)
+
+| # | Bug | Severity | Fix |
+|---|-----|----------|-----|
+| S25-1 | Heap Overflow PQ Headers | Critical | `malloc(eh_body_len + 16)` |
+| S25-2 | txCount Hardcoded | Critical | Read as counter, don't validate |
+| S25-3 | Nonce Offset Wrong | Critical | Brute-force found offset=13 |
+| S25-4 | Ratchet State Copy | Critical | Use pointer `*rs` not copy |
+| S25-5 | Chain KDF Skip Relative | Critical | `skip_from = msg_num_recv` |
+| S25-6 | Receipt count=Word16 | High | Change to Word8 |
+| S25-7 | Receipt rcptInfo=Word32 | High | Change to Word16 |
+| S25-8 | NULL contact Reply Queue | High | NULL guard |
+
+### Key Discovery: Nonce Offset 13
+
+```
+Session 24 believed: Byte [12] = corrId tag '0' → use cache
+Session 25 discovered: Byte [12] = first nonce byte!
+
+Regular Q_B messages: [12B header][nonce@13][ciphertext]
+Parser was reading at wrong offset (14 instead of 13).
+
+Brute-force scan found the truth:
+  ✅✅✅ DECRYPT OK at nonce_offset=13!
+```
+
+### Key Discovery: Ratchet State Persistence
+
+```
+// WRONG — works on copy, changes lost:
+ratchet_state_t rs = *ratchet_get_state();
+
+// CORRECT — works on pointer, changes persist:
+ratchet_state_t *rs = ratchet_get_state();
+```
+
+### Key Discovery: Receipt Wire Format
+
+```
+Our receipt:  90 bytes (WRONG)
+App receipt:  87 bytes (CORRECT)
+Difference:   3 bytes
+
+Errors:
+  - count: Word16 → Word8 (−1 byte)
+  - rcptInfo: Word32 → Word16 (−2 bytes)
+```
+
+---
+
+*Bug Tracker v20.0*  
+*Last updated: February 14, 2026 - Session 25*  
+*Total bugs documented: 31 + 8 = 39 (all FIXED)*  
+*112 lessons learned!*  
+*🎯 MILESTONES 3, 4, 5: Bidirectional Chat + Delivery Receipts!*

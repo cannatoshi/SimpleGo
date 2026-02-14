@@ -61,20 +61,20 @@ App-Status von "Connecting..." auf "Connected" bringen.
 | End | 2026-02-08 ~17:36 UTC |
 | Duration | ~20 hours |
 | New Bugs | 0 (all 31 from earlier sessions were sufficient!) |
-| Aufträge | 38a, 37a, 39a-d, 40a-b, 41a-b, 42a-d |
+| Tasks | 38a, 37a, 39a-d, 40a-b, 41a-b, 42a-d |
 | Claude Code Sessions | 6 new analyses |
-| Agents | Mausi (Strategy), Hasi (Implementation), Claude Code (Haskell Analysis) |
+| Agents | Mausi (Evil Stepsister #1), Hasi (Evil Stepsister #2), Claude Code (The Verifier), Cannatoshi (Coordinator) |
 
 ---
 
 ## 398. The Journey to CONNECTED
 
-### 398.1 Phase 1: Codebase Analysis (Aufträge 38a, 37a, 39a)
+### 398.1 Phase 1: Codebase Analysis (Tasks 38a, 37a, 39a)
 
 **Starting Assumption:** Session 22 ended with working Ratchet-Decrypt and the 
 assumption that the App sends Tag `'D'` (AgentConnInfoReply with Reply Queue Info).
 
-**Claude Code Auftrag 38a — SMP Confirmation Structure:**
+**Claude Code Task 38a — SMP Confirmation Structure:**
 
 Documented the complete 4-layer model:
 ```
@@ -87,7 +87,7 @@ Layer 4: Double Ratchet (innermost layer)
 Key insight: SMPConfirmation is an internal aggregate, NOT a wire format!
 Reply Queue Info is in Layer 4 (innermost, after Ratchet decrypt).
 
-**Claude Code Auftrag 37a — SMPQueueInfo Wire Format:**
+**Claude Code Task 37a — SMPQueueInfo Wire Format:**
 
 Documented exact byte layout:
 ```
@@ -103,11 +103,11 @@ queueMode: raw 'M' or 'C' (NO Maybe prefix!)
 
 NonEmpty list = 1-byte count prefix (not Word16 like regular lists!).
 
-### 398.2 Phase 2: Role Correction — Tag 'I' not 'D'! (Aufträge 41a-41b)
+### 398.2 Phase 2: Role Correction — Tag 'I' not 'D'! (Tasks 41a-41b)
 
 **CRITICAL DISCOVERY:** The App sends Tag `'I'` (AgentConnInfo), NOT Tag `'D'`!
 
-**Hasi Auftrag 41a:** Added hex dump in the `'D'` branch — it was NEVER triggered!
+**Hasi Task 41a:** Added hex dump in the `'D'` branch — it was NEVER triggered!
 
 Log showed:
 ```
@@ -126,9 +126,9 @@ App = Initiating Party (Alice) → sends 'I' (only ConnInfo) ← THIS IS WHAT WE
 
 The Reply Queue Info was sent BY US in our AgentConfirmation, not received from the App!
 
-### 398.3 Phase 3: Handshake Flow Clarification (Aufträge 39b-39d)
+### 398.3 Phase 3: Handshake Flow Clarification (Tasks 39b-39d)
 
-**Claude Code Auftrag 39b — Complete 7-Step Handshake Flow:**
+**Claude Code Task 39b — Complete 7-Step Handshake Flow:**
 
 ```
 Step  Direction      Action                              Status
@@ -142,7 +142,7 @@ Step  Direction      Action                              Status
 7.    Both           CON                                   ✅ (Session 23!)
 ```
 
-**Claude Code Auftrag 39c — ICDuplexSecure Flow:**
+**Claude Code Task 39c — ICDuplexSecure Flow:**
 
 Two paths identified:
 ```
@@ -150,12 +150,12 @@ Legacy Path:  PHConfirmation 'K' → KEY + HELLO required
 Modern Path:  PHEmpty '_' → Only ACK, CON immediate
 ```
 
-**Claude Code Auftrag 39d — AM_CONN_INFO Trigger:**
+**Claude Code Task 39d — AM_CONN_INFO Trigger:**
 
 AM_CONN_INFO (which leads to CON) is triggered by SMP.MSG, not ACK.
 Confirms that CON follows the HELLO exchange (Legacy Path).
 
-### 398.4 Phase 4: PrivHeader Identification (Auftrag 41b)
+### 398.4 Phase 4: PrivHeader Identification (Task 41b)
 
 **Hasi Log Result:**
 ```
@@ -167,9 +167,9 @@ PrivHeader tag: 0x4B 'K' = PHConfirmation
 The `peer_sender_auth_key` (44B Ed25519 SPKI) was already correctly stored 
 from the received AgentConfirmation.
 
-### 398.5 Phase 5: KEY Command (Aufträge 40b, 42a-42c)
+### 398.5 Phase 5: KEY Command (Tasks 40b, 42a-42c)
 
-**Claude Code Auftrag 40b — KEY Wire Format:**
+**Claude Code Task 40b — KEY Wire Format:**
 ```
 "KEY " + 0x2C + 44B X.509 SPKI DER
 
@@ -177,14 +177,14 @@ Signed with: rcv_private_auth_key (Recipient-Command!)
 Server response: OK
 ```
 
-**Hasi Auftrag 42a:** Added Peer Auth Key logging, removed premature HELLO.
+**Hasi Task 42a:** Added Peer Auth Key logging, removed premature HELLO.
 
-**Hasi Auftrag 42b:** KEY Command attempt — **FAILED!**
+**Hasi Task 42b:** KEY Command attempt — **FAILED!**
 ```
 TLS connection to Q_B was disconnected (timeout)
 ```
 
-**Hasi Auftrag 42c:** Reconnect + SUB + KEY:
+**Hasi Task 42c:** Reconnect + SUB + KEY:
 ```
 1. Reconnect TLS to Reply Queue server
 2. Send SUB (subscribe to queue)
@@ -194,9 +194,9 @@ TLS connection to Q_B was disconnected (timeout)
 
 The App IMMEDIATELY responded with a message on Q_B!
 
-### 398.6 Phase 6: HELLO + CONNECTED! (Auftrag 42d)
+### 398.6 Phase 6: HELLO + CONNECTED! (Task 42d)
 
-**Hasi Auftrag 42d:** Send HELLO on Contact Queue Q_A
+**Hasi Task 42d:** Send HELLO on Contact Queue Q_A
 
 **Result:**
 ```
@@ -228,7 +228,7 @@ Step   Queue   Direction      Content                           Status
 
 ---
 
-## 400. Auftrags-Übersicht Session 23
+## 400. Task Overview Session 23
 
 | # | Agent | Type | Description | Result |
 |---|-------|------|-------------|--------|
@@ -251,7 +251,7 @@ Step   Queue   Direction      Content                           Status
 
 ## 401. Critical Discoveries Session 23
 
-### 401.1 Erkenntnis 1: Role Clarification
+### 401.1 Discovery 1: Role Clarification
 
 ```
 ESP32 = Accepting Party (Bob)
@@ -265,7 +265,7 @@ App = Initiating Party (Alice)
   → Sends HELLO on Reply Queue (Q_B)
 ```
 
-### 401.2 Erkenntnis 2: Tag 'D' vs Tag 'I'
+### 401.2 Discovery 2: Tag 'D' vs Tag 'I'
 
 ```
 Tag 'D' (0x44) = AgentConnInfoReply
@@ -279,7 +279,7 @@ Tag 'I' (0x49) = AgentConnInfo
   → This is what we RECEIVE from App!
 ```
 
-### 401.3 Erkenntnis 3: Legacy vs Modern Path
+### 401.3 Discovery 3: Legacy vs Modern Path
 
 ```
 Legacy Path (PHConfirmation 'K'):
@@ -295,7 +295,7 @@ Modern Path (PHEmpty '_'):
 
 **We use Legacy Path** — the App sends PHConfirmation 'K'.
 
-### 401.4 Erkenntnis 4: KEY is a Recipient Command
+### 401.4 Discovery 4: KEY is a Recipient Command
 
 ```
 KEY Command:
@@ -305,7 +305,7 @@ KEY Command:
   → Body: "KEY " + 0x2C + 44B peer_sender_auth_key SPKI
 ```
 
-### 401.5 Erkenntnis 5: TLS Timeout Matters
+### 401.5 Discovery 5: TLS Timeout Matters
 
 ```
 Reply Queue connection times out during Confirmation processing!
@@ -316,7 +316,7 @@ Solution:
   3. Then send KEY command
 ```
 
-### 401.6 Erkenntnis 6: Sequence is Critical
+### 401.6 Discovery 6: Sequence is Critical
 
 ```
 CORRECT ORDER:
@@ -327,14 +327,14 @@ WRONG ORDER:
   1. HELLO first → App can't decrypt (not authorized yet)
 ```
 
-### 401.7 Erkenntnis 7: Padding Values Confirmed
+### 401.7 Discovery 7: Padding Values Confirmed
 
 ```
 ConnInfo (Tag 'D' or 'I'):  14832 bytes padded
 HELLO / A_MSG:              15840 bytes padded (non-PQ)
 ```
 
-### 401.8 Erkenntnis 8: Session 22 Assumption Was Wrong
+### 401.8 Discovery 8: Session 22 Assumption Was Wrong
 
 ```
 Session 22 assumed:
@@ -351,7 +351,7 @@ Session 23 discovered:
 
 ## 402. Files Changed (Session 23)
 
-| File | Aufträge | Changes |
+| File | Tasks | Changes |
 |------|----------|---------|
 | `main/main.c` | 42a, 42d | Auth Key logging, HELLO removed then restored with correct sequence |
 | `main/smp_queue.c` | 42b, 42c | KEY Command implementation, Reconnect + SUB + KEY |
@@ -487,7 +487,7 @@ Relationship restored — Evgeny continues to support the project.
 | Metric | Value |
 |--------|-------|
 | Duration | ~20 hours |
-| Aufträge completed | 14 (38a, 37a, 39a-d, 40a-b, 41a-b, 42a-d) |
+| Tasks completed | 14 (38a, 37a, 39a-d, 40a-b, 41a-b, 42a-d) |
 | New bugs | 0 (existing 31 bugs were sufficient!) |
 | Claude Code analyses | 8 |
 | Code changes | 3 files |
@@ -500,16 +500,16 @@ Relationship restored — Evgeny continues to support the project.
 | Time | Change | Result |
 |------|--------|--------|
 | 2026-02-07 21:49 | Session start | Analyze codebase |
-| 2026-02-07 | Auftrag 38a | 4-layer model documented |
-| 2026-02-07 | Auftrag 37a | SMPQueueInfo wire format |
-| 2026-02-07 | Auftrag 39b | 7-step handshake flow |
-| 2026-02-07 | Auftrag 39c | Legacy vs Modern path |
-| 2026-02-07 | Auftrag 41a | Tag 'I' discovered (not 'D'!) |
-| 2026-02-07 | Auftrag 41b | PHConfirmation 'K' = Legacy Path |
-| 2026-02-08 | Auftrag 42a | Auth key logging |
-| 2026-02-08 | Auftrag 42b | KEY command (failed - TLS timeout) |
-| 2026-02-08 | Auftrag 42c | Reconnect + SUB + KEY → OK! |
-| 2026-02-08 17:36 | Auftrag 42d | HELLO → **CONNECTED!** 🎉 |
+| 2026-02-07 | Task 38a | 4-layer model documented |
+| 2026-02-07 | Task 37a | SMPQueueInfo wire format |
+| 2026-02-07 | Task 39b | 7-step handshake flow |
+| 2026-02-07 | Task 39c | Legacy vs Modern path |
+| 2026-02-07 | Task 41a | Tag 'I' discovered (not 'D'!) |
+| 2026-02-07 | Task 41b | PHConfirmation 'K' = Legacy Path |
+| 2026-02-08 | Task 42a | Auth key logging |
+| 2026-02-08 | Task 42b | KEY command (failed - TLS timeout) |
+| 2026-02-08 | Task 42c | Reconnect + SUB + KEY → OK! |
+| 2026-02-08 17:36 | Task 42d | HELLO → **CONNECTED!** 🎉 |
 
 ---
 

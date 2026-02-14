@@ -66,13 +66,13 @@ After Session 23 we had:
 |--------|-------|
 | Start | 2026-02-11 |
 | End | 2026-02-13 |
-| Aufträge | 43a-b, 44a, 45a-m |
+| Tasks | 43a-b, 44a, 45a-m |
 | Claude Code Sessions | 3 (simplexmq, simplex-chat, SimpleGo) |
-| Agents | Mausi (Strategy), Hasi (Implementation), Aschenputtel (Log Analysis), Claude Code (Haskell Analysis) |
+| Agents | Mausi (Evil Stepsister #1), Hasi (Evil Stepsister #2), Aschenputtel (Cinderella), Claude Code (The Verifier) |
 
 ---
 
-## 412. Phase 1: A_MSG Wire Format Analysis (Auftrag 43a)
+## 412. Phase 1: A_MSG Wire Format Analysis (Task 43a)
 
 ### 412.1 Claude Code Analysis — Complete A_MSG Byte Layout
 
@@ -125,7 +125,7 @@ Format: [2B len BE][AgentMessage bytes][0x23 '#' padding]
 
 ---
 
-## 413. Phase 2: Q_B Ratchet Decrypt (Auftrag 43b)
+## 413. Phase 2: Q_B Ratchet Decrypt (Task 43b)
 
 ### 413.1 Session 23 Correction — Critical Discovery
 
@@ -170,7 +170,7 @@ The "Connected" status was correct because:
 
 ---
 
-## 414. Phase 3: First A_MSG — MILESTONE! (Auftrag 44a)
+## 414. Phase 3: First A_MSG — MILESTONE! (Task 44a)
 
 ### 414.1 First Attempt — Raw UTF-8 (FAILED)
 
@@ -225,7 +225,7 @@ Encrypt chain (identical to HELLO):
 
 ---
 
-## 415. Phase 4: ACK Protocol Analysis (Aufträge 45c-45h)
+## 415. Phase 4: ACK Protocol Analysis (Tasks 45c-45h)
 
 ### 415.1 The Missing ACK Theory
 
@@ -233,7 +233,7 @@ After A_MSG worked, the next goal was receiving messages on Q_B. Initial symptom
 
 **Hypothesis:** Missing ACK after receiving ConnInfo MSG blocks server delivery.
 
-### 415.2 Claude Code ACK Analysis (Auftrag 45c/45g)
+### 415.2 Claude Code ACK Analysis (Task 45c/45g)
 
 Comprehensive analysis of SMP ACK protocol:
 
@@ -252,7 +252,7 @@ ACK Response:
   Next MSG pending → MSG (immediate delivery)
 ```
 
-### 415.3 Agent-Level ACK Timing (Auftrag 45h)
+### 415.3 Agent-Level ACK Timing (Task 45h)
 
 ```
 Confirmation (Tag 'D' or 'I') → ACK sofort (internal, automatic)
@@ -274,7 +274,7 @@ Server sends: MSG   ← could ALSO come, at ANY time
 Our code: smp_read_block() → expects OK → gets MSG → 💥
 ```
 
-### 415.5 queue_subscribe() Bug (Aufträge 45e-45h)
+### 415.5 queue_subscribe() Bug (Tasks 45e-45h)
 
 **First fix attempt (Claude Code):** SMP Transport Parser — calculated header offsets to find command tag. **Failed** because offset calculation was wrong (345 instead of ~10).
 
@@ -298,7 +298,7 @@ Added `pending_msg` buffer struct for MSG caught during ACK/SUB reads, returned 
 
 ---
 
-## 416. Phase 5: Bidirectional Investigation (Aufträge 45i-45m)
+## 416. Phase 5: Bidirectional Investigation (Tasks 45i-45m)
 
 ### 416.1 Timing Theory — Disproved (45i)
 
@@ -398,7 +398,7 @@ NEXT STEP (Session 25):
 
 ---
 
-## 417. Auftrags-Übersicht Session 24
+## 417. Task Overview Session 24
 
 | # | Agent | Type | Description | Result |
 |---|-------|------|-------------|--------|
@@ -422,7 +422,7 @@ NEXT STEP (Session 25):
 
 ## 418. Critical Discoveries Session 24
 
-### 418.1 Erkenntnis 1: Session 23 False Positive
+### 418.1 Discovery 1: Session 23 False Positive
 
 ```
 Session 23: "HELLO received on Q_B" → FALSE!
@@ -430,7 +430,7 @@ Reality: 15904 bytes after E2E = Ratchet-encrypted ConnInfo
 The code had no Ratchet decrypt → random byte matched 'H'
 ```
 
-### 418.2 Erkenntnis 2: msgBody Must Be ChatMessage JSON
+### 418.2 Discovery 2: msgBody Must Be ChatMessage JSON
 
 ```
 Raw UTF-8 text → "error parsing chat message: not enough input"
@@ -440,7 +440,7 @@ Required format:
   {"v":"1","event":"x.msg.new","params":{"content":{"type":"text","text":"..."}}}
 ```
 
-### 418.3 Erkenntnis 3: SMP ACK Flow Control
+### 418.3 Discovery 3: SMP ACK Flow Control
 
 ```
 Server delivers MSG → blocks until ACK received
@@ -449,7 +449,7 @@ ACK is a Recipient Command (signed with rcv_private_auth_key)
 ACK response can be OK (empty) or MSG (next message)
 ```
 
-### 418.4 Erkenntnis 4: PQ-Kyber Active in Wild
+### 418.4 Discovery 4: PQ-Kyber Active in Wild
 
 ```
 App sends with emHeaderLen=2346 (Post-Quantum Kyber headers)
@@ -457,7 +457,7 @@ Standard: emHeaderLen=124
 Our graceful degradation works — body decrypt succeeds despite PQ
 ```
 
-### 418.5 Erkenntnis 5: App Doesn't Fully Activate Connection
+### 418.5 Discovery 5: App Doesn't Fully Activate Connection
 
 ```
 ESP32 sends "Hello from ESP32!" → App shows it (one checkmark)
@@ -471,7 +471,7 @@ ESP32 Q_B → empty
 
 ## 419. Files Changed (Session 24)
 
-| File | Aufträge | Changes |
+| File | Tasks | Changes |
 |------|----------|---------|
 | `main/main.c` | 43b, 44a, 45a-m | Q_B decrypt, A_MSG send, listen loop, diagnostics |
 | `main/smp_queue.c` | 45e, 45g, 45h | ACK command, pending_msg buffer, queue_subscribe fix |
@@ -511,10 +511,11 @@ ESP32 Q_B → empty
 ### 422.1 Agent Roster Session 24
 
 ```
-👑 Mausi  — Thronsaal (Strategy, Protocol, Aufträge)
-🐰 Hasi   — Werkstatt (Code, Builds, Tests)
-🧹 Aschenputtel — Archiv (Log Analysis)
-🔒 Claude Code  — Keller (Haskell Analysis, NO Git access)
+👑 Mausi         — Evil Stepsister #1 (Strategy, Protocol, Tasks)
+🐰 Hasi          — Evil Stepsister #2 (Code, Builds, Tests)
+🧹 Aschenputtel  — Cinderella (Log Analysis)
+🧙‍♂️ Claude Code   — The Verifier (Haskell Analysis, NO Git access)
+🧑 Cannatoshi    — The Coordinator (Task distribution, Git)
 ```
 
 ### 422.2 Workflow Lessons Learned
