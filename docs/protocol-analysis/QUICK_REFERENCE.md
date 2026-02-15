@@ -2,28 +2,26 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-14 - Session 25 (🎯 Bidirectional Chat + Delivery Receipts!)**
+**Updated: 2026-02-14 - Session 26 (🗄️ Ratchet State Persistence!)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 25 - 🎯 BIDIRECTIONAL CHAT + RECEIPTS! MILESTONES 3,4,5!
-================================================================
+SESSION 26 - 🗄️ RATCHET STATE PERSISTENCE! MILESTONE 6!
+=========================================================
 
-ESP32 ↔ SimpleX App — Full encrypted chat with ✓✓!
+ESP32 survives reboot without losing crypto state!
 
-Session 25 Achievements:
-  - THREE MILESTONES: App→ESP32 decrypt, bidirectional, receipts
-  - 8 bugs fixed (5 critical, 3 high)
-  - Nonce offset corrected: 14 → 13
-  - Ratchet state persistence: copy → pointer
-  - Receipt wire format: count=Word8, rcptInfo=Word16
-  - Refactoring: main.c 2440 → 611 lines (−75%)
-  - 4 new modules: smp_ack, smp_wifi, smp_e2e, smp_agent
+Session 26 Achievements:
+  - MILESTONE 6: Ratchet state persisted to NVS
+  - Write-Before-Send: 7.5ms verified writes
+  - NVS partition: 128KB (150+ contacts)
+  - Delivery receipts work after reboot
+  - Keyboard integration (partial — UI not connected)
 
-Valentine's Day Session — From one-way to two-way! 🎯
+Valentine's Day Part 2 — From volatile RAM to persistent flash! 🗄️
 ```
 
 ---
@@ -1126,8 +1124,82 @@ New modules:
 
 ---
 
-*Quick Reference v19.0*  
-*Last updated: February 14, 2026 - Session 25*  
-*Status: 🎯 Bidirectional Chat + Delivery Receipts!*  
-*All 5 Milestones Achieved!*  
-*Next: Message persistence, UI, multiple contacts*
+## 24. Session 26 Key Insights — Persistence
+
+### 24.1 Write-Before-Send Pattern (Evgeny's Golden Rule)
+
+```
+Generate key → Persist to flash → THEN send → If response lost → Retry with SAME key
+
+This makes operations IDEMPOTENT.
+Without this: response lost → generate NEW key → server/client state desync = FATAL
+```
+
+### 24.2 NVS Storage Architecture
+
+```
+NVS (Internal Flash, 128KB partition)
+├── rat_XX       Ratchet State (520 bytes per contact)
+├── queue_our    Queue credentials
+├── cont_XX      Contact credentials  
+├── peer_XX      Peer connection state
+
+SD Card (External, optional)
+├── Message History
+├── Contact Profiles
+└── File Attachments
+```
+
+### 24.3 Capacity Numbers
+
+```
+NVS:     128KB → 150+ contacts supported
+SD Card: 128GB → 256 million texts, 19 years mixed usage
+
+Ratchet state: 520 bytes each
+Write timing:  7.5ms verified (negligible vs network latency)
+```
+
+### 24.4 Two-Phase Init (SPI Bus Ownership)
+
+```c
+app_main() {
+    nvs_flash_init();
+    smp_storage_init();        // Phase 1: NVS only
+    
+    tdeck_display_init();      // Display owns SPI bus
+    tdeck_lvgl_init();
+    
+    smp_storage_init_sd();     // Phase 2: SD on existing bus
+}
+```
+
+### 24.5 Ratchet Save Points
+
+```
+R2: ratchet_init_sender()    After initialized=true
+R3: ratchet_encrypt()        After chain_key advance, BEFORE network send
+R4/R5: ratchet_decrypt_body() After ADVANCE or SAME state update
+```
+
+### 24.6 Boot Restore Sequence
+
+```c
+if (smp_storage_exists("rat_00") && smp_storage_exists("queue_our")) {
+    ratchet_load_state(0);
+    queue_load_credentials();
+    contact_load_credentials(0);
+    peer_load_state(0);
+    // Skip handshake → direct to subscribe + message loop
+} else {
+    // Fresh start — full handshake
+}
+```
+
+---
+
+*Quick Reference v20.0*  
+*Last updated: February 14, 2026 - Session 26*  
+*Status: 🗄️ Ratchet State Persistence!*  
+*All 6 Milestones Achieved!*  
+*Next: Message ID persistence, multi-task architecture*

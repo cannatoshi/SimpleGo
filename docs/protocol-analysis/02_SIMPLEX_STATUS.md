@@ -2,11 +2,38 @@
 
 **Project:** Native SimpleX SMP Client for ESP32  
 **Version:** v0.1.18-alpha  
-**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (438+ sections, 22 parts)
+**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (457+ sections, 23 parts)
 
 ---
 
-## 🎯 LATEST: THREE MILESTONES! (2026-02-14 Session 25)
+## 🗄️ LATEST: MILESTONE 6! (2026-02-14 Session 26)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  🗄️🗄️🗄️ RATCHET STATE PERSISTENCE! 🗄️🗄️🗄️
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                                                                         │
+  │   MILESTONE 6: ESP32 survives reboot without losing crypto state!      │
+  │                                                                         │
+  │   - Ratchet state restored from NVS flash                              │
+  │   - Queue credentials persisted                                        │
+  │   - Delivery receipts work after reboot                                │
+  │   - Write-Before-Send: 7.5ms verified                                  │
+  │                                                                         │
+  │   Date: February 14, 2026 (Valentine's Day Part 2)                     │
+  │   Platform: ESP32-S3 (LilyGo T-Deck)                                   │
+  │   NVS Capacity: 150+ contacts                                          │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
+---
+
+## 🎯 SESSION 25: Bidirectional Chat + Receipts! (2026-02-14)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
@@ -311,18 +338,19 @@ Bytes 80-95: HEADER_IV (iv2)   ← FOR HEADER!
 | 3 | 📥 App→ESP32 Decrypt | 2026-02-14 | 25 |
 | 4 | 🔄 Bidirectional Chat | 2026-02-14 | 25 |
 | 5 | ✓✓ Delivery Receipts | 2026-02-14 | 25 |
+| **6** | **🗄️ Ratchet Persistence** | **2026-02-14** | **26** |
 
 ---
 
-## 🎯 Next Steps (Session 26)
+## 🎯 Next Steps (Session 27)
 
-1. **Message persistence** — Store messages on ESP32 flash
-2. **UI integration** — Display on LilyGo T-Deck screen
-3. **Multiple contacts** — Handle more than one connection
-4. **Reconnection logic** — Handle connection drops gracefully
+1. **Fix "bad message ID"** — Persist send counter in NVS
+2. **Multi-Task Architecture** — SMP Receive, SMP Send, LVGL UI tasks
+3. **Complete Chat UI** — Connect keyboard to chat screen
+4. **Message bridge** — SMP ↔ LVGL task communication
 5. **Post-quantum upgrade** — Full SNTRUP761 KEM implementation
 
 ---
 
-*Status updated: 2026-02-14 Session 25 — 🎯 BIDIRECTIONAL CHAT + DELIVERY RECEIPTS!*  
-*History: S8 Breakthrough → S23 CONNECTED → S24 First MSG → S25 Bidirectional!*
+*Status updated: 2026-02-14 Session 26 — 🗄️ RATCHET STATE PERSISTENCE!*  
+*History: S8 Breakthrough → S23 CONNECTED → S24 First MSG → S25 Bidirectional → S26 Persistence!*
