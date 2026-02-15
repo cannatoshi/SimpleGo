@@ -1,4 +1,4 @@
-![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+![SimpleGo](../gfx/sg_multi_agent_ft_header.png)
 
 # SimpleX Protocol Analysis - Part 6: Session 9
 # Reply Queue Decryption & A_CRYPTO Error Investigation

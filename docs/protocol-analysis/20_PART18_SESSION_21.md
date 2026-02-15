@@ -1,4 +1,4 @@
-![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+![SimpleGo](../gfx/sg_multi_agent_ft_header.png)
 
 # SimpleX Protocol Analysis - Part 18: Session 21
 # HELLO Format Debugging + v3 EncRatchetMessage + KEY Command

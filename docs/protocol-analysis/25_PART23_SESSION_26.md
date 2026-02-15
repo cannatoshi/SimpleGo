@@ -1,4 +1,4 @@
-![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+![SimpleGo](../gfx/sg_multi_agent_ft_header.png)
 
 # SimpleX Protocol Analysis - Part 23: Session 26
 # 🗄️ Persistence & Storage Architecture

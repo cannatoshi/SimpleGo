@@ -1,4 +1,4 @@
-![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+![SimpleGo](../gfx/sg_multi_agent_ft_header.png)
 
 # ═══════════════════════════════════════════════════════════════════
 # SESSION 6 - 2026-01-24 - HANDSHAKE FLOW ANALYSIS

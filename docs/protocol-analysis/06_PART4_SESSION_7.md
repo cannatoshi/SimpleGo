@@ -1,4 +1,4 @@
-![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+![SimpleGo](../gfx/sg_multi_agent_ft_header.png)
 
 # ═══════════════════════════════════════════════════════════════════
 # SESSION 4 FINALE - 2026-01-24 - COMPLETE WIRE FORMAT!
