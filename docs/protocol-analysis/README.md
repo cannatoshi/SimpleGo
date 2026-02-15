@@ -1,3 +1,5 @@
+![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+
 # SimpleGo Protocol Analysis
 
 ## Complete Development Documentation

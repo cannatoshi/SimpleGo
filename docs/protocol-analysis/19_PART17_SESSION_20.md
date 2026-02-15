@@ -1,3 +1,5 @@
+![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+
 # SimpleX Protocol Analysis - Part 17: Session 20
 # Complete Double Ratchet Body Decrypt + Peer Profile JSON
 

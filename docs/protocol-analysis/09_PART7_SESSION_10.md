@@ -1,3 +1,5 @@
+![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+
 # SimpleX Protocol Analysis - Part 7: Session 10
 # Reply Queue Three-Layer Decryption Analysis
 

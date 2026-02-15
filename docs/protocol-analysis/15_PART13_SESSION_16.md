@@ -1,3 +1,5 @@
+![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+
 # SimpleX Protocol Analysis - Part 13: Session 16 (FINAL)
 # ROOT CAUSE #2: SimpleX Custom XSalsa20 + Double Ratchet Problem
 

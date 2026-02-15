@@ -1,3 +1,5 @@
+![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+
 # SimpleX Protocol Analysis - Part 15: Session 18
 # BUG #18 GELÖST! Wire-Format Root Cause + E2E Layer 2 Decrypt SUCCESS
 

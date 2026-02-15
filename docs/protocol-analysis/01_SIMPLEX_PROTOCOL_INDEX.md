@@ -1,3 +1,5 @@
+![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+
 # SimpleX Protocol Analysis - Documentation Index
 
 **Project:** SimpleGo - Native ESP32 SMP Implementation  

@@ -1,3 +1,5 @@
+![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+
 # SimpleX Protocol Analysis - Part 22: Session 25
 # 🎯 Bidirectional Encrypted Chat + Delivery Receipts!
 

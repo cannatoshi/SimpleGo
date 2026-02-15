@@ -1,3 +1,5 @@
+![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+
 # SimpleX Protocol Analysis - Part 10: Session 13
 # Reply Queue E2E Deep Analysis - MAC Position & Crypto Differences
 

@@ -1,3 +1,5 @@
+![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+
 # SimpleX Protocol Analysis - Part 19: Session 22
 # Reply Queue Flow Discovery + E2E v3 + KEM Parser + NHK Promotion
 

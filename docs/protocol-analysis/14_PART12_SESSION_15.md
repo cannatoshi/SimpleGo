@@ -1,3 +1,5 @@
+![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+
 # SimpleX Protocol Analysis - Part 12: Session 15 (FINAL)
 # Bug #18: Root Cause Found - Missing E2E Key Exchange!
 
