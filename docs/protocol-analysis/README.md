@@ -1,4 +1,4 @@
-![SimpleGo](docs\gfx\sg_multi_agent_ft_header.png)
+![SimpleGo](docs/gfx/sg_multi_agent_ft_header.png)
 
 # SimpleGo Protocol Analysis
 
