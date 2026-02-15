@@ -20,6 +20,7 @@ idf_component_register(
         "crypto"
         "net"
         "state"
+        "core"
         "util"
         "ui"
         "ui/screens"

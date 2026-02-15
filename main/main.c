@@ -54,6 +54,7 @@
 #include "smp_agent.h"
 #include "smp_wifi.h"
 #include "smp_storage.h"
+#include "smp_tasks.h"
 
 extern bool peer_send_hello(contact_t *contact);
 extern int queue_raw_tls_read(uint8_t *buf, int buf_size, int timeout_ms);
@@ -88,12 +89,12 @@ static void keyboard_task(void *arg)
     (void)arg;
     static char buf[256] = {0};
     int pos = 0;
-    
+
     ESP_LOGI("KBD_TASK", "⌨️ Keyboard task started (polling every 50ms)");
-    
+
     while (1) {
         char key = tdeck_keyboard_read();
-        
+
         if (key != 0) {
             if (key == '\r' || key == '\n') {
                 // Enter → send buffered message
@@ -119,7 +120,7 @@ static void keyboard_task(void *arg)
                 ESP_LOGI("KBD_TASK", "⌨️ Buffer: \"%s\"", buf);
             }
         }
-        
+
         vTaskDelay(pdMS_TO_TICKS(50));
     }
 }
@@ -210,29 +211,29 @@ static void smp_connect(void) {
     uint16_t minVer = (hello[0] << 8) | hello[1];
     uint16_t maxVer = (hello[2] << 8) | hello[3];
     uint8_t sessIdLen = hello[4];
-    
+
     if (sessIdLen != 32) {
         ESP_LOGE(TAG, "      Unexpected sessionId length: %d", sessIdLen);
         goto cleanup;
     }
     memcpy(session_id, &hello[5], 32);
-    
+
     ESP_LOGI(TAG, "      Versions: %d-%d", minVer, maxVer);
-    ESP_LOGI(TAG, "      SessionId: %02x%02x%02x%02x...", 
+    ESP_LOGI(TAG, "      SessionId: %02x%02x%02x%02x...",
              session_id[0], session_id[1], session_id[2], session_id[3]);
 
     // ========== Step 3: ClientHello ==========
     ESP_LOGI(TAG, "[3/5] Sending ClientHello...");
-    
+
     int cert1_off, cert1_len, cert2_off, cert2_len;
     parse_cert_chain(hello, content_len, &cert1_off, &cert1_len, &cert2_off, &cert2_len);
-    
+
     if (cert2_off >= 0) {
         mbedtls_sha256(hello + cert2_off, cert2_len, ca_hash, 0);
     } else {
         mbedtls_sha256(hello + cert1_off, cert1_len, ca_hash, 0);
     }
-    
+
     uint8_t client_hello[35];
     int pos = 0;
     client_hello[pos++] = 0x00;
@@ -240,14 +241,14 @@ static void smp_connect(void) {
     client_hello[pos++] = 32;
     memcpy(&client_hello[pos], ca_hash, 32);
     pos += 32;
-    
+
     ret = smp_write_handshake_block(&ssl, block, client_hello, pos);
     if (ret != 0) goto cleanup;
     ESP_LOGI(TAG, "      ClientHello sent!");
 
     // ========== Step 4: Load or Create Contacts ==========
     ESP_LOGI(TAG, "[4/5] Loading contacts...");
-    
+
     if (!session_restored) {
         // Fresh start for testing - comment out in production!
         ESP_LOGW(TAG, "      Clearing old contacts for fresh test...");
@@ -255,9 +256,9 @@ static void smp_connect(void) {
     } else {
         ESP_LOGI(TAG, "      Session restored — keeping persisted contacts");
     }
-    
+
     load_contacts_from_nvs();
-    
+
     if (contacts_db.num_contacts == 0) {
         if (session_restored) {
             ESP_LOGE(TAG, "      ⚠️ Session restored but no contacts found! Falling back to fresh start...");
@@ -272,15 +273,15 @@ static void smp_connect(void) {
     } else {
         ESP_LOGI(TAG, "      %d contact(s) loaded from NVS", contacts_db.num_contacts);
     }
-    
+
     list_contacts();
-    
+
     // ========== Step 5: Subscribe All Contacts ==========
     ESP_LOGI(TAG, "[5/5] Subscribing to queues...");
     subscribe_all_contacts(&ssl, block, session_id);
-    
+
     print_invitation_links(ca_hash, SMP_HOST, SMP_PORT);
-        
+
     // Send invite link to UI
     {
         static char invite_link[1500];
@@ -288,14 +289,29 @@ static void smp_connect(void) {
             ui_connect_set_invite_link(invite_link);
         }
     }
-    
+
+    // ========== Phase 2: Start FreeRTOS Tasks (all PSRAM) ==========
+    ESP_LOGI(TAG, "Free heap before tasks: %lu bytes",
+             (unsigned long)esp_get_free_heap_size());
+    ESP_LOGI(TAG, "Free INTERNAL heap: %lu bytes",
+             (unsigned long)esp_get_free_internal_heap_size());
+
+    if (smp_tasks_init() != 0) {
+        ESP_LOGE(TAG, "Task infrastructure init failed!");
+        goto cleanup;
+    }
+    if (smp_tasks_start(&ssl) != 0) {
+        ESP_LOGE(TAG, "Task start failed!");
+        goto cleanup;
+    }
+
     // ========== Message Receive Loop ==========
     ESP_LOGI(TAG, "+--------------------------------------+");
     ESP_LOGI(TAG, "|   Waiting for messages...            |");
     ESP_LOGI(TAG, "|   (Connect with SimpleX App!)        |");
     ESP_LOGI(TAG, "+--------------------------------------+");
     ESP_LOGI(TAG, "");
-    
+
     while (1) {
         // Auftrag 50d: Check keyboard queue (non-blocking)
         char kbd_msg[256];
@@ -310,14 +326,14 @@ static void smp_connect(void) {
         }
 
         content_len = smp_read_block(&ssl, block, 5000);
-        
+
         if (content_len == -2) {
             // Timeout — loop back to poll keyboard
             continue;
         }
-        
+
         ESP_LOGW(TAG, "47b: MAIN LOOP received block, content_len=%d", content_len);
-        
+
         // 47e: Dump first 64 bytes of EVERY received block
         if (content_len > 0) {
             ESP_LOGW(TAG, "47e: First 64 bytes of block:");
@@ -328,14 +344,14 @@ static void smp_connect(void) {
                 ESP_LOGW(TAG, "  +%04d: %s", i, hex);
             }
         }
-        
+
         if (content_len < 0) {
             ESP_LOGW(TAG, "   Connection closed");
             break;
         }
-        
+
         uint8_t *resp = block + 2;
-        
+
         // Parse transport format
         int p = 0;
         // txCount is a sequence counter, increments per transaction on TLS session
@@ -343,22 +359,22 @@ static void smp_connect(void) {
         ESP_LOGD(TAG, "   txCount: %d", tx_count);
         p++;
         p += 2;
-        
+
         int authLen = resp[p++]; p += authLen;
         int sessLen = resp[p++]; p += sessLen;
         int corrLen = resp[p++]; p += corrLen;
-        
+
         int entLen = resp[p++];
         uint8_t entity_id[24];
         if (entLen > 24) entLen = 24;
         memcpy(entity_id, &resp[p], entLen);
         p += entLen;
-        
+
         int contact_idx = find_contact_by_recipient_id(entity_id, entLen);
         contact_t *contact = (contact_idx >= 0) ? &contacts_db.contacts[contact_idx] : NULL;
-        
+
         // Check if this is our Reply Queue
-        bool is_reply_queue = (our_queue.rcv_id_len > 0 && 
+        bool is_reply_queue = (our_queue.rcv_id_len > 0 &&
                                entLen == our_queue.rcv_id_len &&
                                memcmp(entity_id, our_queue.rcv_id, entLen) == 0);
         if (is_reply_queue) {
@@ -384,16 +400,16 @@ static void smp_connect(void) {
         }
         else if (p + 3 < content_len && resp[p] == 'M' && resp[p+1] == 'S' && resp[p+2] == 'G' && resp[p+3] == ' ') {
             p += 4;
-            
+
             uint8_t msgIdLen = resp[p++];
             uint8_t msg_id[24];
             memset(msg_id, 0, 24);
             if (msgIdLen > 24) msgIdLen = 24;
             memcpy(msg_id, &resp[p], msgIdLen);
             p += msgIdLen;
-            
+
             int enc_len = content_len - p;
-            
+
             if (contact) {
                 ESP_LOGI(TAG, "");
                 ESP_LOGI(TAG, "+----------------------------------------------------------+");
@@ -556,13 +572,13 @@ static void smp_connect(void) {
                     int plain_len = 0;
                     if (decrypt_smp_message(contact, &resp[p], enc_len, msg_id, msgIdLen, plain, &plain_len)) {
                         ESP_LOGI(TAG, "   SMP-Level Decryption OK! (%d bytes)", plain_len);
-                        
+
                         // Extract e2ePubKey from Contact Queue (for reference only)
                         // 47f: Do NOT cache as reply_queue key — Q_B has its own key!
                         if (contact && plain_len > 60) {
-                            const uint8_t x25519_spki[] = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 
+                            const uint8_t x25519_spki[] = {0x30, 0x2a, 0x30, 0x05, 0x06, 0x03,
                                                            0x2b, 0x65, 0x6e, 0x03, 0x21, 0x00};
-                            
+
                             if (memcmp(&plain[14], x25519_spki, 12) == 0) {
                                 ESP_LOGI(TAG, "   47f: Contact Queue E2E key at offset 14 (NOT caching for reply queue)");
                                 ESP_LOGI(TAG, "        Key: %02x%02x%02x%02x...",
@@ -576,9 +592,9 @@ static void smp_connect(void) {
                                 }
                             }
                         }
-                        
+
                         parse_agent_message(contact, plain, plain_len);
-                        
+
                         smp_send_ack(&ssl, block, session_id,
                                      contact->recipient_id, contact->recipient_id_len,
                                      msg_id, msgIdLen,
@@ -594,11 +610,11 @@ static void smp_connect(void) {
             ESP_LOGI(TAG, "");
         }
         else if (p + 2 < content_len && resp[p] == 'E' && resp[p+1] == 'R' && resp[p+2] == 'R') {
-            ESP_LOGE(TAG, "   ERR: %.*s", 
+            ESP_LOGE(TAG, "   ERR: %.*s",
                      (content_len - p > 20) ? 20 : content_len - p, &resp[p]);
         }
         else {
-            ESP_LOGW(TAG, "   Unknown: %c%c%c", 
+            ESP_LOGW(TAG, "   Unknown: %c%c%c",
                      (p < content_len) ? resp[p] : '?',
                      (p+1 < content_len) ? resp[p+1] : '?',
                      (p+2 < content_len) ? resp[p+2] : '?');
@@ -625,7 +641,7 @@ cleanup:
 void app_main(void) {
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "SimpleGo v0.1.17-alpha starting...");
-    
+
     if (sodium_init() < 0) {
         ESP_LOGE(TAG, "libsodium init failed!");
         return;
@@ -637,7 +653,7 @@ void app_main(void) {
         return;
     }
     ESP_LOGI(TAG, "X448 initialized (wolfSSL)");
-    
+
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -669,7 +685,7 @@ void app_main(void) {
             } else {
                 ESP_LOGW(TAG, "Touch init failed - continuing without touch");
             }
-            
+
             // Auftrag 50d: Keyboard init (I2C bus shared with touch)
             ESP_LOGI(TAG, "Initializing Keyboard...");
             ret = tdeck_keyboard_init();
@@ -684,9 +700,9 @@ void app_main(void) {
 
             ESP_LOGI(TAG, "Initializing UI...");
             ui_manager_init();
-            
+
             tdeck_lvgl_start();
-            
+
             vTaskDelay(pdMS_TO_TICKS(50));
             tdeck_display_backlight(100);
         }
@@ -734,7 +750,7 @@ void app_main(void) {
     if (!session_restored) {
         // Create Reply Queue (fresh start only)
         ESP_LOGI(TAG, "Creating reply queue on %s:%d...", SMP_HOST, SMP_PORT);
-        
+
         if (!queue_create(SMP_HOST, SMP_PORT)) {
             ESP_LOGE(TAG, "Failed to create reply queue!");
             ESP_LOGW(TAG, "  Continuing without reply queue...");
@@ -744,7 +760,7 @@ void app_main(void) {
                      our_queue.snd_id[2], our_queue.snd_id[3],
                      our_queue.snd_id_len);
         }
-        
+
         queue_disconnect();
         vTaskDelay(pdMS_TO_TICKS(500));
     }
