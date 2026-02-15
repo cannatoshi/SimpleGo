@@ -1171,6 +1171,14 @@ If NHKr succeeds, it triggers AdvanceRatchet and promotes NHKr→HKr.
 110. **Socket routing bug (late discovery)** - subscribe_all_contacts() SUBs on main ssl, listen reads queue_conn.ssl! (Session 24)
 111. **App's own messages are the best protocol reference** - Byte comparison beats source analysis! (Session 25)
 112. **Test NULL pointers in extended code paths** - New features may use previously-unused parameters! (Session 25)
+113. **Write-Before-Send is architectural, not optional** - Evgeny's pattern prevents state desync bugs (Session 26)
+114. **ESP32 is not a smartphone** - NVS + SD card beats SQLite for embedded (Session 26)
+115. **SPI bus sharing requires ownership model** - Two-Phase Init is the clean pattern (Session 26)
+116. **Validate before you memcpy** - Load to local, validate, then copy to global state (Session 26)
+117. **Unified save strategy beats dual codepaths** - save_blob_sync everywhere, 7.5ms acceptable (Session 26)
+118. **Test laboratory != product architecture** - Blocking main loop must become multi-task (Session 26)
+119. **SD card portability is a product feature** - Swap encrypted SD between devices (Session 26)
+120. **Role discipline in multi-agent workflow** - Mausi coordinates, Hasi implements, no crossing (Session 26)
 
 ---
 
@@ -1294,8 +1302,54 @@ Errors:
 
 ---
 
-*Bug Tracker v20.0*  
-*Last updated: February 14, 2026 - Session 25*  
-*Total bugs documented: 31 + 8 = 39 (all FIXED)*  
-*112 lessons learned!*  
-*🎯 MILESTONES 3, 4, 5: Bidirectional Chat + Delivery Receipts!*
+## Session 26: Persistence & Storage — MILESTONE 6! 🗄️
+
+Session 26 achieved **Milestone 6** (Ratchet State Persistence) in the Valentine's Day Part 2 session:
+- ESP32 survives reboot without losing cryptographic state
+- Write-Before-Send pattern (Evgeny's golden rule) implemented
+- NVS partition expanded to 128KB (150+ contacts)
+
+### No New Protocol Bugs
+
+Session 26 was a feature session (persistence), not protocol debugging. No new protocol bugs discovered.
+
+### Key Achievement: Ratchet State Persistence
+
+```
+Before Session 26: Reboot = complete amnesia
+After Session 26:  ESP32 remembers ratchet state, queue credentials, peer info
+
+Test result:
+  - Rebooted ESP32
+  - App sent message "Test Two"
+  - ESP32 decrypted message without new handshake
+  - Delivery receipt (✓✓) worked!
+```
+
+### Storage Architecture
+
+```
+NVS (Internal Flash) — 128KB partition
+├── rat_XX     Ratchet State (520 bytes per contact)
+├── queue_our  Queue credentials
+├── cont_XX    Contact credentials
+├── peer_XX    Peer connection state
+
+SD Card (External) — Optional, for message history
+```
+
+### Key Metrics
+
+| Metric | Value |
+|--------|-------|
+| NVS write timing | 7.5ms (verified) |
+| Contacts supported | 150+ |
+| Ratchet state size | 520 bytes |
+
+---
+
+*Bug Tracker v21.0*  
+*Last updated: February 14, 2026 - Session 26*  
+*Total bugs documented: 39 (all FIXED)*  
+*120 lessons learned!*  
+*🗄️ MILESTONE 6: Ratchet State Persistence!*

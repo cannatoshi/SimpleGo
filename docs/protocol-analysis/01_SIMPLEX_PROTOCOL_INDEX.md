@@ -2,27 +2,25 @@
 
 **Project:** SimpleGo - Native ESP32 SMP Implementation  
 **Version:** v0.1.18-alpha  
-**Last Updated:** 2026-02-14 (Session 25 — 🎯 Bidirectional + Receipts!)
+**Last Updated:** 2026-02-14 (Session 26 — 🗄️ Persistence!)
 
 ---
 
-## 🎯 LATEST: Bidirectional Chat + Receipts! (Session 25)
+## 🗄️ LATEST: Ratchet State Persistence! (Session 26)
 
-On February 14, 2026 (Valentine's Day), Session 25 achieved **THREE milestones**:
+On February 14, 2026, Session 26 achieved **Milestone 6**:
 
-- **Milestone 3:** First App message decrypted on ESP32
-- **Milestone 4:** Bidirectional encrypted chat ESP32 ↔ App
-- **Milestone 5:** Delivery receipts (✓✓) working!
+- **Milestone 6:** ESP32 survives reboot without losing crypto state!
+- **Write-Before-Send:** Evgeny's golden rule implemented (7.5ms)
+- **NVS Storage:** 128KB partition, 150+ contacts supported
 
-**Refactoring:** main.c 2440 → 611 lines (−75%)  
-**Bugs Fixed:** 8 (5 critical, 3 high)  
-**Lessons Learned:** 112 total
+**Lessons Learned:** 120 total (8 new in S26)
 
 ---
 
 ## Documentation Structure
 
-The complete protocol analysis (~20,000+ lines, 438+ sections) is split into 22 parts:
+The complete protocol analysis (~21,000+ lines, 457+ sections) is split into 23 parts:
 
 | Part | File | Lines | Content |
 |------|------|-------|---------|
@@ -48,7 +46,8 @@ The complete protocol analysis (~20,000+ lines, 438+ sections) is split into 22 
 | 20 | [22_PART20_SESSION_23.md](22_PART20_SESSION_23.md) | ~570 | 🎉 CONNECTED! Historic Milestone! |
 | 21 | [23_PART21_SESSION_24.md](23_PART21_SESSION_24.md) | ~600 | 🏆 First Chat Message! Milestone #2! |
 | **22** | [**24_PART22_SESSION_25.md**](24_PART22_SESSION_25.md) | **~480** | **🎯 Bidirectional + Receipts! M3,4,5!** |
-| **Total** | | **~20,000+** | **438+ Sections** |
+| **23** | [**25_PART23_SESSION_26.md**](25_PART23_SESSION_26.md) | **~600** | **🗄️ Persistence! Milestone 6!** |
+| **Total** | | **~21,000+** | **457+ Sections** |
 
 ---
 
@@ -56,9 +55,9 @@ The complete protocol analysis (~20,000+ lines, 438+ sections) is split into 22 
 
 | Document | Lines | Description |
 |----------|-------|-------------|
-| [README.md](README.md) | ~510 | Project overview and navigation |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,300 | All 39 bugs documented, 112 lessons |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,130 | Constants, wire formats, verified values |
+| [README.md](README.md) | ~560 | Project overview and navigation |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,350 | All 39 bugs documented, 120 lessons |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,200 | Constants, wire formats, verified values |
 
 ---
 
@@ -88,12 +87,13 @@ The complete protocol analysis (~20,000+ lines, 438+ sections) is split into 22 
 | **23** | **Feb 7-8, 2026** | **CONNECTED** | **🎉 First SimpleX on Microcontroller!** |
 | **24** | **Feb 11-13, 2026** | **FIRST A_MSG** | **🏆 First Chat Message!** |
 | **25** | **Feb 13-14, 2026** | **BIDIRECTIONAL** | **🎯 Chat + Receipts! (8 bugs)** |
+| **26** | **Feb 14, 2026** | **PERSISTENCE** | **🗄️ Milestone 6! Ratchet State Persistence** |
 
 ---
 
 ## Key Achievements
 
-### ✅ COMPLETE BIDIRECTIONAL CHAT (Session 25)
+### ✅ COMPLETE BIDIRECTIONAL CHAT + PERSISTENCE (Session 26)
 - TLS 1.3 Handshake
 - SMP Protocol (Contact + Reply Queues)
 - X3DH Key Agreement
@@ -101,6 +101,8 @@ The complete protocol analysis (~20,000+ lines, 438+ sections) is split into 22 
 - E2E Encrypt/Decrypt both directions
 - A_MSG Send + Receive
 - Delivery Receipts (✓✓)
+- **Ratchet State Persistence (NVS)** 🗄️
+- **ESP32 survives reboot!** 🗄️
 - **ESP32 ↔ SimpleX App — Full Chat!** 🎯
 - Zstd Decompression
 - ConnInfo JSON Parsing

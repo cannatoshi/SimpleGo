@@ -6,7 +6,25 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## 🎯 LATEST: Bidirectional Chat + Receipts! (2026-02-14 Session 25)
+## 🗄️ LATEST: Persistence! (2026-02-14 Session 26)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  🗄️🗄️🗄️ RATCHET STATE PERSISTENCE! 🗄️🗄️🗄️
+
+  MILESTONE 6: ESP32 survives reboot without losing crypto state!
+    • Ratchet state restored from NVS flash
+    • Queue credentials persisted
+    • Delivery receipts work after reboot
+    • Write-Before-Send: 7.5ms verified
+
+  Date: February 14, 2026 (Valentine's Day Part 2)
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
+## 🎯 SESSION 25: Bidirectional Chat + Receipts! (2026-02-14)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
@@ -119,8 +137,9 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [21_PART19_SESSION_22.md](21_PART19_SESSION_22.md) | ~600 | Reply Queue Flow Discovery |
 | [22_PART20_SESSION_23.md](22_PART20_SESSION_23.md) | ~570 | 🎉 CONNECTED! Historic Milestone! |
 | [23_PART21_SESSION_24.md](23_PART21_SESSION_24.md) | ~600 | 🏆 First Chat Message! Milestone #2! |
-| [24_PART22_SESSION_25.md](24_PART22_SESSION_25.md) | ~480 | **🎯 Bidirectional + Receipts! M3,4,5!** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1300 | Complete bug documentation (39 bugs, 112 lessons) |
+| [24_PART22_SESSION_25.md](24_PART22_SESSION_25.md) | ~480 | 🎯 Bidirectional + Receipts! M3,4,5! |
+| [25_PART23_SESSION_26.md](25_PART23_SESSION_26.md) | ~600 | **🗄️ Persistence! Milestone 6!** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1350 | Complete bug documentation (39 bugs, 120 lessons) |
 | [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1130 | Constants, wire formats, verified values |
 
 **Total: ~20,000+ lines of detailed protocol analysis (Session docs + reference docs)**
@@ -154,6 +173,49 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | **23** | **Feb 7-8** | **🎉 CONNECTED! Historic Milestone!** | **ZERO new!** |
 | **24** | **Feb 11-13** | **🏆 First Chat Message! Milestone #2!** | **ZERO new!** |
 | **25** | **Feb 13-14** | **🎯 Bidirectional + Receipts! M3,4,5!** | **8 bugs!** |
+| **26** | **Feb 14** | **🗄️ Persistence! Milestone 6!** | **0 bugs** |
+
+---
+
+## Session 26 Key Achievements — 🗄️ Persistence!
+
+### 1. MILESTONE 6: Ratchet State Persistence!
+
+```
+ESP32 survives reboot without losing crypto state!
+
+Write-Before-Send pattern (Evgeny's golden rule):
+  Generate key → Persist to flash → THEN send
+
+NVS Storage: 128KB partition, 150+ contacts supported
+Write timing: 7.5ms verified (negligible vs network latency)
+```
+
+### 2. Storage Architecture
+
+```
+NVS (Internal Flash)     SD Card (External)
+├── Ratchet States       ├── Message History
+├── Queue Credentials    ├── Contact Profiles
+├── Peer Connection      └── File Attachments
+└── Device Config
+
+Capacity: 256 million texts, 19 years mixed usage on 128GB
+```
+
+### 3. Delivery Receipts After Reboot
+
+```
+Test: Reboot ESP32 → App sends message → ESP32 decrypts → ✓✓ works!
+Verified with multiple consecutive reboots.
+```
+
+### 4. Keyboard Integration (Partial)
+
+```
+Working: Keyboard → Serial → Message arrives in app ✅
+Not working: Chat screen UI (architecture refactor needed)
+```
 
 ---
 
