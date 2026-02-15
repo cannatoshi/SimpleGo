@@ -38,11 +38,9 @@ bool decrypt_smp_message(contact_t *c, const uint8_t *encrypted, int enc_len,
     // Decrypt using crypto_box_open_easy_afternm
     if (crypto_box_open_easy_afternm(plain, encrypted, enc_len, full_nonce, shared) != 0) {
         ESP_LOGE(TAG, "Decryption failed");
-        sodium_memzero(shared, sizeof(shared));
         return false;
     }
     
-    sodium_memzero(shared, sizeof(shared));
     *plain_len = enc_len - crypto_box_MACBYTES;
     return true;
 }

@@ -257,11 +257,6 @@ bool ratchet_init_sender(const uint8_t *peer_dh_public, const x448_keypair_t *ou
     // Auftrag 50b R2: Persist initial ratchet state after X3DH
     ratchet_save_state(0);
 
-    // Auftrag 51b: Zero sensitive temporaries
-    sodium_memzero(dh_out, sizeof(dh_out));
-    sodium_memzero(new_root_key, sizeof(new_root_key));
-    sodium_memzero(next_header_key, sizeof(next_header_key));
-
     ESP_LOGI(TAG, "✅ Ratchet initialized");
     return true;
 }
@@ -454,12 +449,6 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     ratchet_state.msg_num_send++;
     free(padded_payload);
     free(encrypted_payload);
-
-    // Auftrag 51b: Zero sensitive temporaries
-    sodium_memzero(message_key, sizeof(message_key));
-    sodium_memzero(next_chain_key, sizeof(next_chain_key));
-    sodium_memzero(msg_iv, sizeof(msg_iv));
-    sodium_memzero(header_iv, sizeof(header_iv));
 
     // Auftrag 50b R3: Evgeny's Rule — persist BEFORE caller sends over network
     ratchet_save_state(0);
@@ -990,16 +979,6 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
 
     // Auftrag 50b R4/R5: Persist ratchet state after successful decrypt
     ratchet_save_state(0);
-
-    // Auftrag 51b: Zero sensitive temporaries
-    sodium_memzero(recv_chain_key, sizeof(recv_chain_key));
-    sodium_memzero(new_root_key_2, sizeof(new_root_key_2));
-    sodium_memzero(send_chain_key, sizeof(send_chain_key));
-    sodium_memzero(message_key, sizeof(message_key));
-    sodium_memzero(next_chain_key, sizeof(next_chain_key));
-    sodium_memzero(temp_ck, sizeof(temp_ck));
-    sodium_memzero(iv_body, sizeof(iv_body));
-    sodium_memzero(&new_dh_self, sizeof(new_dh_self));
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔═══════════════════════════════════════════════════════╗");

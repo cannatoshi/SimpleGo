@@ -54,8 +54,6 @@
 #include "smp_agent.h"
 #include "smp_wifi.h"
 #include "smp_storage.h"
-#include "smp_frame_pool.h"
-#include "smp_tasks.h"
 
 extern bool peer_send_hello(contact_t *contact);
 extern int queue_raw_tls_read(uint8_t *buf, int buf_size, int timeout_ms);
@@ -652,10 +650,6 @@ void app_main(void) {
     smp_storage_print_info();
     smp_storage_self_test();
 
-    // Auftrag 51b: Frame Pool + Task infrastructure
-    frame_pool_init();
-    smp_tasks_init();
-
     // Display + LVGL Init
     ESP_LOGI(TAG, "Initializing Display...");
     ret = tdeck_display_init();
@@ -754,12 +748,6 @@ void app_main(void) {
         queue_disconnect();
         vTaskDelay(pdMS_TO_TICKS(500));
     }
-
-    smp_connect();
-
-    // Auftrag 51b: Start FreeRTOS tasks (stubs — real logic in Phase 3)
-    smp_tasks_start();
-    ESP_LOGI(TAG, "All tasks started — SimpleGo v0.1.17-alpha ready");
 
     smp_connect();
 

@@ -16,7 +16,6 @@ message(STATUS "========================================")
 idf_component_register(
     SRC_DIRS
         "."
-        "core"
         "protocol"
         "crypto"
         "net"
