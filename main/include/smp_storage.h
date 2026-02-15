@@ -204,6 +204,8 @@ void smp_storage_print_info(void);
  * @return ESP_OK if all tests pass
  */
 esp_err_t smp_storage_self_test(void);
+esp_err_t smp_storage_start_writer(void);
+
 
 // ============== Future: Typed Convenience Functions (Auftrag 50b) ==============
 

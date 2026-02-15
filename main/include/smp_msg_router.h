@@ -2,9 +2,8 @@
  * @file smp_msg_router.h
  * @brief Central message router for the App Task
  *
- * Provides the main event loop that processes events from
- * both the Network Task (via ring buffer) and the UI Task
- * (via queue), routing them to appropriate handlers.
+ * Phase 3: Added msg_router_process_frame() for processing
+ * individual frames received from the Network Task.
  *
  * @copyright Copyright (c) 2026 SimpleGo Project
  * @license AGPL-3.0
@@ -13,30 +12,32 @@
 #ifndef SMP_MSG_ROUTER_H
 #define SMP_MSG_ROUTER_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
  * @brief Initialize the message router
- *
- * Sets up internal state for event processing.
- * Must be called before msg_router_run().
  */
 void msg_router_init(void);
 
 /**
- * @brief Run the message router event loop
- *
- * This function blocks and runs the central event loop.
- * It is called from the App Task and never returns.
- *
- * Checks:
- *   1. net_to_app_rb ring buffer for incoming frames
- *   2. ui_to_app_queue for UI events
- *   3. Sleeps briefly if no events pending
+ * @brief Run the message router event loop (Phase 4)
  */
 void msg_router_run(void);
+
+/**
+ * @brief Process a single SMP frame from the Network Task
+ *
+ * Handles transport parsing, contact/queue identification,
+ * decrypt pipeline, and ACK building.
+ *
+ * @param frame_data  Heap-allocated frame (includes 2-byte header)
+ * @param content_len Content length (data starts at frame_data+2)
+ */
+void msg_router_process_frame(uint8_t *frame_data, int content_len);
 
 #ifdef __cplusplus
 }

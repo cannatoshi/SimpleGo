@@ -1,14 +1,17 @@
 /**
  * SimpleGo - smp_storage.c
  * Persistent Storage Module Implementation
- * v0.1.17-alpha
+ * v0.1.17-alpha — Phase 3: NVS Writer Proxy
  *
  * Two-Phase Init Architecture:
  *   Phase 1: smp_storage_init()    → NVS only (before display, no SPI)
  *   Phase 2: smp_storage_init_sd() → SD card on existing SPI bus (after display)
  *
- * The T-Deck display owns SPI2_HOST. We share that bus for SD card
- * with a separate CS pin. Never call spi_bus_initialize() ourselves.
+ * NVS Writer Proxy:
+ *   Flash writes crash when called from tasks with PSRAM stacks (ESP32
+ *   disables cache during flash operations, making PSRAM inaccessible).
+ *   Solution: A small proxy task with internal RAM stack handles all
+ *   NVS writes. Callers block on a semaphore until write completes.
  *
  * SPDX-License-Identifier: AGPL-3.0
  */
@@ -31,16 +34,16 @@
 #include "driver/spi_common.h"
 #include "sdmmc_cmd.h"
 
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
+
 static const char *TAG = "SMP_STOR";
 
 // ============== T-Deck SD Card Configuration ==============
-// T-Deck shares SPI2_HOST with display (SCLK=40, MOSI=41, MISO=38)
-// Display CS = GPIO 12, SD card needs its OWN CS pin
-// T-Deck Plus SD_CS is typically GPIO 39
-// TODO: Verify this pin on your T-Deck — if SD won't mount, check schematic
-
 #define SD_PIN_CS       GPIO_NUM_39
-#define SD_SPI_HOST     SPI2_HOST       // Same bus as display — DO NOT re-initialize!
+#define SD_SPI_HOST     SPI2_HOST
 
 // ============== Internal State ==============
 
@@ -50,6 +53,231 @@ static struct {
     bool sd_mounted;
     sdmmc_card_t *sd_card;
 } storage = {0};
+
+// ============== NVS Writer Proxy ==============
+
+#define NVS_WRITER_STACK    3072    /* Internal RAM — small, just NVS calls */
+#define NVS_WRITER_PRIO     8       /* Higher than App Task to unblock quickly */
+#define NVS_WRITER_QUEUE    4       /* Max queued write requests */
+
+typedef enum {
+    NVS_OP_SAVE,        /* nvs_set_blob + commit */
+    NVS_OP_SAVE_SYNC,   /* nvs_set_blob + commit + verify */
+    NVS_OP_DELETE,       /* nvs_erase_key + commit */
+} nvs_op_type_t;
+
+typedef struct {
+    nvs_op_type_t op;
+    const char *key;
+    const void *data;       /* For SAVE/SAVE_SYNC */
+    size_t len;             /* For SAVE/SAVE_SYNC */
+    esp_err_t *result;      /* Caller's result pointer */
+    SemaphoreHandle_t done; /* Signal completion */
+} nvs_write_req_t;
+
+static TaskHandle_t nvs_writer_handle = NULL;
+static QueueHandle_t nvs_write_queue = NULL;
+static bool nvs_writer_running = false;
+
+/**
+ * NVS Writer Task — runs on internal RAM stack.
+ * Processes write requests from any task (including PSRAM-stack tasks).
+ */
+static void nvs_writer_task(void *pvParameters)
+{
+    ESP_LOGI(TAG, "NVS Writer started (Core %d, internal RAM)", xPortGetCoreID());
+    nvs_write_req_t req;
+
+    while (1) {
+        if (xQueueReceive(nvs_write_queue, &req, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+
+        esp_err_t ret = ESP_FAIL;
+
+        switch (req.op) {
+        case NVS_OP_SAVE: {
+            ret = nvs_set_blob(storage.nvs_handle, req.key, req.data, req.len);
+            if (ret == ESP_OK) {
+                ret = nvs_commit(storage.nvs_handle);
+            }
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "NVS write '%s' failed: %s", req.key, esp_err_to_name(ret));
+            } else {
+                ESP_LOGD(TAG, "NVS save: '%s' (%zu bytes)", req.key, req.len);
+            }
+            break;
+        }
+
+        case NVS_OP_SAVE_SYNC: {
+            int64_t t_start = esp_timer_get_time();
+
+            ret = nvs_set_blob(storage.nvs_handle, req.key, req.data, req.len);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "SYNC write '%s' failed: %s", req.key, esp_err_to_name(ret));
+                break;
+            }
+
+            ret = nvs_commit(storage.nvs_handle);
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "SYNC commit '%s' failed: %s", req.key, esp_err_to_name(ret));
+                break;
+            }
+
+            /* Verify read-back */
+            uint8_t *verify_buf = malloc(req.len);
+            if (!verify_buf) {
+                ESP_LOGE(TAG, "SYNC verify malloc failed (%zu bytes)", req.len);
+                ret = ESP_ERR_NO_MEM;
+                break;
+            }
+
+            size_t verify_len = req.len;
+            ret = nvs_get_blob(storage.nvs_handle, req.key, verify_buf, &verify_len);
+            if (ret != ESP_OK || verify_len != req.len ||
+                memcmp(req.data, verify_buf, req.len) != 0) {
+                ESP_LOGE(TAG, "SYNC verify FAILED for '%s'! Data corruption!", req.key);
+                free(verify_buf);
+                ret = ESP_ERR_INVALID_RESPONSE;
+                break;
+            }
+            free(verify_buf);
+
+            int64_t elapsed_us = esp_timer_get_time() - t_start;
+            ESP_LOGI(TAG, "SYNC save: '%s' (%zu bytes) verified in %lld us",
+                     req.key, req.len, elapsed_us);
+            break;
+        }
+
+        case NVS_OP_DELETE: {
+            ret = nvs_erase_key(storage.nvs_handle, req.key);
+            if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) {
+                ESP_LOGE(TAG, "nvs_erase_key('%s') failed: %s", req.key, esp_err_to_name(ret));
+            } else {
+                nvs_commit(storage.nvs_handle);
+                ESP_LOGD(TAG, "NVS delete: '%s' %s", req.key,
+                         ret == ESP_ERR_NVS_NOT_FOUND ? "(not found)" : "OK");
+            }
+            break;
+        }
+        }
+
+        /* Signal result and completion */
+        if (req.result) {
+            *req.result = ret;
+        }
+        if (req.done) {
+            xSemaphoreGive(req.done);
+        }
+    }
+}
+
+/**
+ * Submit an NVS write request and wait for completion.
+ */
+static esp_err_t nvs_proxy_submit(nvs_op_type_t op, const char *key,
+                                   const void *data, size_t len)
+{
+    if (!nvs_writer_running) {
+        /* Fallback: writer not started yet (early init), do directly */
+        switch (op) {
+        case NVS_OP_SAVE: {
+            esp_err_t r = nvs_set_blob(storage.nvs_handle, key, data, len);
+            if (r == ESP_OK) r = nvs_commit(storage.nvs_handle);
+            return r;
+        }
+        case NVS_OP_DELETE: {
+            esp_err_t r = nvs_erase_key(storage.nvs_handle, key);
+            if (r == ESP_OK || r == ESP_ERR_NVS_NOT_FOUND) nvs_commit(storage.nvs_handle);
+            return r;
+        }
+        case NVS_OP_SAVE_SYNC: {
+            /* Direct sync write (for early init / self-test) */
+            int64_t t_start = esp_timer_get_time();
+            esp_err_t r = nvs_set_blob(storage.nvs_handle, key, data, len);
+            if (r != ESP_OK) return r;
+            r = nvs_commit(storage.nvs_handle);
+            if (r != ESP_OK) return r;
+            uint8_t *vb = malloc(len);
+            if (!vb) return ESP_ERR_NO_MEM;
+            size_t vl = len;
+            r = nvs_get_blob(storage.nvs_handle, key, vb, &vl);
+            if (r != ESP_OK || vl != len || memcmp(data, vb, len) != 0) {
+                free(vb);
+                return ESP_ERR_INVALID_RESPONSE;
+            }
+            free(vb);
+            int64_t elapsed_us = esp_timer_get_time() - t_start;
+            ESP_LOGI(TAG, "SYNC save: '%s' (%zu bytes) verified in %lld us", key, len, elapsed_us);
+            return ESP_OK;
+        }
+        }
+        return ESP_FAIL;
+    }
+
+    /* Create one-shot semaphore for sync */
+    SemaphoreHandle_t done = xSemaphoreCreateBinary();
+    if (!done) {
+        ESP_LOGE(TAG, "Failed to create completion semaphore");
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t result = ESP_FAIL;
+
+    nvs_write_req_t req = {
+        .op = op,
+        .key = key,
+        .data = data,
+        .len = len,
+        .result = &result,
+        .done = done,
+    };
+
+    if (xQueueSend(nvs_write_queue, &req, pdMS_TO_TICKS(5000)) != pdTRUE) {
+        ESP_LOGE(TAG, "NVS write queue full! Dropping '%s'", key);
+        vSemaphoreDelete(done);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    /* Wait for writer task to complete the operation */
+    if (xSemaphoreTake(done, pdMS_TO_TICKS(10000)) != pdTRUE) {
+        ESP_LOGE(TAG, "NVS write timeout for '%s'!", key);
+        vSemaphoreDelete(done);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    vSemaphoreDelete(done);
+    return result;
+}
+
+/**
+ * Start the NVS Writer proxy task.
+ * Call after smp_storage_init() but before tasks that need NVS writes.
+ */
+esp_err_t smp_storage_start_writer(void)
+{
+    if (nvs_writer_running) return ESP_OK;
+
+    nvs_write_queue = xQueueCreate(NVS_WRITER_QUEUE, sizeof(nvs_write_req_t));
+    if (!nvs_write_queue) {
+        ESP_LOGE(TAG, "Failed to create NVS write queue");
+        return ESP_FAIL;
+    }
+
+    BaseType_t ret = xTaskCreatePinnedToCore(
+        nvs_writer_task, "nvs_writer",
+        NVS_WRITER_STACK, NULL, NVS_WRITER_PRIO,
+        &nvs_writer_handle, 0  /* Core 0 — same as Network, away from App */
+    );
+    if (ret != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create NVS Writer task");
+        return ESP_FAIL;
+    }
+
+    nvs_writer_running = true;
+    ESP_LOGI(TAG, "NVS Writer proxy started (stack=%d, internal RAM)", NVS_WRITER_STACK);
+    return ESP_OK;
+}
 
 // ============== Helper: Create directory recursively ==============
 
@@ -115,8 +343,6 @@ esp_err_t smp_storage_init_sd(void) {
         .allocation_unit_size = 16 * 1024
     };
 
-    // Use existing SPI bus from display — DO NOT call spi_bus_initialize()!
-    // Display already initialized SPI2_HOST with SCLK=40, MOSI=41, MISO=38
     sdmmc_host_t host = SDSPI_HOST_DEFAULT();
     host.slot = SD_SPI_HOST;
 
@@ -170,35 +396,20 @@ bool smp_storage_sd_available(void) {
     return storage.sd_mounted;
 }
 
-// ============== NVS Backend ==============
+// ============== NVS Backend (routed through proxy) ==============
 
 esp_err_t smp_storage_save_blob(const char *key, const void *data, size_t len) {
     if (!storage.nvs_ready) {
         ESP_LOGE(TAG, "NVS not initialized");
         return ESP_ERR_INVALID_STATE;
     }
-    if (!key || !data || len == 0) {
-        return ESP_ERR_INVALID_ARG;
-    }
+    if (!key || !data || len == 0) return ESP_ERR_INVALID_ARG;
     if (len > SMP_STORAGE_MAX_BLOB_SIZE) {
         ESP_LOGE(TAG, "Blob too large: %zu > %d", len, SMP_STORAGE_MAX_BLOB_SIZE);
         return ESP_ERR_INVALID_SIZE;
     }
 
-    esp_err_t ret = nvs_set_blob(storage.nvs_handle, key, data, len);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_set_blob('%s') failed: %s", key, esp_err_to_name(ret));
-        return ret;
-    }
-
-    ret = nvs_commit(storage.nvs_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "nvs_commit failed: %s", esp_err_to_name(ret));
-        return ret;
-    }
-
-    ESP_LOGD(TAG, "NVS save: '%s' (%zu bytes)", key, len);
-    return ESP_OK;
+    return nvs_proxy_submit(NVS_OP_SAVE, key, data, len);
 }
 
 esp_err_t smp_storage_load_blob(const char *key, void *buf, size_t buf_len, size_t *out_len) {
@@ -210,6 +421,7 @@ esp_err_t smp_storage_load_blob(const char *key, void *buf, size_t buf_len, size
         return ESP_ERR_INVALID_ARG;
     }
 
+    /* Reads are safe from any task — flash reads don't disable cache */
     size_t required_size = 0;
     esp_err_t ret = nvs_get_blob(storage.nvs_handle, key, NULL, &required_size);
     if (ret != ESP_OK) {
@@ -239,21 +451,13 @@ esp_err_t smp_storage_delete(const char *key) {
     if (!storage.nvs_ready) return ESP_ERR_INVALID_STATE;
     if (!key) return ESP_ERR_INVALID_ARG;
 
-    esp_err_t ret = nvs_erase_key(storage.nvs_handle, key);
-    if (ret != ESP_OK && ret != ESP_ERR_NVS_NOT_FOUND) {
-        ESP_LOGE(TAG, "nvs_erase_key('%s') failed: %s", key, esp_err_to_name(ret));
-        return ret;
-    }
-
-    nvs_commit(storage.nvs_handle);
-    ESP_LOGD(TAG, "NVS delete: '%s' %s", key,
-             ret == ESP_ERR_NVS_NOT_FOUND ? "(not found)" : "OK");
-    return ret;
+    return nvs_proxy_submit(NVS_OP_DELETE, key, NULL, 0);
 }
 
 bool smp_storage_exists(const char *key) {
     if (!storage.nvs_ready || !key) return false;
 
+    /* Reads are safe from any task */
     size_t required_size = 0;
     esp_err_t ret = nvs_get_blob(storage.nvs_handle, key, NULL, &required_size);
     return (ret == ESP_OK && required_size > 0);
@@ -266,41 +470,7 @@ esp_err_t smp_storage_save_blob_sync(const char *key, const void *data, size_t l
     if (!key || !data || len == 0) return ESP_ERR_INVALID_ARG;
     if (len > SMP_STORAGE_MAX_BLOB_SIZE) return ESP_ERR_INVALID_SIZE;
 
-    int64_t t_start = esp_timer_get_time();
-
-    esp_err_t ret = nvs_set_blob(storage.nvs_handle, key, data, len);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SYNC write '%s' failed: %s", key, esp_err_to_name(ret));
-        return ret;
-    }
-
-    ret = nvs_commit(storage.nvs_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SYNC commit '%s' failed: %s", key, esp_err_to_name(ret));
-        return ret;
-    }
-
-    uint8_t *verify_buf = malloc(len);
-    if (!verify_buf) {
-        ESP_LOGE(TAG, "SYNC verify malloc failed (%zu bytes)", len);
-        return ESP_ERR_NO_MEM;
-    }
-
-    size_t verify_len = len;
-    ret = nvs_get_blob(storage.nvs_handle, key, verify_buf, &verify_len);
-    if (ret != ESP_OK || verify_len != len || memcmp(data, verify_buf, len) != 0) {
-        ESP_LOGE(TAG, "SYNC verify FAILED for '%s'! Data corruption!", key);
-        free(verify_buf);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-    free(verify_buf);
-
-    int64_t t_end = esp_timer_get_time();
-    int64_t elapsed_us = t_end - t_start;
-
-    ESP_LOGI(TAG, "SYNC save: '%s' (%zu bytes) verified in %lld us", key, len, elapsed_us);
-
-    return ESP_OK;
+    return nvs_proxy_submit(NVS_OP_SAVE_SYNC, key, data, len);
 }
 
 // ============== SD Card Backend ==============

@@ -161,6 +161,7 @@ esp_err_t smp_net_init(const char *host, int port, bool restored)
     mbedtls_ssl_conf_ciphersuites(&net_conf, ciphersuites);
     mbedtls_ssl_conf_authmode(&net_conf, MBEDTLS_SSL_VERIFY_NONE);
     mbedtls_ssl_conf_rng(&net_conf, mbedtls_ctr_drbg_random, &net_ctr_drbg);
+    mbedtls_ssl_conf_session_tickets(&net_conf, MBEDTLS_SSL_SESSION_TICKETS_DISABLED);
 
     static const char *alpn_list[] = {"smp/1", NULL};
     mbedtls_ssl_conf_alpn_protocols(&net_conf, alpn_list);

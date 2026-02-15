@@ -1,4 +1,4 @@
-﻿/**
+/**
  * SimpleGo - smp_queue.c
  * SMP Queue Management (NEW, SUB, KEY, ACK commands)
  * v0.1.15-alpha - FIXED: NEW command now properly signed!
@@ -102,6 +102,8 @@ static bool queue_connect(const char *host, int port) {
     mbedtls_ssl_conf_ciphersuites(&queue_conn.conf, ciphersuites);
     mbedtls_ssl_conf_authmode(&queue_conn.conf, MBEDTLS_SSL_VERIFY_NONE);
     mbedtls_ssl_conf_rng(&queue_conn.conf, mbedtls_ctr_drbg_random, &queue_conn.ctr_drbg);
+    mbedtls_ssl_conf_session_tickets(&queue_conn.conf, MBEDTLS_SSL_SESSION_TICKETS_DISABLED);
+    mbedtls_ssl_conf_session_tickets(&queue_conn.conf, MBEDTLS_SSL_SESSION_TICKETS_DISABLED);
     
     static const char *alpn_list[] = {"smp/1", NULL};
     mbedtls_ssl_conf_alpn_protocols(&queue_conn.conf, alpn_list);
