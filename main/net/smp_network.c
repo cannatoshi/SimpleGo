@@ -50,6 +50,7 @@ int smp_tcp_connect(const char *host, int port) {
     tv.tv_sec = 15;
     tv.tv_usec = 0;
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     
     if (connect(sock, res->ai_addr, res->ai_addrlen) != 0) {
         ESP_LOGE(TAG, "Connect failed");
@@ -119,7 +120,11 @@ int read_exact(mbedtls_ssl_context *ssl, uint8_t *buf, size_t len, int timeout_m
 
 int smp_read_block(mbedtls_ssl_context *ssl, uint8_t *block, int timeout_ms) {
     int ret = read_exact(ssl, block, SMP_BLOCK_SIZE, timeout_ms);
+    ESP_LOGI(TAG, "read_exact returned %d (expected %d)", ret, SMP_BLOCK_SIZE);
     if (ret < 0) return ret;
+    if (ret != SMP_BLOCK_SIZE) {
+        ESP_LOGW(TAG, "PARTIAL READ: got %d of %d bytes!", ret, SMP_BLOCK_SIZE);
+    }
     
     uint16_t content_len = (block[0] << 8) | block[1];
     if (content_len > SMP_BLOCK_SIZE - 2) {
@@ -139,17 +144,35 @@ int smp_write_handshake_block(mbedtls_ssl_context *ssl, uint8_t *block,
     memcpy(block + 2, content, content_len);
     
     int written = 0;
+    int retry_count = 0;
+    TickType_t start = get_tick_ms();
     while (written < SMP_BLOCK_SIZE) {
-        int ret = mbedtls_ssl_write(ssl, block + written, SMP_BLOCK_SIZE - written);
+        // Write in small chunks - each chunk becomes a TLS record (~1024+22 bytes)
+        // TCP send buffer (~5744) must fit one record + have room for TCP to process
+        size_t chunk = SMP_BLOCK_SIZE - written;
+        if (chunk > 1024) chunk = 1024;
+        int ret = mbedtls_ssl_write(ssl, block + written, chunk);
         if (ret > 0) {
             written += ret;
-        } else if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
-            vTaskDelay(pdMS_TO_TICKS(10));
+            retry_count = 0;
+        } else if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            vTaskDelay(pdMS_TO_TICKS(100));  // Give lwIP time to process TCP ACKs
+            retry_count++;
+            if (retry_count % 10 == 0) {
+                ESP_LOGW(TAG, "Write %s: %d retries, wrote %d/%d bytes",
+                         ret == MBEDTLS_ERR_SSL_WANT_READ ? "WANT_READ" : "WANT_WRITE",
+                         retry_count, written, SMP_BLOCK_SIZE);
+            }
         } else {
-            ESP_LOGE(TAG, "Write error: -0x%04X", -ret);
+            ESP_LOGE(TAG, "Write error: -0x%04X at %d/%d bytes", -ret, written, SMP_BLOCK_SIZE);
             return ret;
         }
+        if ((get_tick_ms() - start) > 30000) {
+            ESP_LOGE(TAG, "Write timeout! wrote %d/%d bytes (retries=%d)", written, SMP_BLOCK_SIZE, retry_count);
+            return -4;
+        }
     }
+    ESP_LOGI(TAG, "Block written: %d bytes", written);
     return 0;
 }
 
@@ -175,15 +198,20 @@ int smp_write_command_block(mbedtls_ssl_context *ssl, uint8_t *block,
     memcpy(&block[pos], transmission, trans_len);
     
     int written = 0;
+    TickType_t start = get_tick_ms();
     while (written < SMP_BLOCK_SIZE) {
         int ret = mbedtls_ssl_write(ssl, block + written, SMP_BLOCK_SIZE - written);
         if (ret > 0) {
             written += ret;
-        } else if (ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        } else if (ret == MBEDTLS_ERR_SSL_WANT_WRITE || ret == MBEDTLS_ERR_SSL_WANT_READ) {
             vTaskDelay(pdMS_TO_TICKS(10));
         } else {
             ESP_LOGE(TAG, "Write error: -0x%04X", -ret);
             return ret;
+        }
+        if ((get_tick_ms() - start) > 30000) {
+            ESP_LOGE(TAG, "Write timeout! wrote %d/%d bytes", written, SMP_BLOCK_SIZE);
+            return -4;
         }
     }
     return 0;

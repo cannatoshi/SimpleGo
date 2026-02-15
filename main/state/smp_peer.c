@@ -25,6 +25,8 @@
 #include "smp_queue.h"     // NEU: Für unsere Queue
 #include "smp_handshake.h"
 #include "smp_storage.h"   // Auftrag 50c: NVS persistence
+#include "lwip/sockets.h"  // Socket timeout (SO_RCVTIMEO)
+#include <fcntl.h>          // fcntl, O_NONBLOCK
 
 static const char *TAG = "SMP_PEER";
 
@@ -57,12 +59,12 @@ static struct {
 
 // ============== Peer Connection ==============
 
-bool peer_connect(const char *host, int port) {
+static bool peer_connect_internal(const char *host, int port) {
     int ret;
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "🔗 CONNECTING TO PEER SERVER...");
-    ESP_LOGI(TAG, "   Host: %s:%d", host, port);
+    ESP_LOGI(TAG, "   Host: %s:%d (running on Core %d)", host, port, xPortGetCoreID());
 
     // Auftrag 24: Save for reconnect
     strncpy(peer_state.last_host, host, sizeof(peer_state.last_host) - 1);
@@ -89,6 +91,21 @@ bool peer_connect(const char *host, int port) {
         return false;
     }
 
+    // Set receive timeout on peer socket (30 seconds)
+    struct timeval tv;
+    tv.tv_sec = 30;
+    tv.tv_usec = 0;
+    setsockopt(peer_state.sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    
+    // Increase TCP send buffer to fit full SMP block as TLS records
+    // Default lwIP TCP_SND_BUF is ~5744, too small for 16KB+ TLS data
+    int sndbuf = 32768;
+    setsockopt(peer_state.sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
+    int actual = 0;
+    socklen_t optlen = sizeof(actual);
+    getsockopt(peer_state.sock, SOL_SOCKET, SO_SNDBUF, &actual, &optlen);
+    ESP_LOGI(TAG, "   TCP SO_SNDBUF: requested=%d, actual=%d", sndbuf, actual);
+
     // TLS setup
     ret = mbedtls_ssl_config_defaults(&peer_state.conf, MBEDTLS_SSL_IS_CLIENT,
                                       MBEDTLS_SSL_TRANSPORT_STREAM,
@@ -103,6 +120,13 @@ bool peer_connect(const char *host, int port) {
     mbedtls_ssl_conf_ciphersuites(&peer_state.conf, ciphersuites);
     mbedtls_ssl_conf_authmode(&peer_state.conf, MBEDTLS_SSL_VERIFY_NONE);
     mbedtls_ssl_conf_rng(&peer_state.conf, mbedtls_ctr_drbg_random, &peer_state.ctr_drbg);
+    
+    // Disable TLS 1.3 session tickets - server sends NewSessionTicket after 
+    // handshake which mbedTLS may wait for before allowing writes (WANT_READ)
+#if defined(MBEDTLS_SSL_SESSION_TICKETS)
+    mbedtls_ssl_conf_session_tickets(&peer_state.conf, MBEDTLS_SSL_SESSION_TICKETS_DISABLED);
+    ESP_LOGI(TAG, "   Session tickets DISABLED");
+#endif
 
     static const char *alpn_list[] = {"smp/1", NULL};
     mbedtls_ssl_conf_alpn_protocols(&peer_state.conf, alpn_list);
@@ -126,15 +150,21 @@ bool peer_connect(const char *host, int port) {
     }
     ESP_LOGI(TAG, "   ✅ TLS OK!");
 
-    // Allocate block buffer
-    uint8_t *block = heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
+    // Allocate block buffer - prefer internal DMA-capable RAM for TLS I/O
+    uint8_t *block = heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (!block) {
+        ESP_LOGW(TAG, "   ⚠️ Internal RAM block failed, using default heap");
+        block = heap_caps_malloc(SMP_BLOCK_SIZE, MALLOC_CAP_8BIT);
+    }
     if (!block) {
         ESP_LOGE(TAG, "   ❌ Block alloc failed");
         return false;
     }
+    ESP_LOGI(TAG, "   Block at %p", (void*)block);
 
     // Wait for ServerHello
     int content_len = smp_read_block(&peer_state.ssl, block, 30000);
+    ESP_LOGI(TAG, "   [DIAG] smp_read_block returned content_len=%d", content_len);
     if (content_len < 0) {
         ESP_LOGE(TAG, "   ❌ No ServerHello");
         free(block);
@@ -154,10 +184,17 @@ bool peer_connect(const char *host, int port) {
              peer_state.session_id[0], peer_state.session_id[1],
              peer_state.session_id[2], peer_state.session_id[3]);
 
+    // Quick state check
+    size_t pending = mbedtls_ssl_get_bytes_avail(&peer_state.ssl);
+    int check_pend = mbedtls_ssl_check_pending(&peer_state.ssl);
+    ESP_LOGI(TAG, "   [DIAG] avail=%zu check_pending=%d", pending, check_pend);
+
     // Parse CA cert for keyHash
+    ESP_LOGI(TAG, "   Parsing cert chain...");
     int cert1_off, cert1_len, cert2_off, cert2_len;
     parse_cert_chain(hello, content_len, &cert1_off, &cert1_len, &cert2_off, &cert2_len);
 
+    ESP_LOGI(TAG, "   Computing CA hash...");
     if (cert2_off >= 0) {
         mbedtls_sha256(hello + cert2_off, cert2_len, peer_state.server_key_hash, 0);
     } else {
@@ -165,6 +202,7 @@ bool peer_connect(const char *host, int port) {
     }
 
     // Send ClientHello
+    ESP_LOGI(TAG, "   Building ClientHello...");
     uint8_t client_hello[35];
     int pos = 0;
     client_hello[pos++] = 0x00;
@@ -173,7 +211,20 @@ bool peer_connect(const char *host, int port) {
     memcpy(&client_hello[pos], peer_state.server_key_hash, 32);
     pos += 32;
 
+    ESP_LOGI(TAG, "   Sending ClientHello via handshake block...");
+    
+    // Make socket non-blocking during write. Without this, when TCP send
+    // buffer fills after first chunk, mbedtls internally calls recv() which
+    // blocks for 30s. Non-blocking makes it return EAGAIN immediately.
+    int flags = fcntl(peer_state.sock, F_GETFL, 0);
+    fcntl(peer_state.sock, F_SETFL, flags | O_NONBLOCK);
+    
     int ret2 = smp_write_handshake_block(&peer_state.ssl, block, client_hello, pos);
+    
+    // Restore blocking for subsequent reads
+    fcntl(peer_state.sock, F_SETFL, flags);
+    
+    ESP_LOGI(TAG, "   ClientHello result: %d", ret2);
     free(block);
 
     if (ret2 != 0) {
@@ -189,6 +240,12 @@ bool peer_connect(const char *host, int port) {
     memcpy(peer_conn.session_id, peer_state.session_id, 32);
 
     return true;
+}
+
+// ============== Public API ==============
+
+bool peer_connect(const char *host, int port) {
+    return peer_connect_internal(host, port);
 }
 
 void peer_disconnect(void) {
