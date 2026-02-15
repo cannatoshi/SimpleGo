@@ -1198,6 +1198,12 @@ If NHKr succeeds, it triggers AdvanceRatchet and promotes NHKr→HKr.
 135. **Multi-agent debugging works** - Different AI instances catch each other's errors (Session 27)
 136. **Cleanup commands before git add, not after** - Avoid committing build artifacts (Session 27)
 137. **Two days in a circle teaches you to measure the circle** - But measure first next time (Session 27)
+138. **erase-flash after branch switch — ALWAYS** - NVS crypto state doesn't match after code changes (Session 28)
+139. **Read handoff protocol COMPLETELY** - Lesson 138 was in S27 handoff and was overlooked (Session 28)
+140. **ESP32-S3: Everything non-DMA → PSRAM** - Internal SRAM limited to ~40KB after WiFi+TLS (Session 28)
+141. **Mutual control catches hallucinations** - Mausi ↔ Hasi cross-review is a reliability mechanism (Session 28)
+142. **Royal tone → better collaboration** - Respectful address leads to productive interactions (Session 28)
+143. **sdkconfig survives git revert** - Check separately after revert operations (Session 28)
 
 ---
 
@@ -1407,8 +1413,45 @@ CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
 
 ---
 
-*Bug Tracker v22.0*  
-*Last updated: February 15, 2026 - Session 27*  
+## Session 28: FreeRTOS Task Architecture — Phase 2b Success! ✅
+
+Session 28 successfully implemented the FreeRTOS multi-task architecture after learning from Session 27's failure. The key was moving all non-DMA resources to PSRAM.
+
+### No New Protocol Bugs
+
+Session 28 was an architecture session. No new protocol bugs, but 6 critical lessons about embedded development.
+
+### Key Achievement: Three Tasks Running
+
+```
+Task Architecture (Phase 2b):
+├── Network Task (Core 0, 12KB stack, Priority 7)
+├── App Task (Core 1, 16KB stack, Priority 6)
+└── UI Task (Core 1, 8KB stack, Priority 5)
+
+PSRAM Allocation:
+├── Frame Pool: 16KB → PSRAM (heap_caps_calloc)
+├── Ring Buffers: 3KB → PSRAM (xRingbufferCreateWithCaps)
+└── Task Stacks: 36KB → PSRAM (already was)
+
+Result: Internal Heap ~40KB preserved for mbedTLS/WiFi ✅
+```
+
+### Critical Lesson: erase-flash
+
+```powershell
+# After EVERY branch switch or sdkconfig change:
+idf.py erase-flash -p COM6
+
+# Then create new contact in app
+```
+
+NVS stores crypto state (ratchet, queues, contacts) that doesn't match after code changes.
+
+---
+
+*Bug Tracker v23.0*  
+*Last updated: February 15, 2026 - Session 28*  
 *Total bugs documented: 39 (all FIXED)*  
-*137 lessons learned!*  
-*⚠️ Session 27: Architecture validated, implementation needs restart*
+*143 lessons learned!*  
+*✅ Session 28: Phase 2b Complete — FreeRTOS Tasks Running!*

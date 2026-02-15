@@ -4,31 +4,30 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-15 - Session 27 (⚠️ FreeRTOS Architecture Investigation)**
+**Updated: 2026-02-15 - Session 28 (✅ FreeRTOS Phase 2b Complete!)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 27 - ⚠️ FREERTOS ARCHITECTURE INVESTIGATION
-====================================================
+SESSION 28 - ✅ FREERTOS PHASE 2b COMPLETE!
+============================================
 
-Architecture design is CORRECT, timing is WRONG.
+Three FreeRTOS Tasks running in parallel!
 
-Session 27 Results:
-  - Phase 1 (Folder restructure): ✅ Works
-  - Phase 2 (FreeRTOS tasks): ❌ Broke main (90KB RAM at boot)
-  - Phase 3 (Network task): ⚠️ Branch polluted
+Session 28 Achievements:
+  - Phase 2b COMPLETE: 3 tasks running
+  - PSRAM solution: All non-DMA resources moved
+  - Internal Heap: ~40KB preserved for mbedTLS/WiFi
+  - Critical lesson: erase-flash after branch switch
 
-Root Cause: Tasks started at boot, starved TLS/WiFi
-Solution:   Start tasks AFTER connection, not at boot
+Task Architecture:
+  - Network Task (Core 0, 12KB stack, Priority 7)
+  - App Task (Core 1, 16KB stack, Priority 6)
+  - UI Task (Core 1, 8KB stack, Priority 5)
 
-sdkconfig Fixes Found:
-  - CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=16384 (mandatory)
-  - CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768 (minimum)
-
-17 lessons learned, 137 total! ⚠️
+6 lessons learned, 143 total! ✅
 ```
 
 ---
@@ -1270,8 +1269,76 @@ The design is correct. The timing was wrong.
 
 ---
 
-*Quick Reference v21.0*  
-*Last updated: February 15, 2026 - Session 27*  
-*Status: ⚠️ FreeRTOS Architecture Investigation*  
+## 26. Session 28 Key Insights — Phase 2b Success
+
+### 26.1 Task Architecture (Working!)
+
+```
+Three FreeRTOS Tasks:
+├── Network Task (Core 0, 12KB stack, Priority 7)
+├── App Task (Core 1, 16KB stack, Priority 6)
+└── UI Task (Core 1, 8KB stack, Priority 5)
+
+Ring Buffers:
+├── Network→App: 2KB (PSRAM)
+└── App→Network: 1KB (PSRAM)
+```
+
+### 26.2 PSRAM Allocation (Critical!)
+
+```c
+// Frame Pool — PSRAM
+frame_t* pool = heap_caps_calloc(FRAME_POOL_SIZE, sizeof(frame_t), MALLOC_CAP_SPIRAM);
+
+// Ring Buffers — PSRAM
+RingbufHandle_t rb = xRingbufferCreateWithCaps(size, RINGBUF_TYPE_NOSPLIT, MALLOC_CAP_SPIRAM);
+```
+
+### 26.3 ESP32-S3 Memory Architecture
+
+```
+┌─────────────────────────────────────────┐
+│  🏆 Internal SRAM (~200KB, ~40KB free)  │
+│     mbedTLS (DMA-bound!)                │
+│     WiFi/TCP Buffers (DMA!)             │
+│     FreeRTOS Kernel                     │
+├─────────────────────────────────────────┤
+│  📚 PSRAM (8MB, external via SPI)       │
+│     Frame Pools, Task Stacks            │
+│     Ring Buffers, LVGL Buffers          │
+│     Everything that doesn't need DMA    │
+├─────────────────────────────────────────┤
+│  🔐 NVS Flash (~128KB, persistent)      │
+│     Ratchet States, Queue Credentials   │
+│     Contact Data, WiFi Credentials      │
+└─────────────────────────────────────────┘
+```
+
+### 26.4 Critical Lesson: erase-flash
+
+```powershell
+# After EVERY branch switch or sdkconfig change:
+idf.py erase-flash -p COM6
+
+# Then create new contact in app
+```
+
+NVS stores crypto state (ratchet, queues, contacts) that doesn't match after code changes.
+
+### 26.5 New Files (Phase 2b)
+
+```
+main/include/smp_events.h      Event types for inter-task communication
+main/include/smp_frame_pool.h  Frame pool interface
+main/include/smp_tasks.h       Task management interface
+main/core/smp_frame_pool.c     Frame pool in PSRAM, sodium_memzero security
+main/core/smp_tasks.c          3 tasks, PSRAM stacks + ring buffers
+```
+
+---
+
+*Quick Reference v22.0*  
+*Last updated: February 15, 2026 - Session 28*  
+*Status: ✅ FreeRTOS Phase 2b Complete!*  
 *All 6 Milestones Still Intact!*  
-*Next: Phase 2 restart with correct task startup timing*
+*Next: Phase 3 Network Task Handover*

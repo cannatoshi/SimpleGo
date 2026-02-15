@@ -8,7 +8,28 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## ⚠️ LATEST: Architecture Investigation (2026-02-15 Session 27)
+## ✅ LATEST: Phase 2b Success! (2026-02-15 Session 28)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  ✅✅✅ FREERTOS TASK ARCHITECTURE — PHASE 2b COMPLETE! ✅✅✅
+
+  Three FreeRTOS Tasks running in parallel!
+    - Network Task (Core 0, 12KB stack)
+    - App Task (Core 1, 16KB stack)
+    - UI Task (Core 1, 8KB stack)
+
+  Key Fix: ALL non-DMA resources moved to PSRAM
+  Internal Heap: ~40KB preserved for mbedTLS/WiFi
+  Duration: ~4 hours
+
+  Date: February 15, 2026
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
+## ⚠️ SESSION 27: Architecture Investigation (2026-02-15)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
@@ -161,8 +182,9 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [23_PART21_SESSION_24.md](23_PART21_SESSION_24.md) | ~600 | 🏆 First Chat Message! Milestone #2! |
 | [24_PART22_SESSION_25.md](24_PART22_SESSION_25.md) | ~480 | 🎯 Bidirectional + Receipts! M3,4,5! |
 | [25_PART23_SESSION_26.md](25_PART23_SESSION_26.md) | ~600 | 🗄️ Persistence! Milestone 6! |
-| [26_PART24_SESSION_27.md](26_PART24_SESSION_27.md) | ~650 | **⚠️ FreeRTOS Architecture Investigation** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1400 | Complete bug documentation (39 bugs, 137 lessons) |
+| [26_PART24_SESSION_27.md](26_PART24_SESSION_27.md) | ~650 | ⚠️ FreeRTOS Architecture Investigation |
+| [27_PART25_SESSION_28.md](27_PART25_SESSION_28.md) | ~550 | **✅ Phase 2b Success — Tasks Running!** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1480 | Complete bug documentation (39 bugs, 143 lessons) |
 | [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1130 | Constants, wire formats, verified values |
 
 **Total: ~20,000+ lines of detailed protocol analysis (Session docs + reference docs)**
@@ -198,6 +220,46 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | **25** | **Feb 13-14** | **🎯 Bidirectional + Receipts! M3,4,5!** | **8 bugs!** |
 | **26** | **Feb 14** | **🗄️ Persistence! Milestone 6!** | **0 bugs** |
 | **27** | **Feb 14-15** | **⚠️ FreeRTOS Architecture Investigation** | **17 lessons** |
+| **28** | **Feb 15** | **✅ Phase 2b Success — 3 Tasks Running!** | **6 lessons** |
+
+---
+
+## Session 28 Key Achievements — ✅ Phase 2b Success!
+
+### 1. Three FreeRTOS Tasks Running
+
+```
+Task Architecture:
+├── Network Task (Core 0, 12KB stack, Priority 7)
+├── App Task (Core 1, 16KB stack, Priority 6)
+└── UI Task (Core 1, 8KB stack, Priority 5)
+
+Ring Buffers:
+├── Network→App: 2KB (PSRAM)
+└── App→Network: 1KB (PSRAM)
+```
+
+### 2. PSRAM Solution
+
+```
+Problem: Tasks + Frame Pool pushed internal heap to 19KB → receive dead
+Solution: Move ALL non-DMA resources to PSRAM
+
+Moved to PSRAM:
+  - Frame Pool: 16KB → heap_caps_calloc(MALLOC_CAP_SPIRAM)
+  - Ring Buffers: 3KB → xRingbufferCreateWithCaps(MALLOC_CAP_SPIRAM)
+  - Task Stacks: 36KB → already PSRAM
+
+Result: Internal Heap ~40KB preserved ✅
+```
+
+### 3. Critical Lesson: erase-flash
+
+```powershell
+# After EVERY branch switch or sdkconfig change:
+idf.py erase-flash -p COM6
+# Then create new contact in app
+```
 
 ---
 

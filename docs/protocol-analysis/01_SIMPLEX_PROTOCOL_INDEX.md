@@ -4,27 +4,26 @@
 
 **Project:** SimpleGo - Native ESP32 SMP Implementation  
 **Version:** v0.1.18-alpha  
-**Last Updated:** 2026-02-15 (Session 27 — ⚠️ FreeRTOS Architecture Investigation)
+**Last Updated:** 2026-02-15 (Session 28 — ✅ FreeRTOS Phase 2b Complete!)
 
 ---
 
-## ⚠️ LATEST: Architecture Investigation (Session 27)
+## ✅ LATEST: Phase 2b Success! (Session 28)
 
-On February 14-15, 2026, Session 27 investigated FreeRTOS multi-task architecture:
+On February 15, 2026, Session 28 successfully implemented FreeRTOS multi-task architecture:
 
-- **Phase 1:** Folder restructure ✅ Works
-- **Phase 2:** FreeRTOS Tasks ❌ Broke main (90KB RAM at boot)
-- **Root Cause:** Tasks started at boot, starved TLS/WiFi
-- **Solution:** Start tasks AFTER connection, not at boot
+- **Phase 2b Complete:** Three tasks running in parallel!
+- **PSRAM Solution:** All non-DMA resources moved to external RAM
+- **Internal Heap:** ~40KB preserved for mbedTLS/WiFi
+- **Critical Lesson:** `erase-flash` after branch switch — ALWAYS!
 
-**sdkconfig fixes:** OUT_CONTENT_LEN=16384, TCP_SND_BUF=32768  
-**Lessons Learned:** 137 total (17 new in S27)
+**Lessons Learned:** 143 total (6 new in S28)
 
 ---
 
 ## Documentation Structure
 
-The complete protocol analysis (~22,000+ lines, 473+ sections) is split into 24 parts:
+The complete protocol analysis (~23,000+ lines, 490+ sections) is split into 25 parts:
 
 | Part | File | Lines | Content |
 |------|------|-------|---------|
@@ -52,7 +51,8 @@ The complete protocol analysis (~22,000+ lines, 473+ sections) is split into 24 
 | **22** | [**24_PART22_SESSION_25.md**](24_PART22_SESSION_25.md) | **~480** | **🎯 Bidirectional + Receipts! M3,4,5!** |
 | **23** | [**25_PART23_SESSION_26.md**](25_PART23_SESSION_26.md) | **~600** | **🗄️ Persistence! Milestone 6!** |
 | **24** | [**26_PART24_SESSION_27.md**](26_PART24_SESSION_27.md) | **~650** | **⚠️ FreeRTOS Architecture Investigation** |
-| **Total** | | **~22,000+** | **473+ Sections** |
+| **25** | [**27_PART25_SESSION_28.md**](27_PART25_SESSION_28.md) | **~550** | **✅ Phase 2b Success — Tasks Running!** |
+| **Total** | | **~23,000+** | **490+ Sections** |
 
 ---
 
@@ -60,9 +60,9 @@ The complete protocol analysis (~22,000+ lines, 473+ sections) is split into 24 
 
 | Document | Lines | Description |
 |----------|-------|-------------|
-| [README.md](README.md) | ~620 | Project overview and navigation |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,400 | All 39 bugs documented, 137 lessons |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,280 | Constants, wire formats, verified values |
+| [README.md](README.md) | ~680 | Project overview and navigation |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,480 | All 39 bugs documented, 143 lessons |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,350 | Constants, wire formats, verified values |
 
 ---
 
@@ -94,6 +94,7 @@ The complete protocol analysis (~22,000+ lines, 473+ sections) is split into 24 
 | **25** | **Feb 13-14, 2026** | **BIDIRECTIONAL** | **🎯 Chat + Receipts! (8 bugs)** |
 | **26** | **Feb 14, 2026** | **PERSISTENCE** | **🗄️ Milestone 6! Ratchet State Persistence** |
 | **27** | **Feb 14-15, 2026** | **ARCHITECTURE** | **⚠️ FreeRTOS Investigation (17 lessons)** |
+| **28** | **Feb 15, 2026** | **TASKS** | **✅ Phase 2b Success — 3 Tasks Running!** |
 
 ---
 

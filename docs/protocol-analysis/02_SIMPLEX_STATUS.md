@@ -4,11 +4,39 @@
 
 **Project:** Native SimpleX SMP Client for ESP32  
 **Version:** v0.1.18-alpha  
-**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (473+ sections, 24 parts)
+**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (490+ sections, 25 parts)
 
 ---
 
-## ⚠️ LATEST: Architecture Investigation (2026-02-15 Session 27)
+## ✅ LATEST: Phase 2b Success! (2026-02-15 Session 28)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  ✅✅✅ FREERTOS TASK ARCHITECTURE — PHASE 2b COMPLETE! ✅✅✅
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                                                                         │
+  │   Three FreeRTOS Tasks running in parallel!                            │
+  │                                                                         │
+  │   - Network Task (Core 0, 12KB stack, Priority 7)                      │
+  │   - App Task (Core 1, 16KB stack, Priority 6)                          │
+  │   - UI Task (Core 1, 8KB stack, Priority 5)                            │
+  │                                                                         │
+  │   Key Fix: ALL non-DMA resources moved to PSRAM                        │
+  │   Internal Heap: ~40KB preserved for mbedTLS/WiFi                      │
+  │                                                                         │
+  │   Date: February 15, 2026                                              │
+  │   Duration: ~4 hours                                                   │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
+---
+
+## ⚠️ SESSION 27: Architecture Investigation (2026-02-15)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
@@ -370,15 +398,15 @@ Bytes 80-95: HEADER_IV (iv2)   ← FOR HEADER!
 
 ---
 
-## 🎯 Next Steps (Session 28)
+## 🎯 Next Steps (Session 29)
 
-1. **Revert Phase 2 commit on main** — Restore working state
-2. **Keep sdkconfig fixes** — OUT_CONTENT_LEN=16384, TCP_SND_BUF=32768
-3. **Redesign task startup** — Tasks AFTER connection, not at boot
-4. **Phase 3 restart** — Fresh branch from working main
-5. **Multi-task architecture** — Proper implementation this time
+1. **Phase 3: Network Task Handover** — Network Task takes over receive loop
+2. **Phase 4: Send Pipeline** — App Task → Network Task via ring buffer
+3. **Send counter fix** — Persist in NVS for "bad message ID"
+4. **UI animations** — Menu transitions, loading indicators
+5. **Chat screen connection** — Bridge keyboard to display
 
 ---
 
-*Status updated: 2026-02-15 Session 27 — ⚠️ FreeRTOS Architecture Investigation*  
-*History: S8 Breakthrough → S23 CONNECTED → S24 First MSG → S25 Bidirectional → S26 Persistence → S27 Architecture*
+*Status updated: 2026-02-15 Session 28 — ✅ FREERTOS PHASE 2b COMPLETE!*  
+*History: S8 Breakthrough → S23 CONNECTED → S24 First MSG → S25 Bidirectional → S26 Persistence → S27 Architecture → S28 Tasks!*
