@@ -4,25 +4,27 @@
 
 **Project:** SimpleGo - Native ESP32 SMP Implementation  
 **Version:** v0.1.18-alpha  
-**Last Updated:** 2026-02-14 (Session 26 — 🗄️ Persistence!)
+**Last Updated:** 2026-02-15 (Session 27 — ⚠️ FreeRTOS Architecture Investigation)
 
 ---
 
-## 🗄️ LATEST: Ratchet State Persistence! (Session 26)
+## ⚠️ LATEST: Architecture Investigation (Session 27)
 
-On February 14, 2026, Session 26 achieved **Milestone 6**:
+On February 14-15, 2026, Session 27 investigated FreeRTOS multi-task architecture:
 
-- **Milestone 6:** ESP32 survives reboot without losing crypto state!
-- **Write-Before-Send:** Evgeny's golden rule implemented (7.5ms)
-- **NVS Storage:** 128KB partition, 150+ contacts supported
+- **Phase 1:** Folder restructure ✅ Works
+- **Phase 2:** FreeRTOS Tasks ❌ Broke main (90KB RAM at boot)
+- **Root Cause:** Tasks started at boot, starved TLS/WiFi
+- **Solution:** Start tasks AFTER connection, not at boot
 
-**Lessons Learned:** 120 total (8 new in S26)
+**sdkconfig fixes:** OUT_CONTENT_LEN=16384, TCP_SND_BUF=32768  
+**Lessons Learned:** 137 total (17 new in S27)
 
 ---
 
 ## Documentation Structure
 
-The complete protocol analysis (~21,000+ lines, 457+ sections) is split into 23 parts:
+The complete protocol analysis (~22,000+ lines, 473+ sections) is split into 24 parts:
 
 | Part | File | Lines | Content |
 |------|------|-------|---------|
@@ -49,7 +51,8 @@ The complete protocol analysis (~21,000+ lines, 457+ sections) is split into 23 
 | 21 | [23_PART21_SESSION_24.md](23_PART21_SESSION_24.md) | ~600 | 🏆 First Chat Message! Milestone #2! |
 | **22** | [**24_PART22_SESSION_25.md**](24_PART22_SESSION_25.md) | **~480** | **🎯 Bidirectional + Receipts! M3,4,5!** |
 | **23** | [**25_PART23_SESSION_26.md**](25_PART23_SESSION_26.md) | **~600** | **🗄️ Persistence! Milestone 6!** |
-| **Total** | | **~21,000+** | **457+ Sections** |
+| **24** | [**26_PART24_SESSION_27.md**](26_PART24_SESSION_27.md) | **~650** | **⚠️ FreeRTOS Architecture Investigation** |
+| **Total** | | **~22,000+** | **473+ Sections** |
 
 ---
 
@@ -57,9 +60,9 @@ The complete protocol analysis (~21,000+ lines, 457+ sections) is split into 23 
 
 | Document | Lines | Description |
 |----------|-------|-------------|
-| [README.md](README.md) | ~560 | Project overview and navigation |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,350 | All 39 bugs documented, 120 lessons |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,200 | Constants, wire formats, verified values |
+| [README.md](README.md) | ~620 | Project overview and navigation |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,400 | All 39 bugs documented, 137 lessons |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,280 | Constants, wire formats, verified values |
 
 ---
 
@@ -90,6 +93,7 @@ The complete protocol analysis (~21,000+ lines, 457+ sections) is split into 23 
 | **24** | **Feb 11-13, 2026** | **FIRST A_MSG** | **🏆 First Chat Message!** |
 | **25** | **Feb 13-14, 2026** | **BIDIRECTIONAL** | **🎯 Chat + Receipts! (8 bugs)** |
 | **26** | **Feb 14, 2026** | **PERSISTENCE** | **🗄️ Milestone 6! Ratchet State Persistence** |
+| **27** | **Feb 14-15, 2026** | **ARCHITECTURE** | **⚠️ FreeRTOS Investigation (17 lessons)** |
 
 ---
 

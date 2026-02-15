@@ -8,7 +8,27 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## 🗄️ LATEST: Persistence! (2026-02-14 Session 26)
+## ⚠️ LATEST: Architecture Investigation (2026-02-15 Session 27)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  ⚠️⚠️⚠️ FREERTOS ARCHITECTURE INVESTIGATION ⚠️⚠️⚠️
+
+  Phase 1: Folder restructure ✅ WORKS
+  Phase 2: FreeRTOS Tasks ❌ BROKE main (90KB RAM at boot)
+  Phase 3: Network Task Migration — branch polluted
+
+  ROOT CAUSE: Tasks started at boot, starved TLS/WiFi
+  SOLUTION: Start tasks AFTER connection, not at boot
+  LESSONS: 17 new (137 total)
+
+  Date: February 14-15, 2026
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
+## 🗄️ SESSION 26: Persistence! (2026-02-14)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
@@ -140,8 +160,9 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [22_PART20_SESSION_23.md](22_PART20_SESSION_23.md) | ~570 | 🎉 CONNECTED! Historic Milestone! |
 | [23_PART21_SESSION_24.md](23_PART21_SESSION_24.md) | ~600 | 🏆 First Chat Message! Milestone #2! |
 | [24_PART22_SESSION_25.md](24_PART22_SESSION_25.md) | ~480 | 🎯 Bidirectional + Receipts! M3,4,5! |
-| [25_PART23_SESSION_26.md](25_PART23_SESSION_26.md) | ~600 | **🗄️ Persistence! Milestone 6!** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1350 | Complete bug documentation (39 bugs, 120 lessons) |
+| [25_PART23_SESSION_26.md](25_PART23_SESSION_26.md) | ~600 | 🗄️ Persistence! Milestone 6! |
+| [26_PART24_SESSION_27.md](26_PART24_SESSION_27.md) | ~650 | **⚠️ FreeRTOS Architecture Investigation** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1400 | Complete bug documentation (39 bugs, 137 lessons) |
 | [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1130 | Constants, wire formats, verified values |
 
 **Total: ~20,000+ lines of detailed protocol analysis (Session docs + reference docs)**
@@ -176,6 +197,39 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | **24** | **Feb 11-13** | **🏆 First Chat Message! Milestone #2!** | **ZERO new!** |
 | **25** | **Feb 13-14** | **🎯 Bidirectional + Receipts! M3,4,5!** | **8 bugs!** |
 | **26** | **Feb 14** | **🗄️ Persistence! Milestone 6!** | **0 bugs** |
+| **27** | **Feb 14-15** | **⚠️ FreeRTOS Architecture Investigation** | **17 lessons** |
+
+---
+
+## Session 27 Key Findings — ⚠️ Architecture Investigation
+
+### 1. Phase Results
+
+```
+Phase 1 (Folder restructure): ✅ Works perfectly
+Phase 2 (FreeRTOS tasks):     ❌ Broke main branch
+Phase 3 (Network task):       ⚠️ Branch polluted by debugging
+
+Root Cause: ~90KB RAM reserved at boot starved TLS/WiFi
+Solution:   Start tasks AFTER connection, not at boot
+```
+
+### 2. sdkconfig Fixes Found
+
+```ini
+# Mandatory for 16KB SMP blocks:
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=16384
+
+# Minimum for TLS records > 4096:
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+```
+
+### 3. Key Lesson
+
+```
+Always baseline-test main before debugging feature branch.
+Git bisect would have saved 2 days.
+```
 
 ---
 

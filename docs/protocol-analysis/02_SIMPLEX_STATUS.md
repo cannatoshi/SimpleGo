@@ -1,12 +1,40 @@
-# SimpleGo - Current Status (2026-02-14)
+![SimpleGo](../gfx/sg_multi_agent_ft_header.png)
+
+# SimpleGo - Current Status (2026-02-15)
 
 **Project:** Native SimpleX SMP Client for ESP32  
 **Version:** v0.1.18-alpha  
-**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (457+ sections, 23 parts)
+**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (473+ sections, 24 parts)
 
 ---
 
-## 🗄️ LATEST: MILESTONE 6! (2026-02-14 Session 26)
+## ⚠️ LATEST: Architecture Investigation (2026-02-15 Session 27)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  ⚠️⚠️⚠️ FREERTOS ARCHITECTURE INVESTIGATION ⚠️⚠️⚠️
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                                                                         │
+  │   Phase 1: Folder restructure ✅ WORKS                                 │
+  │   Phase 2: FreeRTOS Tasks ❌ BROKE main (90KB RAM at boot)             │
+  │   Phase 3: Network Task Migration — branch polluted                    │
+  │                                                                         │
+  │   ROOT CAUSE: Tasks started at boot, starved TLS/WiFi                  │
+  │   SOLUTION: Start tasks AFTER connection, not at boot                  │
+  │                                                                         │
+  │   Date: February 14-15, 2026                                           │
+  │   Lessons Learned: 17 new (137 total)                                  │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
+---
+
+## 🗄️ SESSION 26: Persistence! (2026-02-14)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
@@ -342,15 +370,15 @@ Bytes 80-95: HEADER_IV (iv2)   ← FOR HEADER!
 
 ---
 
-## 🎯 Next Steps (Session 27)
+## 🎯 Next Steps (Session 28)
 
-1. **Fix "bad message ID"** — Persist send counter in NVS
-2. **Multi-Task Architecture** — SMP Receive, SMP Send, LVGL UI tasks
-3. **Complete Chat UI** — Connect keyboard to chat screen
-4. **Message bridge** — SMP ↔ LVGL task communication
-5. **Post-quantum upgrade** — Full SNTRUP761 KEM implementation
+1. **Revert Phase 2 commit on main** — Restore working state
+2. **Keep sdkconfig fixes** — OUT_CONTENT_LEN=16384, TCP_SND_BUF=32768
+3. **Redesign task startup** — Tasks AFTER connection, not at boot
+4. **Phase 3 restart** — Fresh branch from working main
+5. **Multi-task architecture** — Proper implementation this time
 
 ---
 
-*Status updated: 2026-02-14 Session 26 — 🗄️ RATCHET STATE PERSISTENCE!*  
-*History: S8 Breakthrough → S23 CONNECTED → S24 First MSG → S25 Bidirectional → S26 Persistence!*
+*Status updated: 2026-02-15 Session 27 — ⚠️ FreeRTOS Architecture Investigation*  
+*History: S8 Breakthrough → S23 CONNECTED → S24 First MSG → S25 Bidirectional → S26 Persistence → S27 Architecture*

@@ -1,5 +1,6 @@
 ![SimpleGo](../gfx/sg_multi_agent_ft_header.png)
 
+
 # SimpleX Protocol Analysis - A_VERSION Error Debugging
 
 ## 🚀 WE ARE THE FIRST! 🚀

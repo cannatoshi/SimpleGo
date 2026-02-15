@@ -1,27 +1,34 @@
+![SimpleGo](../gfx/sg_multi_agent_ft_header.png)
+
 # Quick Reference
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-14 - Session 26 (🗄️ Ratchet State Persistence!)**
+**Updated: 2026-02-15 - Session 27 (⚠️ FreeRTOS Architecture Investigation)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 26 - 🗄️ RATCHET STATE PERSISTENCE! MILESTONE 6!
-=========================================================
+SESSION 27 - ⚠️ FREERTOS ARCHITECTURE INVESTIGATION
+====================================================
 
-ESP32 survives reboot without losing crypto state!
+Architecture design is CORRECT, timing is WRONG.
 
-Session 26 Achievements:
-  - MILESTONE 6: Ratchet state persisted to NVS
-  - Write-Before-Send: 7.5ms verified writes
-  - NVS partition: 128KB (150+ contacts)
-  - Delivery receipts work after reboot
-  - Keyboard integration (partial — UI not connected)
+Session 27 Results:
+  - Phase 1 (Folder restructure): ✅ Works
+  - Phase 2 (FreeRTOS tasks): ❌ Broke main (90KB RAM at boot)
+  - Phase 3 (Network task): ⚠️ Branch polluted
 
-Valentine's Day Part 2 — From volatile RAM to persistent flash! 🗄️
+Root Cause: Tasks started at boot, starved TLS/WiFi
+Solution:   Start tasks AFTER connection, not at boot
+
+sdkconfig Fixes Found:
+  - CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=16384 (mandatory)
+  - CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768 (minimum)
+
+17 lessons learned, 137 total! ⚠️
 ```
 
 ---
@@ -1198,8 +1205,73 @@ if (smp_storage_exists("rat_00") && smp_storage_exists("queue_our")) {
 
 ---
 
-*Quick Reference v20.0*  
-*Last updated: February 14, 2026 - Session 26*  
-*Status: 🗄️ Ratchet State Persistence!*  
-*All 6 Milestones Achieved!*  
-*Next: Message ID persistence, multi-task architecture*
+## 25. Session 27 Key Insights — FreeRTOS Architecture
+
+### 25.1 Root Cause: 90KB RAM at Boot
+
+```
+Phase 2 commit reserved ~90KB RAM at boot:
+  Network Task Stack: 16KB
+  App Task Stack:     32KB
+  UI Task Stack:      10KB
+  Frame Pool:         32KB
+  Ring Buffers:       12KB
+  ─────────────────────────
+  Total:              ~90KB
+
+This starved smp_connect() of memory for TLS/WiFi.
+```
+
+### 25.2 Correct Task Startup Timing
+
+```c
+// WRONG (Session 27):
+app_main() {
+    smp_tasks_init();     // Reserves 90KB RAM
+    smp_tasks_start();    // Tasks running
+    smp_connect();        // Not enough memory!
+}
+
+// CORRECT (Session 28):
+app_main() {
+    smp_connect();        // Full memory available
+    smp_tasks_init();     // Now safe to reserve
+    smp_tasks_start();    // Tasks take over
+}
+```
+
+### 25.3 sdkconfig Fixes (Mandatory)
+
+```ini
+# Mandatory for 16KB SMP blocks:
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=16384
+
+# Minimum for TLS records > 4096:
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+```
+
+### 25.4 Debugging Lesson
+
+```
+Always baseline-test main before debugging feature branch.
+Git bisect would have found the breaking commit in minutes, not days.
+```
+
+### 25.5 Architecture Design (Valid)
+
+```
+3-Task FreeRTOS System:
+├── Network Task (Core 0, Priority 7) — TLS read/write
+├── App Task (Core 1, Priority 6) — Crypto, protocol, X3DH
+└── UI Task (Core 1, Priority 5) — LVGL, keyboard, display
+
+The design is correct. The timing was wrong.
+```
+
+---
+
+*Quick Reference v21.0*  
+*Last updated: February 15, 2026 - Session 27*  
+*Status: ⚠️ FreeRTOS Architecture Investigation*  
+*All 6 Milestones Still Intact!*  
+*Next: Phase 2 restart with correct task startup timing*

@@ -1,3 +1,5 @@
+![SimpleGo](../gfx/sg_multi_agent_ft_header.png)
+
 # Bug Tracker
 
 ## Complete Documentation of All 39 Bugs
@@ -1179,6 +1181,23 @@ If NHKr succeeds, it triggers AdvanceRatchet and promotes NHKr→HKr.
 118. **Test laboratory != product architecture** - Blocking main loop must become multi-task (Session 26)
 119. **SD card portability is a product feature** - Swap encrypted SD between devices (Session 26)
 120. **Role discipline in multi-agent workflow** - Mausi coordinates, Hasi implements, no crossing (Session 26)
+121. **Tasks AFTER connection, never at boot** - ~90KB RAM at boot starves TLS/WiFi (Session 27)
+122. **Always baseline-test main before debugging feature branch** - 2 days wasted on wrong branch (Session 27)
+123. **Git bisect is your friend** - Would have found breaking commit in minutes (Session 27)
+124. **CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=16384 is mandatory** - Default 4096 deadlocks 16KB writes (Session 27)
+125. **CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768 minimum** - Smaller causes TLS fragmentation (Session 27)
+126. **Bigger TCP buffer ≠ better** - Larger buffers enable async that breaks request-response (Session 27)
+127. **mbedtls_ssl_write + WANT_READ is normal for TLS 1.3** - Don't hack with non-blocking (Session 27)
+128. **Socket timeouts affect mbedTLS unpredictably** - SO_SNDTIMEO/SO_RCVTIMEO interact badly (Session 27)
+129. **Session Tickets — leave default (enabled)** - Haskell uses noSessionManager (Session 27)
+130. **Check RAM budget after every architecture change** - esp_get_free_heap_size() at key points (Session 27)
+131. **Allocate memory pools on demand, not at boot** - Frame pools when needed, not init (Session 27)
+132. **Init stays sequential, tasks take over running operation** - Proven since Session 7 (Session 27)
+133. **Diff after EVERY task, no rushing ahead** - Prevents cumulative errors (Session 27)
+134. **Claude Code — "analyze only, NO code changes"** - Explicitly state to prevent unwanted PRs (Session 27)
+135. **Multi-agent debugging works** - Different AI instances catch each other's errors (Session 27)
+136. **Cleanup commands before git add, not after** - Avoid committing build artifacts (Session 27)
+137. **Two days in a circle teaches you to measure the circle** - But measure first next time (Session 27)
 
 ---
 
@@ -1348,8 +1367,48 @@ SD Card (External) — Optional, for message history
 
 ---
 
-*Bug Tracker v21.0*  
-*Last updated: February 14, 2026 - Session 26*  
+## Session 27: FreeRTOS Architecture Investigation ⚠️
+
+Session 27 attempted the FreeRTOS multi-task architecture transformation. While the architecture design is correct, the implementation reserved ~90KB RAM at boot and broke TLS/WiFi.
+
+### No New Protocol Bugs
+
+Session 27 was an architecture session. No new protocol bugs, but 17 lessons learned about embedded systems development.
+
+### Root Cause
+
+```
+Phase 2 commit reserved ~90KB RAM at boot:
+  Network Task Stack: 16KB
+  App Task Stack:     32KB
+  UI Task Stack:      10KB
+  Frame Pool:         32KB
+  Ring Buffers:       12KB
+  ─────────────────────────
+  Total:              ~90KB
+
+This starved smp_connect() of memory for TLS/WiFi.
+Solution: Start tasks AFTER connection, not at boot.
+```
+
+### sdkconfig Fixes Found
+
+```ini
+# Mandatory for 16KB SMP blocks:
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=16384
+
+# Minimum for TLS records > 4096:
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=32768
+```
+
+### Key Insight
+
+**Always baseline-test main before debugging feature branch.** 2 days were spent debugging Phase 3 when Phase 2 had broken main.
+
+---
+
+*Bug Tracker v22.0*  
+*Last updated: February 15, 2026 - Session 27*  
 *Total bugs documented: 39 (all FIXED)*  
-*120 lessons learned!*  
-*🗄️ MILESTONE 6: Ratchet State Persistence!*
+*137 lessons learned!*  
+*⚠️ Session 27: Architecture validated, implementation needs restart*
