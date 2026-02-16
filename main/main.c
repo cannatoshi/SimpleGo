@@ -300,18 +300,20 @@ static void smp_connect(void) {
         ESP_LOGE(TAG, "Task infrastructure init failed!");
         goto cleanup;
     }
-    if (smp_tasks_start(&ssl) != 0) {
+    if (smp_tasks_start(&ssl, session_id) != 0) {
         ESP_LOGE(TAG, "Task start failed!");
         goto cleanup;
     }
 
-    // ========== Message Receive Loop ==========
+    // ========== App Logic (runs on main task for NVS access) ==========
     ESP_LOGI(TAG, "+--------------------------------------+");
-    ESP_LOGI(TAG, "|   Waiting for messages...            |");
-    ESP_LOGI(TAG, "|   (Connect with SimpleX App!)        |");
+    ESP_LOGI(TAG, "|   App logic on main task (64KB)      |");
     ESP_LOGI(TAG, "+--------------------------------------+");
-    ESP_LOGI(TAG, "");
 
+    // This blocks forever (ring buffer read loop)
+    smp_app_run();
+
+#if 0  // Phase 3 T1: Original receive loop — Network Task reads SSL now
     while (1) {
         // Auftrag 50d: Check keyboard queue (non-blocking)
         char kbd_msg[256];
@@ -620,6 +622,7 @@ static void smp_connect(void) {
                      (p+2 < content_len) ? resp[p+2] : '?');
         }
     }
+#endif  // Phase 3 T1: End of disabled receive loop
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "+--------------------------------------+");
