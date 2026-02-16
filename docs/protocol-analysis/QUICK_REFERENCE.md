@@ -4,30 +4,34 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-15 - Session 28 (✅ FreeRTOS Phase 2b Complete!)**
+**Updated: 2026-02-16 - Session 29 (🏆 Multi-Task Architecture BREAKTHROUGH!)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 28 - ✅ FREERTOS PHASE 2b COMPLETE!
-============================================
+SESSION 29 - 🏆 MULTI-TASK ARCHITECTURE BREAKTHROUGH!
+=====================================================
 
-Three FreeRTOS Tasks running in parallel!
+Complete encrypted messaging pipeline over FreeRTOS Tasks!
 
-Session 28 Achievements:
-  - Phase 2b COMPLETE: 3 tasks running
-  - PSRAM solution: All non-DMA resources moved
-  - Internal Heap: ~40KB preserved for mbedTLS/WiFi
-  - Critical lesson: erase-flash after branch switch
+Session 29 Achievements:
+  - Multi-Task Architecture COMPLETE
+  - Network Task: SSL read loop, command handler
+  - Main Task: Parse, decrypt, NVS, 42d handshake
+  - Ring Buffer IPC working
+  - First message "Hello from ESP32!" via new architecture!
 
-Task Architecture:
-  - Network Task (Core 0, 12KB stack, Priority 7)
-  - App Task (Core 1, 16KB stack, Priority 6)
-  - UI Task (Core 1, 8KB stack, Priority 5)
+CRITICAL DISCOVERY:
+  PSRAM stacks + NVS writes = CRASH on ESP32-S3!
+  Tasks that write NVS MUST have Internal SRAM stack.
 
-6 lessons learned, 143 total! ✅
+Memory Budget:
+  - Internal SRAM: 45KB free (requirement: >30KB) ✅
+  - PSRAM: ~106KB used (1.3% of 8MB) ✅
+
+5 lessons learned, 148 total! 🏆
 ```
 
 ---
@@ -1337,8 +1341,80 @@ main/core/smp_tasks.c          3 tasks, PSRAM stacks + ring buffers
 
 ---
 
-*Quick Reference v22.0*  
-*Last updated: February 15, 2026 - Session 28*  
-*Status: ✅ FreeRTOS Phase 2b Complete!*  
+## 27. Session 29 Key Insights — Multi-Task Architecture
+
+### 27.1 CRITICAL: PSRAM + NVS = CRASH!
+
+```
+ESP32-S3: Tasks with PSRAM stack must NEVER write to NVS!
+
+Root Cause:
+  - SPI Flash write disables cache
+  - PSRAM is cache-based (SPI bus, mapped in cache)
+  - Task loses access to its own stack during Flash write
+
+Crash Backtrace:
+  app_task → parse_agent_message → ratchet_init_sender 
+  → ratchet_save_state → nvs_set_blob → spi_flash_write → CRASH
+```
+
+### 27.2 Architecture After Session 29
+
+```
+Network Task (Core 0, 12KB PSRAM Stack):
+  → smp_read_block(ssl) endless loop
+  → Frame → net_to_app Ring Buffer
+  → Check app_to_net → ACK/Subscribe via SSL
+
+Main Task (64KB Internal SRAM Stack):
+  → smp_app_run() — BLOCKS
+  → Read Ring Buffer → Parse → Decrypt
+  → NVS persistence (SAFE — Internal SRAM!)
+  → 42d handshake
+
+UI Task (Core 1, 8KB PSRAM Stack):
+  → Empty loop (next phase)
+```
+
+### 27.3 Ring Buffer Sizing
+
+```
+NOSPLIT Ring Buffers need ~2.3× payload size!
+
+For 16KB frames:
+  - Expected: 16KB + overhead = ~20KB
+  - Actual needed: 37KB!
+  - FreeRTOS ring buffers have internal overhead
+```
+
+### 27.4 Three Separate SSL Connections
+
+```
+1. Main SSL (Network Task)     — Subscribe, ACK, server commands
+2. Peer SSL (smp_peer.c)       — Chat messages, HELLO, receipts
+3. Reply Queue SSL (smp_queue.c) — Queue reads during 42d handshake
+
+Only Main SSL needs task isolation!
+```
+
+### 27.5 PSRAM Allocations (Total ~106KB)
+
+```
+Frame Pool:           16KB
+net_to_app Buffer:    37KB
+app_to_net Buffer:     1KB
+Net Block Buffer:     16KB
+App Parse Buffer:     16KB
+Network Task Stack:   12KB
+UI Task Stack:         8KB
+─────────────────────────────
+Total:               ~106KB (1.3% of 8MB PSRAM)
+```
+
+---
+
+*Quick Reference v23.0*  
+*Last updated: February 16, 2026 - Session 29*  
+*Status: 🏆 Multi-Task Architecture BREAKTHROUGH!*  
 *All 6 Milestones Still Intact!*  
-*Next: Phase 3 Network Task Handover*
+*Next: Session 30 — Send Pipeline + Cleanup*

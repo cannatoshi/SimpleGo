@@ -8,7 +8,27 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## ✅ LATEST: Phase 2b Success! (2026-02-15 Session 28)
+## 🏆 LATEST: Multi-Task Architecture BREAKTHROUGH! (2026-02-16 Session 29)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  🏆🏆🏆 MULTI-TASK ARCHITECTURE — BREAKTHROUGH! 🏆🏆🏆
+
+  Complete encrypted messaging pipeline over FreeRTOS Tasks!
+    - Network Task (Core 0, PSRAM): SSL read loop
+    - Main Task (Internal SRAM): Parse, decrypt, NVS
+    - Ring Buffer IPC: Cross-core communication
+
+  First message "Hello from ESP32!" sent via new architecture!
+  CRITICAL: PSRAM stacks + NVS writes = CRASH!
+
+  Date: February 16, 2026
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
+## ✅ SESSION 28: Phase 2b Success! (2026-02-15)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
@@ -183,8 +203,9 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [24_PART22_SESSION_25.md](24_PART22_SESSION_25.md) | ~480 | 🎯 Bidirectional + Receipts! M3,4,5! |
 | [25_PART23_SESSION_26.md](25_PART23_SESSION_26.md) | ~600 | 🗄️ Persistence! Milestone 6! |
 | [26_PART24_SESSION_27.md](26_PART24_SESSION_27.md) | ~650 | ⚠️ FreeRTOS Architecture Investigation |
-| [27_PART25_SESSION_28.md](27_PART25_SESSION_28.md) | ~550 | **✅ Phase 2b Success — Tasks Running!** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1480 | Complete bug documentation (39 bugs, 143 lessons) |
+| [27_PART25_SESSION_28.md](27_PART25_SESSION_28.md) | ~550 | ✅ Phase 2b Success — Tasks Running! |
+| [28_PART26_SESSION_29.md](28_PART26_SESSION_29.md) | ~500 | **🏆 Multi-Task Architecture BREAKTHROUGH!** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1550 | Complete bug documentation (39 bugs, 148 lessons) |
 | [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1130 | Constants, wire formats, verified values |
 
 **Total: ~20,000+ lines of detailed protocol analysis (Session docs + reference docs)**
@@ -221,6 +242,47 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | **26** | **Feb 14** | **🗄️ Persistence! Milestone 6!** | **0 bugs** |
 | **27** | **Feb 14-15** | **⚠️ FreeRTOS Architecture Investigation** | **17 lessons** |
 | **28** | **Feb 15** | **✅ Phase 2b Success — 3 Tasks Running!** | **6 lessons** |
+| **29** | **Feb 16** | **🏆 Multi-Task Architecture BREAKTHROUGH!** | **5 lessons** |
+
+---
+
+## Session 29 Key Achievements — 🏆 Multi-Task BREAKTHROUGH!
+
+### 1. Complete Multi-Task Architecture
+
+```
+Network Task (Core 0, 12KB PSRAM):
+  → SSL read loop → Ring Buffer → Main Task
+
+Main Task (64KB Internal SRAM):
+  → smp_app_run() → Parse → Decrypt → NVS
+
+Ring Buffer IPC:
+  → net_to_app: 37KB (frames)
+  → app_to_net: 1KB (commands)
+```
+
+### 2. Critical Discovery: PSRAM + NVS = CRASH!
+
+```
+ESP32-S3: Tasks with PSRAM stack must NEVER write to NVS!
+
+Root Cause:
+  - SPI Flash write disables cache
+  - PSRAM is cache-based
+  - Task loses stack access during Flash write
+
+Solution:
+  - App logic runs in Main Task (Internal SRAM)
+  - Network Task (PSRAM) only does SSL reads
+```
+
+### 3. First Message via New Architecture
+
+```
+"Hello from ESP32!" successfully sent via:
+  Main Task → Peer SSL → SimpleX App ✅
+```
 
 ---
 

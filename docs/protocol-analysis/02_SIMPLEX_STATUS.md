@@ -4,11 +4,39 @@
 
 **Project:** Native SimpleX SMP Client for ESP32  
 **Version:** v0.1.18-alpha  
-**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (490+ sections, 25 parts)
+**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (502+ sections, 26 parts)
 
 ---
 
-## ✅ LATEST: Phase 2b Success! (2026-02-15 Session 28)
+## 🏆 LATEST: Multi-Task Architecture BREAKTHROUGH! (2026-02-16 Session 29)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  🏆🏆🏆 MULTI-TASK ARCHITECTURE — BREAKTHROUGH! 🏆🏆🏆
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                                                                         │
+  │   Complete encrypted messaging pipeline over FreeRTOS Tasks!           │
+  │                                                                         │
+  │   - Network Task (Core 0, PSRAM): SSL read loop, command handler       │
+  │   - Main Task (Internal SRAM): Parse, decrypt, NVS, 42d handshake      │
+  │   - Ring Buffer IPC: net_to_app (37KB), app_to_net (1KB)               │
+  │                                                                         │
+  │   First message "Hello from ESP32!" sent via new architecture!         │
+  │                                                                         │
+  │   CRITICAL: PSRAM stacks + NVS writes = CRASH!                         │
+  │                                                                         │
+  │   Date: February 16, 2026                                              │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
+---
+
+## ✅ SESSION 28: Phase 2b Success! (2026-02-15)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
@@ -398,15 +426,15 @@ Bytes 80-95: HEADER_IV (iv2)   ← FOR HEADER!
 
 ---
 
-## 🎯 Next Steps (Session 29)
+## 🎯 Next Steps (Session 30)
 
-1. **Phase 3: Network Task Handover** — Network Task takes over receive loop
-2. **Phase 4: Send Pipeline** — App Task → Network Task via ring buffer
-3. **Send counter fix** — Persist in NVS for "bad message ID"
-4. **UI animations** — Menu transitions, loading indicators
-5. **Chat screen connection** — Bridge keyboard to display
+1. **T5: Keyboard send split** — Refactor `peer_send_chat_message()`
+2. **T6: Baseline test bidirectional** — Complete with keyboard
+3. **T7: Cleanup + Commit** — Remove `#if 0` loop, commit changes
+4. **UI Task activation** — Connect to LVGL
+5. **Send counter persistence** — Fix "bad message ID"
 
 ---
 
-*Status updated: 2026-02-15 Session 28 — ✅ FREERTOS PHASE 2b COMPLETE!*  
-*History: S8 Breakthrough → S23 CONNECTED → S24 First MSG → S25 Bidirectional → S26 Persistence → S27 Architecture → S28 Tasks!*
+*Status updated: 2026-02-16 Session 29 — 🏆 MULTI-TASK ARCHITECTURE BREAKTHROUGH!*  
+*History: S8 Breakthrough → S23 CONNECTED → S24 First MSG → S25 Bidirectional → S26 Persistence → S27 Architecture → S28 Tasks → S29 Multi-Task!*

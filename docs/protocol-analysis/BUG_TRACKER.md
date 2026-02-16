@@ -1204,6 +1204,11 @@ If NHKr succeeds, it triggers AdvanceRatchet and promotes NHKr→HKr.
 141. **Mutual control catches hallucinations** - Mausi ↔ Hasi cross-review is a reliability mechanism (Session 28)
 142. **Royal tone → better collaboration** - Respectful address leads to productive interactions (Session 28)
 143. **sdkconfig survives git revert** - Check separately after revert operations (Session 28)
+144. **PSRAM stacks + NVS writes = Crash on ESP32-S3** - SPI Flash write disables cache, PSRAM is cache-based. Tasks that write NVS MUST have Internal SRAM stack. CRITICAL! (Session 29)
+145. **NOSPLIT Ring Buffers need ~2.3× payload size** - For 16KB frames we needed 37KB buffer, not 20KB (Session 29)
+146. **Main Task as App Logic Carrier** - Main Task has largest Internal SRAM stack (64KB), ideal for NVS-writing logic. Don't let it sleep! (Session 29)
+147. **Three separate SSL connections** - Main SSL (Network Task), Peer SSL (smp_peer.c), Reply Queue SSL (smp_queue.c). Only main SSL needs task isolation (Session 29)
+148. **Read timeout 1000ms instead of 5000ms** - When Network Task services return channel, shorter timeout prevents ACK waiting 5 seconds (Session 29)
 
 ---
 
@@ -1450,8 +1455,49 @@ NVS stores crypto state (ratchet, queues, contacts) that doesn't match after cod
 
 ---
 
-*Bug Tracker v23.0*  
-*Last updated: February 15, 2026 - Session 28*  
+## Session 29: Multi-Task Architecture — BREAKTHROUGH! 🏆
+
+Session 29 successfully implemented the multi-task architecture for SimpleGo. The complete encrypted messaging pipeline now runs over FreeRTOS Tasks with cross-core Ring Buffer IPC.
+
+### No New Protocol Bugs
+
+Session 29 was an architecture session. No new protocol bugs, but 5 critical lessons about ESP32-S3 hardware.
+
+### Critical Discovery: PSRAM + NVS
+
+```
+ESP32-S3: Tasks with PSRAM stack must NEVER write to NVS!
+
+Root Cause:
+  - SPI Flash write disables cache
+  - PSRAM is cache-based (SPI bus, mapped in cache)
+  - Task loses access to its own stack during Flash write
+  - Immediate crash!
+
+Solution:
+  - App logic runs in Main Task (64KB Internal SRAM)
+  - Network Task (PSRAM) only does SSL reads (no NVS)
+  - UI Task (PSRAM) empty for now (no NVS)
+```
+
+### Architecture After Session 29
+
+```
+Network Task (Core 0, 12KB PSRAM):
+  → SSL read loop → Ring Buffer → Main Task
+
+Main Task (64KB Internal SRAM):
+  → Parse → Decrypt → NVS → 42d handshake
+
+Ring Buffer IPC:
+  → net_to_app: 37KB (frames)
+  → app_to_net: 1KB (commands)
+```
+
+---
+
+*Bug Tracker v24.0*  
+*Last updated: February 16, 2026 - Session 29*  
 *Total bugs documented: 39 (all FIXED)*  
-*143 lessons learned!*  
-*✅ Session 28: Phase 2b Complete — FreeRTOS Tasks Running!*
+*148 lessons learned!*  
+*🏆 Session 29: Multi-Task Architecture BREAKTHROUGH!*
