@@ -64,6 +64,6 @@ void smp_tasks_stop(void);
  * MUST be called from main task (needs Internal SRAM stack for NVS writes).
  * This function blocks (infinite loop) until connection error.
  */
-void smp_app_run(void);
+void smp_app_run(QueueHandle_t kbd_queue);
 
 #endif // SMP_TASKS_H

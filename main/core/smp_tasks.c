@@ -171,7 +171,7 @@ static void app_request_subscribe_all(void)
 
 // Phase 3 T4: App logic runs on Main Task (64KB Internal SRAM stack)
 // Required because NVS writes crash with PSRAM stack (SPI Flash disables cache)
-void smp_app_run(void)
+void smp_app_run(QueueHandle_t kbd_queue)
 {
     ESP_LOGI(TAG_APP, "App logic running on main task, core %d", xPortGetCoreID());
     log_heap("app_run");
@@ -187,6 +187,20 @@ void smp_app_run(void)
     ESP_LOGI(TAG_APP, "App logic: parse loop starting...");
 
     while (1) {
+        // T5: Keyboard send (non-blocking poll)
+        {
+            char kbd_msg[256];
+            while (kbd_queue && xQueueReceive(kbd_queue, kbd_msg, 0) == pdTRUE) {
+                ESP_LOGI(TAG_APP, "⌨️ Sending: \"%s\"", kbd_msg);
+                contact_t *msg_contact = &contacts_db.contacts[0];
+                if (peer_send_chat_message(msg_contact, kbd_msg)) {
+                    ESP_LOGI(TAG_APP, "   ✅ Keyboard message sent!");
+                } else {
+                    ESP_LOGE(TAG_APP, "   ❌ Keyboard message send failed!");
+                }
+            }
+        }
+
         // 1. Read frame from ring buffer (blocking with timeout)
         size_t item_size = 0;
         void *item = xRingbufferReceive(net_to_app_buf, &item_size, pdMS_TO_TICKS(1000));

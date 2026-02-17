@@ -311,7 +311,7 @@ static void smp_connect(void) {
     ESP_LOGI(TAG, "+--------------------------------------+");
 
     // This blocks forever (ring buffer read loop)
-    smp_app_run();
+    smp_app_run(kbd_msg_queue);
 
 #if 0  // Phase 3 T1: Original receive loop — Network Task reads SSL now
     while (1) {
