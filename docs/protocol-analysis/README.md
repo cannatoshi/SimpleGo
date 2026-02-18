@@ -8,7 +8,28 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## 🏆 LATEST: Multi-Task Architecture BREAKTHROUGH! (2026-02-16 Session 29)
+## 🔍 LATEST: Intensive Debug Session (2026-02-18 Session 30)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  🔍🔍🔍 INTENSIVE DEBUG SESSION — 10 HYPOTHESES, 14 FIXES 🔍🔍🔍
+
+  T5: Keyboard-Send ✅ PASSED
+  T6: Bidirectional ❌ UNRESOLVED
+
+  Problem: App→ESP32 messages never arrive after successful SUB
+  10 hypotheses systematically excluded
+  14 fixes and diagnostics applied
+  SMP v6 → v7 upgrade (33 bytes saved)
+  Expert question sent to Evgeny Poberezkin
+
+  Date: February 16-18, 2026
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
+## 🏆 SESSION 29: Multi-Task BREAKTHROUGH! (2026-02-16)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
@@ -204,8 +225,9 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [25_PART23_SESSION_26.md](25_PART23_SESSION_26.md) | ~600 | 🗄️ Persistence! Milestone 6! |
 | [26_PART24_SESSION_27.md](26_PART24_SESSION_27.md) | ~650 | ⚠️ FreeRTOS Architecture Investigation |
 | [27_PART25_SESSION_28.md](27_PART25_SESSION_28.md) | ~550 | ✅ Phase 2b Success — Tasks Running! |
-| [28_PART26_SESSION_29.md](28_PART26_SESSION_29.md) | ~500 | **🏆 Multi-Task Architecture BREAKTHROUGH!** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1550 | Complete bug documentation (39 bugs, 148 lessons) |
+| [28_PART26_SESSION_29.md](28_PART26_SESSION_29.md) | ~750 | 🏆 Multi-Task Architecture BREAKTHROUGH! |
+| [29_PART27_SESSION_30.md](29_PART27_SESSION_30.md) | ~660 | **🔍 Intensive Debug — 10 Hypotheses, 14 Fixes** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1620 | Complete bug documentation (39 bugs, 152 lessons) |
 | [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1130 | Constants, wire formats, verified values |
 
 **Total: ~20,000+ lines of detailed protocol analysis (Session docs + reference docs)**
@@ -243,6 +265,57 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | **27** | **Feb 14-15** | **⚠️ FreeRTOS Architecture Investigation** | **17 lessons** |
 | **28** | **Feb 15** | **✅ Phase 2b Success — 3 Tasks Running!** | **6 lessons** |
 | **29** | **Feb 16** | **🏆 Multi-Task Architecture BREAKTHROUGH!** | **5 lessons** |
+| **30** | **Feb 16-18** | **🔍 Intensive Debug — 10 Hypotheses, 14 Fixes** | **4 lessons** |
+
+---
+
+## Session 30 Key Achievements — 🔍 Intensive Debug Session
+
+### 1. T5: Keyboard-Send Integration ✅
+
+```c
+// Non-blocking keyboard poll in smp_app_run()
+if (kbd_queue != NULL) {
+    kbd_msg_t kbd_msg;
+    if (xQueueReceive(kbd_queue, &kbd_msg, 0) == pdTRUE) {
+        peer_send_chat_message(kbd_msg.text);
+    }
+}
+```
+
+### 2. 10 Hypotheses Systematically Excluded
+
+```
+Problem: App→ESP32 messages never arrive after successful SUB
+
+Excluded:
+  1. corrId format (1 byte → 24 bytes)
+  2. Batch framing
+  3. Subscribe failure
+  4. Delivery blocked
+  5. Network Task crash
+  6. SSL connection broken
+  7. SMP v6 incompatibility
+  8. SessionId on wire
+  9. Response parser offset
+  10. ACK chain interruption
+```
+
+### 3. SMP v6 → v7 Upgrade
+
+```
+v6 SUB: 151 bytes
+v7 SUB: 118 bytes (33 bytes saved — SessionId removed from wire)
+```
+
+### 4. Expert Question to Evgeny
+
+```
+"Is there a condition where the server would accept a SUB
+ but then not deliver incoming MSGs to that subscription?"
+
+Status: Awaiting response
+```
 
 ---
 

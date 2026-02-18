@@ -4,34 +4,29 @@
 
 ## Constants, Wire Formats, Verified Values
 
-**Updated: 2026-02-16 - Session 29 (🏆 Multi-Task Architecture BREAKTHROUGH!)**
+**Updated: 2026-02-18 - Session 30 (🔍 Intensive Debug Session)**
 
 ---
 
 ## Current Status
 
 ```
-SESSION 29 - 🏆 MULTI-TASK ARCHITECTURE BREAKTHROUGH!
-=====================================================
+SESSION 30 - 🔍 INTENSIVE DEBUG SESSION
+========================================
 
-Complete encrypted messaging pipeline over FreeRTOS Tasks!
+T5: Keyboard-Send ✅ PASSED
+T6: Bidirectional ❌ UNRESOLVED (awaiting Evgeny response)
 
-Session 29 Achievements:
-  - Multi-Task Architecture COMPLETE
-  - Network Task: SSL read loop, command handler
-  - Main Task: Parse, decrypt, NVS, 42d handshake
-  - Ring Buffer IPC working
-  - First message "Hello from ESP32!" via new architecture!
+Session 30 Achievements:
+  - 10 hypotheses systematically excluded
+  - 14 fixes and diagnostics applied
+  - SMP v6 → v7 upgrade (33 bytes saved per transmission)
+  - 5 Wizard analyses completed
+  - Expert question sent to Evgeny Poberezkin
 
-CRITICAL DISCOVERY:
-  PSRAM stacks + NVS writes = CRASH on ESP32-S3!
-  Tasks that write NVS MUST have Internal SRAM stack.
+Problem: App→ESP32 messages never arrive after successful SUB
 
-Memory Budget:
-  - Internal SRAM: 45KB free (requirement: >30KB) ✅
-  - PSRAM: ~106KB used (1.3% of 8MB) ✅
-
-5 lessons learned, 148 total! 🏆
+4 lessons learned, 152 total! 🔍
 ```
 
 ---
@@ -1413,8 +1408,95 @@ Total:               ~106KB (1.3% of 8MB PSRAM)
 
 ---
 
-*Quick Reference v23.0*  
-*Last updated: February 16, 2026 - Session 29*  
-*Status: 🏆 Multi-Task Architecture BREAKTHROUGH!*  
+## 28. Session 30 Key Insights — SMP Wire Format & Debugging
+
+### 28.1 SMP v6 vs v7 Wire Format
+
+```
+v6 Block (151 bytes for SUB):
+[2B content_length]
+[1B tx_count = 0x01]
+[2B tx_length]
+[1B sigLen = 64]
+[64B Ed25519 Signature]
+[1B sessIdLen = 32]
+[32B SessionId]           ← ONLY in v6, omitted in v7
+[1B corrIdLen = 24]
+[24B corrId]
+[1B entityIdLen = 24]
+[24B entityId]
+[3B "SUB"]
+[padding '#' to 16384]
+
+v7 Block (118 bytes for SUB):
+[2B content_length]
+[1B tx_count = 0x01]
+[2B tx_length]
+[1B sigLen = 64]
+[64B Ed25519 Signature]
+[1B corrIdLen = 24]       ← SessionId missing here (33 bytes saved)
+[24B corrId]
+[1B entityIdLen = 24]
+[24B entityId]
+[3B "SUB"]
+[padding '#' to 16384]
+```
+
+### 28.2 corrId Format (CRITICAL!)
+
+```c
+// WRONG (before Session 30):
+uint8_t corrId[1] = {'0' + contact_index};
+
+// CORRECT (after Session 30):
+uint8_t corrId[24];
+esp_fill_random(corrId, 24);
+
+// corrId is reused as NaCL nonce — must be random and unique!
+```
+
+### 28.3 Excluded Hypotheses (10 total)
+
+```
+1. corrId format      → 24 bytes, server OK, no MSG
+2. Batch framing      → correct, verified via hex dump
+3. Subscribe failed   → ent_match=1, OK confirmed
+4. Delivery blocked   → Wildcard ACK → ERR NO_MSG
+5. Network Task crash → Heartbeats every ~30s
+6. SSL broken         → RECV logs show active connection
+7. SMP v6 issue       → v7 upgrade, problem remains
+8. SessionId on wire  → Removed, server happy
+9. Response parser    → sessLen removed from 6 parsers
+10. ACK chain         → Everything gets ACKed
+```
+
+### 28.4 Queue Routing (Wizard Analysis)
+
+```
+ESP32 (Inviting Party / Party A):
+  rcvQueues: [Q_A on smp1, status=Active]     ← receives from App HERE
+  sndQueues: [sq→Q_B on smp19, status=Active]  ← sends to App HERE
+
+App (Joining Party / Party B):
+  rcvQueues: [Q_B on smp19, status=Active]     ← receives from ESP32 HERE
+  sndQueues: [sq→Q_A on smp1, status=Active]   ← sends to ESP32 HERE
+```
+
+### 28.5 Version Negotiation
+
+```
+1. Server sends SMPServerHandshake with smpVersionRange (e.g. 6-17)
+2. Client calculates intersection with own range
+3. Client sends SMPClientHandshake with ONE smpVersion (e.g. 7)
+4. Server validates via compatibleVRange'
+5. Version stored in THandleParams.thVersion
+6. ALPN "smp/1" → full server range; without ALPN → only v6
+```
+
+---
+
+*Quick Reference v24.0*  
+*Last updated: February 18, 2026 - Session 30*  
+*Status: 🔍 Intensive Debug Session — Awaiting Evgeny Response*  
 *All 6 Milestones Still Intact!*  
-*Next: Session 30 — Send Pipeline + Cleanup*
+*Next: Session 31 — Implement Evgeny's Solution*

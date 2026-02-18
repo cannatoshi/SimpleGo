@@ -1209,6 +1209,10 @@ If NHKr succeeds, it triggers AdvanceRatchet and promotes NHKr→HKr.
 146. **Main Task as App Logic Carrier** - Main Task has largest Internal SRAM stack (64KB), ideal for NVS-writing logic. Don't let it sleep! (Session 29)
 147. **Three separate SSL connections** - Main SSL (Network Task), Peer SSL (smp_peer.c), Reply Queue SSL (smp_queue.c). Only main SSL needs task isolation (Session 29)
 148. **Read timeout 1000ms instead of 5000ms** - When Network Task services return channel, shorter timeout prevents ACK waiting 5 seconds (Session 29)
+149. **SMP Versions: Official spec documents ONLY v6 and v7** - Server reports internal range (e.g. 6-17/18), but third-party clients should use max v7. v8+ is actively rejected by server (Connection Reset). ALPN "smp/1" enables full range; without ALPN only v6 (Session 30)
+150. **corrId must be 24 random bytes** - NOT 1 byte as previously implemented. Server accepts both, but protocol spec requires 24 bytes. corrId is reused as NaCL nonce (therefore random and unique) (Session 30)
+151. **Drain Loop for Multi-Command responses** - After 42d handshake, responses come in unpredictable order. ACK response can arrive BEFORE SUB response. Drain loop with entity matching (recipientId comparison) solves the problem (Session 30)
+152. **Batch Framing is mandatory from v4** - Every block MUST have `[2B contentLen][1B txCount][2B txLen][transmission][padding '#']`. Even for single transmissions: txCount=1. Handshake blocks (ClientHello, ServerHello) are the ONLY exception (Session 30)
 
 ---
 
@@ -1496,8 +1500,56 @@ Ring Buffer IPC:
 
 ---
 
-*Bug Tracker v24.0*  
-*Last updated: February 16, 2026 - Session 29*  
+## Session 30: Intensive Debug Session — 10 Hypotheses, 14 Fixes 🔍
+
+Session 30 was the most intensive debug session of the project. T5 (Keyboard-Send) was successfully completed. T6 (Bidirectional baseline test) revealed a deep receive problem that could not be solved despite 10 systematic fix attempts.
+
+### No New Protocol Bugs (But Major Discovery)
+
+Session 30 was a debug session. The App→ESP32 receive problem remains unresolved, but 10 hypotheses were systematically excluded and an expert question was sent to Evgeny Poberezkin.
+
+### T5: Keyboard-Send Integration ✅ PASSED
+
+```c
+// smp_tasks.c - Non-blocking keyboard poll
+if (kbd_queue != NULL) {
+    kbd_msg_t kbd_msg;
+    if (xQueueReceive(kbd_queue, &kbd_msg, 0) == pdTRUE) {
+        peer_send_chat_message(kbd_msg.text);
+    }
+}
+```
+
+### Excluded Hypotheses (10 total)
+
+| # | Hypothesis | Evidence for Exclusion |
+|---|------------|------------------------|
+| 1 | corrId wrong (1 byte instead of 24) | 24 bytes, server says OK, no MSG |
+| 2 | Batch framing missing or wrong | `[contentLen][txCount][txLen]` correct |
+| 3 | Subscribe failed | `ent_match=1`, Command OK confirmed |
+| 4 | Delivery blocked (delivered=Just) | Wildcard ACK → `ERR NO_MSG` |
+| 5 | Network Task hangs or crashes | Heartbeats every ~30s, task lives |
+| 6 | SSL connection broken | RECV logs show active connection |
+| 7 | SMP version v6 incompatible | v7 upgrade, server accepts, problem remains |
+| 8 | SessionId in wire disturbs server | Removed, 118 bytes, server happy |
+| 9 | Response parser offset (after v7) | sessLen removed from 6 parsers |
+| 10 | ACK chain interrupted | Everything that arrives gets ACKed |
+
+### SMP v6 → v7 Upgrade
+
+```
+v6 SUB Transmission: 151 bytes
+v7 SUB Transmission: 118 bytes (33 bytes saved - SessionId removed from wire)
+```
+
+### Expert Question to Evgeny (Feb 18, 2026)
+
+> "Is there a condition where the server would accept a SUB (respond OK) but then not deliver incoming MSGs to that subscription?"
+
+---
+
+*Bug Tracker v25.0*  
+*Last updated: February 18, 2026 - Session 30*  
 *Total bugs documented: 39 (all FIXED)*  
-*148 lessons learned!*  
-*🏆 Session 29: Multi-Task Architecture BREAKTHROUGH!*
+*152 lessons learned!*  
+*🔍 Session 30: 10 Hypotheses Excluded, Awaiting Evgeny Response*

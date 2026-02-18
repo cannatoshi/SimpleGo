@@ -4,26 +4,28 @@
 
 **Project:** SimpleGo - Native ESP32 SMP Implementation  
 **Version:** v0.1.18-alpha  
-**Last Updated:** 2026-02-16 (Session 29 — 🏆 Multi-Task Architecture BREAKTHROUGH!)
+**Last Updated:** 2026-02-18 (Session 30 — 🔍 Intensive Debug Session)
 
 ---
 
-## 🏆 LATEST: Multi-Task Architecture BREAKTHROUGH! (Session 29)
+## 🔍 LATEST: Intensive Debug Session (Session 30)
 
-On February 16, 2026, Session 29 achieved a major breakthrough:
+On February 16-18, 2026, Session 30 was the most intensive debug session:
 
-- **Multi-Task Architecture Complete:** Network Task + Main Task + Ring Buffer IPC
-- **First message via new architecture:** "Hello from ESP32!" sent!
-- **Critical Discovery:** PSRAM stacks + NVS writes = CRASH on ESP32-S3!
-- **Memory Budget:** Internal SRAM 45KB free, PSRAM 106KB used (1.3%)
+- **T5 Keyboard-Send:** ✅ PASSED — Non-blocking poll in smp_app_run()
+- **T6 Bidirectional:** ❌ UNRESOLVED — App→ESP32 messages never arrive
+- **10 Hypotheses:** Systematically excluded
+- **14 Fixes/Diagnostics:** Applied and tested
+- **SMP v6 → v7 Upgrade:** 33 bytes saved per transmission
+- **Expert Question:** Sent to Evgeny Poberezkin
 
-**Lessons Learned:** 148 total (5 new in S29)
+**Lessons Learned:** 152 total (4 new in S30)
 
 ---
 
 ## Documentation Structure
 
-The complete protocol analysis (~24,000+ lines, 502+ sections) is split into 26 parts:
+The complete protocol analysis (~25,000+ lines, 520+ sections) is split into 27 parts:
 
 | Part | File | Lines | Content |
 |------|------|-------|---------|
@@ -52,8 +54,9 @@ The complete protocol analysis (~24,000+ lines, 502+ sections) is split into 26 
 | **23** | [**25_PART23_SESSION_26.md**](25_PART23_SESSION_26.md) | **~600** | **🗄️ Persistence! Milestone 6!** |
 | **24** | [**26_PART24_SESSION_27.md**](26_PART24_SESSION_27.md) | **~650** | **⚠️ FreeRTOS Architecture Investigation** |
 | **25** | [**27_PART25_SESSION_28.md**](27_PART25_SESSION_28.md) | **~550** | **✅ Phase 2b Success — Tasks Running!** |
-| **26** | [**28_PART26_SESSION_29.md**](28_PART26_SESSION_29.md) | **~500** | **🏆 Multi-Task Architecture BREAKTHROUGH!** |
-| **Total** | | **~24,000+** | **502+ Sections** |
+| **26** | [**28_PART26_SESSION_29.md**](28_PART26_SESSION_29.md) | **~750** | **🏆 Multi-Task Architecture BREAKTHROUGH!** |
+| **27** | [**29_PART27_SESSION_30.md**](29_PART27_SESSION_30.md) | **~660** | **🔍 Intensive Debug — 10 Hypotheses, 14 Fixes** |
+| **Total** | | **~25,000+** | **520+ Sections** |
 
 ---
 
@@ -61,9 +64,9 @@ The complete protocol analysis (~24,000+ lines, 502+ sections) is split into 26 
 
 | Document | Lines | Description |
 |----------|-------|-------------|
-| [README.md](README.md) | ~750 | Project overview and navigation |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,550 | All 39 bugs documented, 148 lessons |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,420 | Constants, wire formats, verified values |
+| [README.md](README.md) | ~820 | Project overview and navigation |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,620 | All 39 bugs documented, 152 lessons |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,500 | Constants, wire formats, verified values |
 
 ---
 
@@ -97,6 +100,7 @@ The complete protocol analysis (~24,000+ lines, 502+ sections) is split into 26 
 | **27** | **Feb 14-15, 2026** | **ARCHITECTURE** | **⚠️ FreeRTOS Investigation (17 lessons)** |
 | **28** | **Feb 15, 2026** | **TASKS** | **✅ Phase 2b Success — 3 Tasks Running!** |
 | **29** | **Feb 16, 2026** | **ARCHITECTURE** | **🏆 Multi-Task BREAKTHROUGH!** |
+| **30** | **Feb 16-18, 2026** | **DEBUG** | **🔍 10 Hypotheses, 14 Fixes, Awaiting Evgeny** |
 
 ---
 
