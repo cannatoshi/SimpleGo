@@ -7,6 +7,7 @@
 #include "smp_types.h"
 #include <string.h>
 #include <sys/socket.h>
+#include <netinet/tcp.h>
 #include <netdb.h>
 #include <errno.h>
 #include <unistd.h>
@@ -46,6 +47,17 @@ int smp_tcp_connect(const char *host, int port) {
         return -1;
     }
     
+    // TCP Keep-Alive (matches Haskell client: keepIdle=30, keepIntvl=15, keepCnt=4)
+    int keepalive = 1;
+    setsockopt(sock, SOL_SOCKET, SO_KEEPALIVE, &keepalive, sizeof(keepalive));
+    int keepidle = 30;
+    setsockopt(sock, IPPROTO_TCP, TCP_KEEPIDLE, &keepidle, sizeof(keepidle));
+    int keepintvl = 15;
+    setsockopt(sock, IPPROTO_TCP, TCP_KEEPINTVL, &keepintvl, sizeof(keepintvl));
+    int keepcnt = 4;
+    setsockopt(sock, IPPROTO_TCP, TCP_KEEPCNT, &keepcnt, sizeof(keepcnt));
+    ESP_LOGI(TAG, "TCP Keep-Alive set: idle=%d, intvl=%d, cnt=%d", keepidle, keepintvl, keepcnt);
+
     struct timeval tv;
     tv.tv_sec = 15;
     tv.tv_usec = 0;
@@ -59,6 +71,7 @@ int smp_tcp_connect(const char *host, int port) {
     }
     
     freeaddrinfo(res);
+    ESP_LOGI(TAG, "TCP connected: sock %d to %s:%d", sock, host, port);
     return sock;
 }
 

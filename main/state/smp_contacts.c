@@ -14,6 +14,10 @@
 #include "nvs_flash.h"
 #include "sodium.h"
 #include "smp_queue.h"
+#include "freertos/ringbuf.h"
+
+// Ring buffer for forwarding batched TX2 frames to App Task
+extern RingbufHandle_t net_to_app_buf;
 
 static const char *TAG = "SMP_CONT";
 
@@ -542,7 +546,9 @@ void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
             ESP_LOGW(TAG, "       [attempt %d] resp %d bytes, first %d hex:", attempt, content_len, dump_len);
             ESP_LOG_BUFFER_HEX_LEVEL(TAG, resp, dump_len, ESP_LOG_WARN);
             
-            if (resp[rp] == 1) {
+            uint8_t tx_count = resp[rp];
+            if (content_len > 10) {
+                ESP_LOGI("SUB", "Contact SUB response txCount=%d", tx_count);
                 rp++;
                 rp += 2;
                 int rauthLen = resp[rp++]; rp += rauthLen;
@@ -582,16 +588,67 @@ void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
                     ESP_LOGI(TAG, "       ✅ Subscribed! (attempt %d)", attempt);
                     success_count++;
                     sub_ok = true;
+
+                    // TX2 Forwarding: If batch block contains a second transmission, forward it
+                    if (tx_count > 1) {
+                        uint16_t tx1_len = (resp[1] << 8) | resp[2];
+                        int tx2_start = 1 + 2 + tx1_len;
+                        ESP_LOGW("BATCH", "Contact txCount=%d, tx1_len=%d, tx2_start=%d, content_len=%d",
+                                 tx_count, tx1_len, tx2_start, content_len);
+
+                        if (tx2_start + 2 < content_len) {
+                            uint16_t tx2_data_len = (resp[tx2_start] << 8) | resp[tx2_start + 1];
+                            uint8_t *tx2_ptr = &resp[tx2_start + 2];
+                            int tx2_avail = content_len - tx2_start - 2;
+                            ESP_LOGW("BATCH", "TX2: data_len=%d, avail=%d", tx2_data_len, tx2_avail);
+
+                            if (tx2_data_len > 0 && tx2_data_len <= tx2_avail) {
+                                uint8_t *fwd = block;
+                                int tx2_total = 1 + 2 + tx2_data_len;
+                                fwd[0] = (tx2_total >> 8) & 0xFF;
+                                fwd[1] = tx2_total & 0xFF;
+                                fwd[2] = 0x01;
+                                fwd[3] = (tx2_data_len >> 8) & 0xFF;
+                                fwd[4] = tx2_data_len & 0xFF;
+                                memmove(&fwd[5], tx2_ptr, tx2_data_len);
+
+                                ESP_LOGW("BATCH", "Forwarding TX2 MSG (%d bytes) to App Task", tx2_data_len);
+                                BaseType_t sent = xRingbufferSend(net_to_app_buf, fwd,
+                                                                   tx2_total + 2,
+                                                                   pdMS_TO_TICKS(1000));
+                                if (sent != pdTRUE) {
+                                    ESP_LOGE("BATCH", "Ring buffer full, TX2 MSG lost!");
+                                }
+                            }
+                        } else {
+                            ESP_LOGW("BATCH", "TX2 offset %d beyond content_len %d!", tx2_start, content_len);
+                        }
+                    }
+
                     break;
                 } else {
-                    ESP_LOGW(TAG, "       attempt %d: not our SUB OK (ent_match=%d, cmd=%c%c), retrying",
-                             attempt, is_our_response,
-                             (rp < content_len) ? resp[rp] : '?',
-                             (rp+1 < content_len) ? resp[rp+1] : '?');
+                    ESP_LOGW("DRAIN", "Non-matching frame DISCARDED! (Contact SUB, attempt %d)", attempt);
+                    ESP_LOGW("DRAIN", "Expected entity: %02x%02x%02x%02x",
+                             c->recipient_id[0], c->recipient_id[1],
+                             c->recipient_id[2], c->recipient_id[3]);
+                    if (rentLen >= 4) {
+                        ESP_LOGW("DRAIN", "Got entity: %02x%02x%02x%02x",
+                                 resp[rp - rentLen], resp[rp - rentLen + 1],
+                                 resp[rp - rentLen + 2], resp[rp - rentLen + 3]);
+                    }
+                    if (rp + 2 < content_len) {
+                        ESP_LOGW("DRAIN", "Command bytes: %02x %02x %02x (%c%c%c)",
+                                 resp[rp], resp[rp+1], resp[rp+2],
+                                 resp[rp], resp[rp+1], resp[rp+2]);
+                    }
+                    int drain_dump = (content_len < 32) ? content_len : 32;
+                    ESP_LOG_BUFFER_HEX_LEVEL("DRAIN", resp, drain_dump, ESP_LOG_WARN);
                 }
             } else {
-                ESP_LOGW(TAG, "       attempt %d: unexpected format (first_byte=0x%02x), retrying",
-                         attempt, resp[0]);
+                ESP_LOGW("DRAIN", "Non-matching frame DISCARDED! (Contact SUB, unexpected format, attempt %d)", attempt);
+                ESP_LOGW("DRAIN", "first_byte=0x%02x (expected 0x01)", resp[0]);
+                int drain_dump = (content_len < 32) ? content_len : 32;
+                ESP_LOG_BUFFER_HEX_LEVEL("DRAIN", resp, drain_dump, ESP_LOG_WARN);
             }
         }
         if (!sub_ok) {
@@ -599,68 +656,176 @@ void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
         }
     }
     
-    ESP_LOGI(TAG, "");
-    ESP_LOGI(TAG, "ðŸ“¡ Subscriptions complete: %d/%d", success_count, contacts_db.num_contacts);
-    ESP_LOGI(TAG, "ðŸ“¡ Subscriptions complete: %d/%d", success_count, contacts_db.num_contacts);
     
-    // ========== Subscribe to OUR REPLY QUEUE ==========
-    ESP_LOGI(TAG, "   Reply Queue rcv_id_len: %d", our_queue.rcv_id_len);
-    if (our_queue.rcv_id_len > 0) {
-        ESP_LOGI(TAG, "   [R] Reply Queue...");
+    ESP_LOGI(TAG, "");
+    ESP_LOGI(TAG, "📡 Contact subscriptions: %d/%d", success_count, contacts_db.num_contacts);
+    
+    // ========== Reply Queue SUB (Root Cause Fix!) ==========
+    // After 42d handshake, the App sends messages to our Reply Queue
+    // (our_queue.rcv_id), NOT to Q_A (contact->recipient_id).
+    // We MUST subscribe to Reply Queue on the main socket so the
+    // Network Task receives those MSG frames.
+    if (our_queue.valid && our_queue.rcv_id_len > 0) {
+        ESP_LOGI(TAG, "   [R] Reply Queue (rcvId: %02x%02x%02x%02x...)...",
+                 our_queue.rcv_id[0], our_queue.rcv_id[1],
+                 our_queue.rcv_id[2], our_queue.rcv_id[3]);
+
+        // Build SUB body: corrId + entityId(rcvId) + "SUB"
         uint8_t rq_body[128];
         int rqp = 0;
-        // T6-Fix4: corrId must be 24 random bytes per SMP protocol spec
-        rq_body[rqp++] = 24;          // corrId length
+
+        // corrId = 24 random bytes per SMP protocol spec
+        rq_body[rqp++] = 24;
         uint8_t rq_corr_id[24];
         esp_fill_random(rq_corr_id, 24);
         memcpy(&rq_body[rqp], rq_corr_id, 24);
         rqp += 24;
-        rq_body[rqp++] = our_queue.rcv_id_len;
+
+        // EntityId = our Reply Queue rcvId
+        rq_body[rqp++] = (uint8_t)our_queue.rcv_id_len;
         memcpy(&rq_body[rqp], our_queue.rcv_id, our_queue.rcv_id_len);
         rqp += our_queue.rcv_id_len;
+
+        // Command: "SUB"
         rq_body[rqp++] = 'S';
         rq_body[rqp++] = 'U';
         rq_body[rqp++] = 'B';
-        
-        uint8_t rq_sign[1 + 32 + 128];
+
+        int rq_body_len = rqp;
+
+        // Sign: [sessIdLen=32][sessionId] + body
+        uint8_t rq_to_sign[1 + 32 + 128];
         int rqs = 0;
-        rq_sign[rqs++] = 32;
-        memcpy(&rq_sign[rqs], session_id, 32);
+        rq_to_sign[rqs++] = 32;
+        memcpy(&rq_to_sign[rqs], session_id, 32);
         rqs += 32;
-        memcpy(&rq_sign[rqs], rq_body, rqp);
-        rqs += rqp;
-        
-        uint8_t rq_sig[64];
-        crypto_sign_detached(rq_sig, NULL, rq_sign, rqs, our_queue.rcv_auth_private);
-        
+        memcpy(&rq_to_sign[rqs], rq_body, rq_body_len);
+        rqs += rq_body_len;
+
+        uint8_t rq_sig[crypto_sign_BYTES];
+        crypto_sign_detached(rq_sig, NULL, rq_to_sign, rqs,
+                             our_queue.rcv_auth_private);  // Ed25519 64-byte PRIVATE key
+
+        // Build transmission: [sigLen][sig][body] (v7: no sessionId on wire)
         uint8_t rq_trans[256];
         int rqt = 0;
-        rq_trans[rqt++] = 64;
-        memcpy(&rq_trans[rqt], rq_sig, 64);
-        rqt += 64;
+
+        rq_trans[rqt++] = crypto_sign_BYTES;  // 64
+        memcpy(&rq_trans[rqt], rq_sig, crypto_sign_BYTES);
+        rqt += crypto_sign_BYTES;
+
         // v7: no sessionId on wire (only in signature)
-        memcpy(&rq_trans[rqt], rq_body, rqp);
-        rqt += rqp;
-        
-        // T6-Diag3b: Hex dump of Reply Queue SUB transmission
-        ESP_LOGW(TAG, "RQ SUB transmission (%d bytes):", rqt);
-        for (int d = 0; d < rqt && d < 128; d += 16) {
-            char hex[64] = {0}; int hx = 0;
-            char asc[20] = {0}; int ax = 0;
-            for (int j = 0; j < 16 && (d+j) < rqt; j++) {
-                hx += sprintf(&hex[hx], "%02x ", rq_trans[d+j]);
-                asc[ax++] = (rq_trans[d+j] >= 0x20 && rq_trans[d+j] < 0x7F) 
-                             ? rq_trans[d+j] : '.';
+        memcpy(&rq_trans[rqt], rq_body, rq_body_len);
+        rqt += rq_body_len;
+
+        // Send SUB
+        int ret = smp_write_command_block(ssl, block, rq_trans, rqt);
+        if (ret != 0) {
+            ESP_LOGE(TAG, "       ❌ Reply Queue SUB send failed!");
+        } else {
+            // Drain responses until we find our SUB OK (same pattern as Contact SUBs)
+            bool rq_sub_ok = false;
+            for (int attempt = 0; attempt < 5; attempt++) {
+                int rq_content_len = smp_read_block(ssl, block, 5000);
+                if (rq_content_len < 0) {
+                    ESP_LOGW(TAG, "       RQ read attempt %d: timeout/error (%d)", attempt, rq_content_len);
+                    break;
+                }
+
+                uint8_t *rq_resp = block + 2;
+                int rrp = 0;
+
+                // v7 response parsing: txCount(1) + skip(2) + auth + corr + entity + command
+                uint8_t rq_tx_count = rq_resp[rrp];
+                if (rq_content_len > 10) {
+                    ESP_LOGI("SUB", "Reply Queue response txCount=%d", rq_tx_count);
+                    rrp++;
+                    rrp += 2;
+                    int rq_authLen = rq_resp[rrp++]; rrp += rq_authLen;
+                    // v7: no sessLen in response
+                    int rq_corrLen = rq_resp[rrp++]; rrp += rq_corrLen;
+                    int rq_entLen  = rq_resp[rrp++];
+
+                    // Check if this response is for our Reply Queue
+                    bool is_our_rq = (rq_entLen == our_queue.rcv_id_len &&
+                        memcmp(&rq_resp[rrp], our_queue.rcv_id, rq_entLen) == 0);
+                    rrp += rq_entLen;
+
+                    if (is_our_rq && rrp + 1 < rq_content_len &&
+                        rq_resp[rrp] == 'O' && rq_resp[rrp+1] == 'K') {
+                        ESP_LOGI(TAG, "       ✅ Reply Queue subscribed on main socket! (attempt %d)", attempt);
+                        rq_sub_ok = true;
+
+                        // TX2 Forwarding: If batch block contains a second transmission, forward it
+                        if (rq_tx_count > 1) {
+                            uint16_t tx1_len = (rq_resp[1] << 8) | rq_resp[2];
+                            int tx2_start = 1 + 2 + tx1_len;
+                            ESP_LOGW("BATCH", "RQ txCount=%d, tx1_len=%d, tx2_start=%d, content_len=%d",
+                                     rq_tx_count, tx1_len, tx2_start, rq_content_len);
+
+                            if (tx2_start + 2 < rq_content_len) {
+                                uint16_t tx2_data_len = (rq_resp[tx2_start] << 8) | rq_resp[tx2_start + 1];
+                                uint8_t *tx2_ptr = &rq_resp[tx2_start + 2];
+                                int tx2_avail = rq_content_len - tx2_start - 2;
+                                ESP_LOGW("BATCH", "TX2: data_len=%d, avail=%d", tx2_data_len, tx2_avail);
+
+                                if (tx2_data_len > 0 && tx2_data_len <= tx2_avail) {
+                                    // Repack TX2 as single-transmission block in-place
+                                    uint8_t *fwd = block;
+                                    int tx2_total = 1 + 2 + tx2_data_len;  // txCount + Large-Len + Data
+                                    fwd[0] = (tx2_total >> 8) & 0xFF;
+                                    fwd[1] = tx2_total & 0xFF;
+                                    fwd[2] = 0x01;  // txCount = 1
+                                    fwd[3] = (tx2_data_len >> 8) & 0xFF;
+                                    fwd[4] = tx2_data_len & 0xFF;
+                                    memmove(&fwd[5], tx2_ptr, tx2_data_len);
+
+                                    ESP_LOGW("BATCH", "Forwarding TX2 MSG (%d bytes) to App Task", tx2_data_len);
+                                    BaseType_t sent = xRingbufferSend(net_to_app_buf, fwd,
+                                                                       tx2_total + 2,
+                                                                       pdMS_TO_TICKS(1000));
+                                    if (sent != pdTRUE) {
+                                        ESP_LOGE("BATCH", "Ring buffer full, TX2 MSG lost!");
+                                    }
+                                }
+                            } else {
+                                ESP_LOGW("BATCH", "TX2 offset %d beyond content_len %d!", tx2_start, rq_content_len);
+                            }
+                        }
+
+                        break;
+                    } else {
+                        ESP_LOGW("DRAIN", "Non-matching frame DISCARDED! (RQ SUB, attempt %d)", attempt);
+                        ESP_LOGW("DRAIN", "Expected entity: %02x%02x%02x%02x",
+                                 our_queue.rcv_id[0], our_queue.rcv_id[1],
+                                 our_queue.rcv_id[2], our_queue.rcv_id[3]);
+                        if (rq_entLen >= 4) {
+                            ESP_LOGW("DRAIN", "Got entity: %02x%02x%02x%02x",
+                                     rq_resp[rrp - rq_entLen], rq_resp[rrp - rq_entLen + 1],
+                                     rq_resp[rrp - rq_entLen + 2], rq_resp[rrp - rq_entLen + 3]);
+                        }
+                        if (rrp + 2 < rq_content_len) {
+                            ESP_LOGW("DRAIN", "Command bytes: %02x %02x %02x (%c%c%c)",
+                                     rq_resp[rrp], rq_resp[rrp+1], rq_resp[rrp+2],
+                                     rq_resp[rrp], rq_resp[rrp+1], rq_resp[rrp+2]);
+                        }
+                        int drain_dump = (rq_content_len < 32) ? rq_content_len : 32;
+                        ESP_LOG_BUFFER_HEX_LEVEL("DRAIN", rq_resp, drain_dump, ESP_LOG_WARN);
+                    }
+                } else {
+                    ESP_LOGW("DRAIN", "Non-matching frame DISCARDED! (RQ SUB, unexpected format, attempt %d)", attempt);
+                    ESP_LOGW("DRAIN", "first_byte=0x%02x (expected 0x01)", rq_resp[0]);
+                    int drain_dump = (rq_content_len < 32) ? rq_content_len : 32;
+                    ESP_LOG_BUFFER_HEX_LEVEL("DRAIN", rq_resp, drain_dump, ESP_LOG_WARN);
+                }
             }
-            asc[ax] = '\0';
-            ESP_LOGW(TAG, "  +%04d: %-48s %s", d, hex, asc);
-        }
-        
-        if (smp_write_command_block(ssl, block, rq_trans, rqt) == 0) {
-            if (smp_read_block(ssl, block, 5000) >= 0) {
-                ESP_LOGI(TAG, "       âœ… Reply Queue subscribed!");
+            if (!rq_sub_ok) {
+                ESP_LOGE(TAG, "       ❌ Reply Queue SUB failed after retries!");
             }
         }
+    } else {
+        ESP_LOGW(TAG, "   [R] Reply Queue: not valid (valid=%d, rcv_id_len=%d), skipping SUB",
+                 our_queue.valid, our_queue.rcv_id_len);
     }
 
     ESP_LOGI(TAG, "");

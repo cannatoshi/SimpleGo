@@ -47,6 +47,7 @@ static uint8_t s_session_id[32];  // Phase 3 T4b: session ID for ACK signing
 // Phase 3 T3: Post-confirmation state (set by Reply Queue decrypt, read by 42d handler later)
 static uint8_t s_peer_sender_auth_key[44];
 static bool s_has_peer_sender_auth = false;
+static bool s_42d_completed = false;  // Prevent 42d from running more than once
 
 // Helper: log both internal and PSRAM heap
 static void log_heap(const char *label)
@@ -86,6 +87,15 @@ static void network_task(void *arg)
         ESP_LOGI(TAG, "Network task: socket timeout set to 1s");
     }
 
+    // PING keepalive state
+    TickType_t last_ping_tick = 0;
+    TickType_t last_pong_tick = 0;
+    bool first_pong_logged = false;
+    bool first_ping_sent = false;
+    bool pong_timeout_warned = false;
+    const TickType_t ping_interval_ticks = pdMS_TO_TICKS(30000);  // 30s
+    const TickType_t pong_timeout_ticks = pdMS_TO_TICKS(60000);   // 60s warning
+
     while (1) {
         // T6-Debug: Heartbeat counter
         static int loop_count = 0;
@@ -97,15 +107,81 @@ static void network_task(void *arg)
         // === 1. SSL READ (T1, timeout reduced from 5000 to 1000 for T4c) ===
         int content_len = smp_read_block(s_ssl, block, 1000);
 
+        // RAW FRAME DIAGNOSTIK: Hex dump BEFORE any parsing/filtering
         if (content_len > 0) {
-            ESP_LOGI(TAG, "Network task: Frame received, content_len=%d, writing to ring buffer",
-                     content_len);
+            int dump_len = content_len < 64 ? content_len : 64;
+            ESP_LOGI("RAW", "sock %d recv %d bytes:", s_sock_fd, content_len);
+            ESP_LOG_BUFFER_HEX_LEVEL("RAW", block + 2, dump_len, ESP_LOG_INFO);
+        }
 
-            BaseType_t sent = xRingbufferSend(net_to_app_buf, block,
-                                               content_len + 2,
-                                               pdMS_TO_TICKS(1000));
-            if (sent != pdTRUE) {
-                ESP_LOGW(TAG, "Network task: Ring buffer full, frame dropped!");
+        if (content_len > 0) {
+            // PONG detection: parse frame before forwarding
+            bool is_pong = false;
+            {
+                uint8_t *resp = block + 2;
+                int p = 0;
+                if (p + 3 <= content_len) {
+                    p += 3;  // txCount + 2 skip bytes
+                    if (p < content_len) {
+                        int authLen = resp[p++];
+                        if (p + authLen <= content_len) {
+                            p += authLen;
+                            // v7: no sessLen
+                            if (p < content_len) {
+                                int corrLen = resp[p++];
+                                if (p + corrLen <= content_len) {
+                                    p += corrLen;
+                                    if (p < content_len) {
+                                        int entLen = resp[p++];
+                                        if (p + entLen <= content_len) {
+                                            p += entLen;
+                                            if (p + 4 <= content_len &&
+                                                resp[p] == 'P' && resp[p+1] == 'O' &&
+                                                resp[p+2] == 'N' && resp[p+3] == 'G') {
+                                                is_pong = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (is_pong) {
+                last_pong_tick = xTaskGetTickCount();
+                float delta_s = first_ping_sent
+                    ? (float)(last_pong_tick - last_ping_tick) / (float)configTICK_RATE_HZ
+                    : 0.0f;
+                ESP_LOGI("PING", "PONG received on sock %d (%.1fs after PING)",
+                         s_sock_fd, delta_s);
+                pong_timeout_warned = false;
+
+                // First PONG: full hex dump for documentation
+                if (!first_pong_logged) {
+                    first_pong_logged = true;
+                    int dump_len = content_len < 64 ? content_len : 64;
+                    ESP_LOGW("PING", "First PONG frame hex dump (%d bytes):", content_len);
+                    ESP_LOG_BUFFER_HEX_LEVEL("PING", block + 2, dump_len, ESP_LOG_WARN);
+                }
+                // Do NOT forward PONG to App Task
+            } else {
+                ESP_LOGI(TAG, "Network task: Frame received, content_len=%d, writing to ring buffer",
+                         content_len);
+
+                // Log if data frame arrives after PING is active (could be MSG!)
+                if (first_ping_sent) {
+                    ESP_LOGI("PING", "Data frame on sock %d after PING active (content_len=%d)",
+                             s_sock_fd, content_len);
+                }
+
+                BaseType_t sent = xRingbufferSend(net_to_app_buf, block,
+                                                   content_len + 2,
+                                                   pdMS_TO_TICKS(1000));
+                if (sent != pdTRUE) {
+                    ESP_LOGW(TAG, "Network task: Ring buffer full, frame dropped!");
+                }
             }
         } else if (content_len == -2) {
             // Timeout — log every 30th
@@ -147,6 +223,45 @@ static void network_task(void *arg)
 
             // Check for more commands
             cmd_item = xRingbufferReceive(app_to_net_buf, &cmd_size, 0);
+        }
+
+        // === 3. PING KEEPALIVE ===
+        {
+            TickType_t now = xTaskGetTickCount();
+
+            if (now - last_ping_tick >= ping_interval_ticks) {
+                // SMP PING: [sigLen=0][corrIdLen=24][24B random corrId][entityIdLen=0]["PING"]
+                uint8_t ping_trans[30];
+                int pp = 0;
+                ping_trans[pp++] = 0;     // no signature
+                ping_trans[pp++] = 24;    // corrId length = 0x18
+                uint8_t ping_corr[24];
+                esp_fill_random(ping_corr, 24);
+                memcpy(&ping_trans[pp], ping_corr, 24);
+                pp += 24;
+                ping_trans[pp++] = 0;     // no entityId
+                ping_trans[pp++] = 'P';
+                ping_trans[pp++] = 'I';
+                ping_trans[pp++] = 'N';
+                ping_trans[pp++] = 'G';
+
+                smp_write_command_block(s_ssl, block, ping_trans, pp);
+                last_ping_tick = now;
+                first_ping_sent = true;
+                pong_timeout_warned = false;
+
+                ESP_LOGI("PING", "PING sent on sock %d (tick=%lu)",
+                         s_sock_fd, (unsigned long)now);
+            }
+
+            // Warn once if no PONG within 60s
+            if (first_ping_sent && !pong_timeout_warned &&
+                last_pong_tick < last_ping_tick &&
+                now - last_ping_tick >= pong_timeout_ticks) {
+                ESP_LOGW("PING", "No PONG for 60s! Server may have dropped sub. sock=%d",
+                         s_sock_fd);
+                pong_timeout_warned = true;
+            }
         }
     }
 
@@ -352,7 +467,8 @@ void smp_app_run(QueueHandle_t kbd_queue)
                 log_heap("after_rq_decrypt");
 
                 // === T4e: 42d Post-Confirmation Block ===
-                if (s_has_peer_sender_auth) {
+                if (s_has_peer_sender_auth && !s_42d_completed) {
+                    s_42d_completed = true;  // Prevent re-trigger from re-deliveries
                     ESP_LOGI(TAG_APP, "APP: 42d — Starting post-confirmation handshake");
 
                     // 1. Reconnect Reply Queue (eigene SSL-Verbindung, nicht Haupt-SSL)
@@ -447,6 +563,13 @@ void smp_app_run(QueueHandle_t kbd_queue)
                     s_has_peer_sender_auth = false;  // Don't re-trigger
 
                     skip_42d_app: ;
+
+                    // ROOT CAUSE FIX: Close sock 56 so server delivers MSGs to sock 54!
+                    // Without this, server sees TWO active SUBs on Reply Queue
+                    // (sock 56 from queue_reconnect + sock 54 from subscribe_all)
+                    // and may deliver MSGs to sock 56, which nobody reads.
+                    queue_disconnect();
+                    ESP_LOGW(TAG_APP, "APP: 42d — sock 56 closed, MSGs will arrive on sock 54");
 
                     log_heap("after_42d");
                 }

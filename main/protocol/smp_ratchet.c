@@ -814,6 +814,16 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
                  recv_chain_key[4], recv_chain_key[5], recv_chain_key[6], recv_chain_key[7]);
     }
 
+    // Re-delivery detection: In SAME mode, if msg_ns < msg_num_recv,
+    // this message was already processed. Return early without decrypting.
+    if (mode == RATCHET_MODE_SAME && msg_ns < ratchet_state.msg_num_recv) {
+        ESP_LOGW(TAG, "");
+        ESP_LOGW(TAG, "   ⚠️ Re-delivery detected: msg_ns=%u < msg_num_recv=%u",
+                 msg_ns, ratchet_state.msg_num_recv);
+        ESP_LOGW(TAG, "   Skipping decrypt, caller should ACK and ignore.");
+        return -10;  // RE_DELIVERY
+    }
+
     // SCHRITT 3: Chain KDF
     // ADVANCE: chain starts at position 0, skip 0..msg_ns-1 (absolute)
     // SAME:    chain starts at position msg_num_recv, skip msg_num_recv..msg_ns-1 (relative)
