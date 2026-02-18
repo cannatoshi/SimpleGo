@@ -6,6 +6,7 @@
 #include "smp_ack.h"
 #include <string.h>
 #include "esp_log.h"
+#include "esp_random.h"
 #include "sodium.h"
 #include "smp_network.h"
 
@@ -23,11 +24,15 @@ bool smp_send_ack(mbedtls_ssl_context *ssl, uint8_t *block,
     }
 
     // Build ACK body: [version=1]['A'][rcvIdLen][rcvId]["ACK "][msgIdLen][msgId]
-    uint8_t ack_body[64];
+    uint8_t ack_body[128];
     int ap = 0;
 
-    ack_body[ap++] = 1;                                          // version
-    ack_body[ap++] = 'A';                                        // entity type
+    // T6-Fix4b: corrId must be 24 random bytes per SMP protocol spec
+    ack_body[ap++] = 24;                                         // corrId length
+    uint8_t ack_corr_id[24];
+    esp_fill_random(ack_corr_id, 24);
+    memcpy(&ack_body[ap], ack_corr_id, 24);
+    ap += 24;
     ack_body[ap++] = (uint8_t)recipient_id_len;                  // recipient ID length
     memcpy(&ack_body[ap], recipient_id, recipient_id_len);
     ap += recipient_id_len;
@@ -40,7 +45,7 @@ bool smp_send_ack(mbedtls_ssl_context *ssl, uint8_t *block,
     ap += msg_id_len;
 
     // Build data to sign: [sessLen=32][sessionId][body]
-    uint8_t to_sign[128];
+    uint8_t to_sign[192];
     int sp = 0;
     to_sign[sp++] = 32;
     memcpy(&to_sign[sp], session_id, 32);
@@ -52,15 +57,12 @@ bool smp_send_ack(mbedtls_ssl_context *ssl, uint8_t *block,
     uint8_t sig[crypto_sign_BYTES];
     crypto_sign_detached(sig, NULL, to_sign, sp, rcv_auth_secret);
 
-    // Build transport frame: [sigLen][signature][sessLen][sessionId][body]
+    // Build transport frame v7: [sigLen][signature][body] (no sessionId on wire)
     uint8_t transport[192];
     int tp = 0;
     transport[tp++] = crypto_sign_BYTES;
     memcpy(&transport[tp], sig, crypto_sign_BYTES);
     tp += crypto_sign_BYTES;
-    transport[tp++] = 32;
-    memcpy(&transport[tp], session_id, 32);
-    tp += 32;
     memcpy(&transport[tp], ack_body, ap);
     tp += ap;
 

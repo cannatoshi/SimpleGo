@@ -218,7 +218,7 @@ static void smp_connect(void) {
     }
     memcpy(session_id, &hello[5], 32);
 
-    ESP_LOGI(TAG, "      Versions: %d-%d", minVer, maxVer);
+    ESP_LOGI(TAG, "      Server version range: %d-%d (we choose: 7)", minVer, maxVer);
     ESP_LOGI(TAG, "      SessionId: %02x%02x%02x%02x...",
              session_id[0], session_id[1], session_id[2], session_id[3]);
 
@@ -237,7 +237,7 @@ static void smp_connect(void) {
     uint8_t client_hello[35];
     int pos = 0;
     client_hello[pos++] = 0x00;
-    client_hello[pos++] = 0x06;
+    client_hello[pos++] = 0x07;
     client_hello[pos++] = 32;
     memcpy(&client_hello[pos], ca_hash, 32);
     pos += 32;
@@ -300,7 +300,7 @@ static void smp_connect(void) {
         ESP_LOGE(TAG, "Task infrastructure init failed!");
         goto cleanup;
     }
-    if (smp_tasks_start(&ssl, session_id) != 0) {
+    if (smp_tasks_start(&ssl, session_id, sock) != 0) {
         ESP_LOGE(TAG, "Task start failed!");
         goto cleanup;
     }
@@ -363,7 +363,7 @@ static void smp_connect(void) {
         p += 2;
 
         int authLen = resp[p++]; p += authLen;
-        int sessLen = resp[p++]; p += sessLen;
+        // v7: no sessLen in response
         int corrLen = resp[p++]; p += corrLen;
 
         int entLen = resp[p++];
@@ -494,7 +494,7 @@ static void smp_connect(void) {
                             rp++;  // txCount (sequence counter, always consume)
                             rp += 2;
                             int rq_authLen = rq_resp[rp++]; rp += rq_authLen;
-                            int rq_sessLen = rq_resp[rp++]; rp += rq_sessLen;
+                            // v7: no sessLen in response
                             int rq_corrLen = rq_resp[rp++]; rp += rq_corrLen;
                             int rq_entLen  = rq_resp[rp++]; rp += rq_entLen;
 

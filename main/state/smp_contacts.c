@@ -304,10 +304,7 @@ int add_contact(mbedtls_ssl_context *ssl, uint8_t *block,
     memcpy(&transmission[tpos], signature, crypto_sign_BYTES);
     tpos += crypto_sign_BYTES;
     
-    transmission[tpos++] = 32;
-    memcpy(&transmission[tpos], session_id, 32);
-    tpos += 32;
-    
+    // v7: no sessionId on wire (only in signature)
     memcpy(&transmission[tpos], trans_body, trans_body_len);
     tpos += trans_body_len;
     
@@ -415,10 +412,7 @@ bool remove_contact(mbedtls_ssl_context *ssl, uint8_t *block,
     memcpy(&del_trans[dtp], del_sig, crypto_sign_BYTES);
     dtp += crypto_sign_BYTES;
     
-    del_trans[dtp++] = 32;
-    memcpy(&del_trans[dtp], session_id, 32);
-    dtp += 32;
-    
+    // v7: no sessionId on wire (only in signature)
     memcpy(&del_trans[dtp], del_body, dp);
     dtp += dp;
     
@@ -436,7 +430,7 @@ bool remove_contact(mbedtls_ssl_context *ssl, uint8_t *block,
             rp++;
             rp += 2;
             int rauthLen = resp[rp++]; rp += rauthLen;
-            int rsessLen = resp[rp++]; rp += rsessLen;
+            // v7: no sessLen in response
             int rcorrLen = resp[rp++]; rp += rcorrLen;
             int rentLen = resp[rp++]; rp += rentLen;
             
@@ -470,11 +464,15 @@ void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
         contact_t *c = &contacts_db.contacts[i];
         ESP_LOGI(TAG, "   [%d] %s...", i, c->name);
         
-        uint8_t sub_body[64];
+        uint8_t sub_body[128];
         int pos = 0;
         
-        sub_body[pos++] = 1;
-        sub_body[pos++] = '0' + i;
+        // T6-Fix4: corrId must be 24 random bytes per SMP protocol spec
+        sub_body[pos++] = 24;         // corrId length
+        uint8_t corr_id[24];
+        esp_fill_random(corr_id, 24);
+        memcpy(&sub_body[pos], corr_id, 24);
+        pos += 24;
         sub_body[pos++] = c->recipient_id_len;
         memcpy(&sub_body[pos], c->recipient_id, c->recipient_id_len);
         pos += c->recipient_id_len;
@@ -484,7 +482,7 @@ void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
         
         int sub_body_len = pos;
         
-        uint8_t sub_to_sign[1 + 32 + 64];
+        uint8_t sub_to_sign[1 + 32 + 128];
         int sub_sign_pos = 0;
         sub_to_sign[sub_sign_pos++] = 32;
         memcpy(&sub_to_sign[sub_sign_pos], session_id, 32);
@@ -502,12 +500,23 @@ void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
         memcpy(&sub_trans[sub_tpos], sub_sig, crypto_sign_BYTES);
         sub_tpos += crypto_sign_BYTES;
         
-        sub_trans[sub_tpos++] = 32;
-        memcpy(&sub_trans[sub_tpos], session_id, 32);
-        sub_tpos += 32;
-        
+        // v7: no sessionId on wire (only in signature)
         memcpy(&sub_trans[sub_tpos], sub_body, sub_body_len);
         sub_tpos += sub_body_len;
+        
+        // T6-Diag3b: Hex dump of SUB transmission
+        ESP_LOGW(TAG, "SUB transmission (%d bytes):", sub_tpos);
+        for (int d = 0; d < sub_tpos && d < 128; d += 16) {
+            char hex[64] = {0}; int hx = 0;
+            char asc[20] = {0}; int ax = 0;
+            for (int j = 0; j < 16 && (d+j) < sub_tpos; j++) {
+                hx += sprintf(&hex[hx], "%02x ", sub_trans[d+j]);
+                asc[ax++] = (sub_trans[d+j] >= 0x20 && sub_trans[d+j] < 0x7F) 
+                             ? sub_trans[d+j] : '.';
+            }
+            asc[ax] = '\0';
+            ESP_LOGW(TAG, "  +%04d: %-48s %s", d, hex, asc);
+        }
         
         int ret = smp_write_command_block(ssl, block, sub_trans, sub_tpos);
         if (ret != 0) {
@@ -515,24 +524,78 @@ void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
             continue;
         }
         
-        int content_len = smp_read_block(ssl, block, 5000);
-        if (content_len >= 0) {
+        // T6-Fix3: Drain responses until we find our SUB OK
+        // After 42d handshake, ACK/END responses may arrive before SUB OK
+        bool sub_ok = false;
+        for (int attempt = 0; attempt < 5; attempt++) {
+            int content_len = smp_read_block(ssl, block, 5000);
+            if (content_len < 0) {
+                ESP_LOGW(TAG, "       read attempt %d: timeout/error (%d)", attempt, content_len);
+                break;
+            }
+            
             uint8_t *resp = block + 2;
             int rp = 0;
+            
+            // T6-Diag3: Hex dump first 64 bytes of response
+            int dump_len = (content_len < 64) ? content_len : 64;
+            ESP_LOGW(TAG, "       [attempt %d] resp %d bytes, first %d hex:", attempt, content_len, dump_len);
+            ESP_LOG_BUFFER_HEX_LEVEL(TAG, resp, dump_len, ESP_LOG_WARN);
             
             if (resp[rp] == 1) {
                 rp++;
                 rp += 2;
                 int rauthLen = resp[rp++]; rp += rauthLen;
-                int rsessLen = resp[rp++]; rp += rsessLen;
-                int rcorrLen = resp[rp++]; rp += rcorrLen;
-                int rentLen = resp[rp++]; rp += rentLen;
-                
-                if (rp + 1 < content_len && resp[rp] == 'O' && resp[rp+1] == 'K') {
-                    ESP_LOGI(TAG, "       âœ… Subscribed!");
-                    success_count++;
+                // v7: no sessLen in response
+                int rcorrLen = resp[rp++];
+                // T6-Diag3: Log corrId content
+                ESP_LOGW(TAG, "       [attempt %d] corrLen=%d, entLen after corr", attempt, rcorrLen);
+                if (rcorrLen > 0 && rcorrLen <= 24) {
+                    ESP_LOG_BUFFER_HEX_LEVEL(TAG, &resp[rp], rcorrLen, ESP_LOG_WARN);
                 }
+                rp += rcorrLen;
+                int rentLen = resp[rp++];
+                
+                // T6-Diag3: Log entity id
+                ESP_LOGW(TAG, "       [attempt %d] entLen=%d, our_rcpLen=%d", attempt, rentLen, c->recipient_id_len);
+                if (rentLen > 0 && rentLen <= 32) {
+                    ESP_LOG_BUFFER_HEX_LEVEL(TAG, &resp[rp], rentLen, ESP_LOG_WARN);
+                    ESP_LOG_BUFFER_HEX_LEVEL(TAG, c->recipient_id, c->recipient_id_len, ESP_LOG_WARN);
+                }
+                
+                // Check if this response is for our contact
+                bool is_our_response = (rentLen == c->recipient_id_len &&
+                    memcmp(&resp[rp], c->recipient_id, rentLen) == 0);
+                rp += rentLen;
+                
+                // T6-Diag3: Log the command bytes
+                int cmd_bytes = content_len - rp;
+                ESP_LOGW(TAG, "       [attempt %d] ent_match=%d, cmd_offset=%d, cmd_bytes=%d", 
+                         attempt, is_our_response, rp, cmd_bytes);
+                if (cmd_bytes > 0) {
+                    int cmd_dump = (cmd_bytes < 16) ? cmd_bytes : 16;
+                    ESP_LOG_BUFFER_HEX_LEVEL(TAG, &resp[rp], cmd_dump, ESP_LOG_WARN);
+                }
+                
+                if (is_our_response && rp + 1 < content_len && 
+                    resp[rp] == 'O' && resp[rp+1] == 'K') {
+                    ESP_LOGI(TAG, "       ✅ Subscribed! (attempt %d)", attempt);
+                    success_count++;
+                    sub_ok = true;
+                    break;
+                } else {
+                    ESP_LOGW(TAG, "       attempt %d: not our SUB OK (ent_match=%d, cmd=%c%c), retrying",
+                             attempt, is_our_response,
+                             (rp < content_len) ? resp[rp] : '?',
+                             (rp+1 < content_len) ? resp[rp+1] : '?');
+                }
+            } else {
+                ESP_LOGW(TAG, "       attempt %d: unexpected format (first_byte=0x%02x), retrying",
+                         attempt, resp[0]);
             }
+        }
+        if (!sub_ok) {
+            ESP_LOGE(TAG, "       ❌ Subscribe failed after retries");
         }
     }
     
@@ -544,10 +607,14 @@ void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
     ESP_LOGI(TAG, "   Reply Queue rcv_id_len: %d", our_queue.rcv_id_len);
     if (our_queue.rcv_id_len > 0) {
         ESP_LOGI(TAG, "   [R] Reply Queue...");
-        uint8_t rq_body[64];
+        uint8_t rq_body[128];
         int rqp = 0;
-        rq_body[rqp++] = 1;
-        rq_body[rqp++] = 'R';
+        // T6-Fix4: corrId must be 24 random bytes per SMP protocol spec
+        rq_body[rqp++] = 24;          // corrId length
+        uint8_t rq_corr_id[24];
+        esp_fill_random(rq_corr_id, 24);
+        memcpy(&rq_body[rqp], rq_corr_id, 24);
+        rqp += 24;
         rq_body[rqp++] = our_queue.rcv_id_len;
         memcpy(&rq_body[rqp], our_queue.rcv_id, our_queue.rcv_id_len);
         rqp += our_queue.rcv_id_len;
@@ -555,7 +622,7 @@ void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
         rq_body[rqp++] = 'U';
         rq_body[rqp++] = 'B';
         
-        uint8_t rq_sign[1 + 32 + 64];
+        uint8_t rq_sign[1 + 32 + 128];
         int rqs = 0;
         rq_sign[rqs++] = 32;
         memcpy(&rq_sign[rqs], session_id, 32);
@@ -571,11 +638,23 @@ void subscribe_all_contacts(mbedtls_ssl_context *ssl, uint8_t *block,
         rq_trans[rqt++] = 64;
         memcpy(&rq_trans[rqt], rq_sig, 64);
         rqt += 64;
-        rq_trans[rqt++] = 32;
-        memcpy(&rq_trans[rqt], session_id, 32);
-        rqt += 32;
+        // v7: no sessionId on wire (only in signature)
         memcpy(&rq_trans[rqt], rq_body, rqp);
         rqt += rqp;
+        
+        // T6-Diag3b: Hex dump of Reply Queue SUB transmission
+        ESP_LOGW(TAG, "RQ SUB transmission (%d bytes):", rqt);
+        for (int d = 0; d < rqt && d < 128; d += 16) {
+            char hex[64] = {0}; int hx = 0;
+            char asc[20] = {0}; int ax = 0;
+            for (int j = 0; j < 16 && (d+j) < rqt; j++) {
+                hx += sprintf(&hex[hx], "%02x ", rq_trans[d+j]);
+                asc[ax++] = (rq_trans[d+j] >= 0x20 && rq_trans[d+j] < 0x7F) 
+                             ? rq_trans[d+j] : '.';
+            }
+            asc[ax] = '\0';
+            ESP_LOGW(TAG, "  +%04d: %-48s %s", d, hex, asc);
+        }
         
         if (smp_write_command_block(ssl, block, rq_trans, rqt) == 0) {
             if (smp_read_block(ssl, block, 5000) >= 0) {

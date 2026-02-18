@@ -52,7 +52,7 @@ int smp_tasks_init(void);
  * @param session_id   32-byte TLS session ID for ACK signing
  * @return 0 on success, -1 on error
  */
-int smp_tasks_start(mbedtls_ssl_context *ssl_context, const uint8_t *session_id);
+int smp_tasks_start(mbedtls_ssl_context *ssl_context, const uint8_t *session_id, int sock_fd);
 
 /**
  * Graceful shutdown of all tasks.

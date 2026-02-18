@@ -21,6 +21,7 @@
 #include "smp_ack.h"       // Phase 3 T4c: smp_send_ack()
 #include "smp_peer.h"      // Phase 3 T4e: peer_send_chat_message()
 #include <string.h>
+#include <sys/socket.h>
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 
@@ -40,6 +41,7 @@ RingbufHandle_t app_to_net_buf = NULL;
 
 // Stored SSL context (set by smp_tasks_start, used by network task later)
 static mbedtls_ssl_context *s_ssl = NULL;
+static int s_sock_fd = -1;  // T6-Fix: Socket FD for timeout control
 static uint8_t s_session_id[32];  // Phase 3 T4b: session ID for ACK signing
 
 // Phase 3 T3: Post-confirmation state (set by Reply Queue decrypt, read by 42d handler later)
@@ -75,7 +77,23 @@ static void network_task(void *arg)
 
     ESP_LOGI(TAG, "Network task: SSL read loop starting...");
 
+    // T6-Fix: Reduce socket timeout for responsive read loop
+    {
+        struct timeval tv;
+        tv.tv_sec = 1;
+        tv.tv_usec = 0;
+        setsockopt(s_sock_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ESP_LOGI(TAG, "Network task: socket timeout set to 1s");
+    }
+
     while (1) {
+        // T6-Debug: Heartbeat counter
+        static int loop_count = 0;
+        loop_count++;
+        if (loop_count % 30 == 0) {
+            ESP_LOGI(TAG, "NET: heartbeat #%d", loop_count / 30);
+        }
+
         // === 1. SSL READ (T1, timeout reduced from 5000 to 1000 for T4c) ===
         int content_len = smp_read_block(s_ssl, block, 1000);
 
@@ -90,7 +108,10 @@ static void network_task(void *arg)
                 ESP_LOGW(TAG, "Network task: Ring buffer full, frame dropped!");
             }
         } else if (content_len == -2) {
-            // Timeout — OK, check command channel below
+            // Timeout — log every 30th
+            if (loop_count % 30 == 0) {
+                ESP_LOGD(TAG, "NET: timeout (loop %d)", loop_count);
+            }
         } else {
             ESP_LOGE(TAG, "Network task: SSL read error %d", content_len);
             break;
@@ -186,6 +207,22 @@ void smp_app_run(QueueHandle_t kbd_queue)
 
     ESP_LOGI(TAG_APP, "App logic: parse loop starting...");
 
+    // T6-Fix2: Re-subscribe after task handover to ensure server delivers on this connection
+    ESP_LOGI(TAG_APP, "APP: Sending initial re-subscribe...");
+    app_request_subscribe_all();
+    // T6-Fix5: Send wildcard ACK to clear any stuck delivery state
+    // Per SMP spec: empty msgId resets delivered = Nothing on server
+    if (contacts_db.num_contacts > 0) {
+        contact_t *c = &contacts_db.contacts[0];
+        ESP_LOGI(TAG_APP, "APP: Sending wildcard ACK for [%s] to clear delivery state", c->name);
+        uint8_t empty_msg_id[1] = {0};
+        app_send_ack(c->recipient_id, c->recipient_id_len,
+                     empty_msg_id, 0,
+                     c->rcv_auth_secret);
+    }
+    vTaskDelay(pdMS_TO_TICKS(2000));  // Give Network Task time to execute
+    ESP_LOGI(TAG_APP, "APP: Initial re-subscribe sent, entering main loop");
+
     while (1) {
         // T5: Keyboard send (non-blocking poll)
         {
@@ -234,11 +271,7 @@ void smp_app_run(QueueHandle_t kbd_queue)
         if (p + authLen > content_len) { ESP_LOGW(TAG_APP, "Frame truncated in auth"); continue; }
         p += authLen;
 
-        // sessLen
-        if (p >= content_len) { ESP_LOGW(TAG_APP, "Frame truncated at sessLen"); continue; }
-        int sessLen = resp[p++];
-        if (p + sessLen > content_len) { ESP_LOGW(TAG_APP, "Frame truncated in sess"); continue; }
-        p += sessLen;
+        // v7: no sessLen in response
 
         // corrLen
         if (p >= content_len) { ESP_LOGW(TAG_APP, "Frame truncated at corrLen"); continue; }
@@ -363,7 +396,7 @@ void smp_app_run(QueueHandle_t kbd_queue)
                             rp++;  // txCount
                             rp += 2;
                             int rq_authLen = rq_resp[rp++]; rp += rq_authLen;
-                            int rq_sessLen = rq_resp[rp++]; rp += rq_sessLen;
+                            // v7: no sessLen in response
                             int rq_corrLen = rq_resp[rp++]; rp += rq_corrLen;
                             int rq_entLen  = rq_resp[rp++]; rp += rq_entLen;
 
@@ -527,7 +560,7 @@ int smp_tasks_init(void)
     return 0;
 }
 
-int smp_tasks_start(mbedtls_ssl_context *ssl_context, const uint8_t *session_id)
+int smp_tasks_start(mbedtls_ssl_context *ssl_context, const uint8_t *session_id, int sock_fd)
 {
     if (!ssl_context || !session_id) {
         ESP_LOGE(TAG, "SSL context or session_id is NULL");
@@ -536,6 +569,7 @@ int smp_tasks_start(mbedtls_ssl_context *ssl_context, const uint8_t *session_id)
 
     s_ssl = ssl_context;
     memcpy(s_session_id, session_id, 32);
+    s_sock_fd = sock_fd;  // T6-Fix: Store for network task timeout
 
     ESP_LOGI(TAG, "Starting tasks (all in PSRAM)...");
     log_heap("before_tasks");
