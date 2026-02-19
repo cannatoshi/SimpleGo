@@ -8,7 +8,26 @@ This directory contains the complete, unabridged documentation of SimpleGo's dev
 
 ---
 
-## 🔍 LATEST: Intensive Debug Session (2026-02-18 Session 30)
+## 🎉 LATEST: Bidirectional Chat Restored! (2026-02-18 Session 31)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  🎉🎉🎉 BIDIRECTIONAL CHAT RESTORED — ROOT CAUSE FOUND! 🎉🎉🎉
+
+  T6: Bidirectional ✅ RESOLVED (was ❌ in Session 30)
+
+  Root Cause: txCount==1 filter in Drain-Loop
+  One character: == instead of >= killed App→ESP32 for 3 weeks
+  6 fixes applied, Evgeny guidance integrated
+  MILESTONE 7: Multi-Task Bidirectional Chat ✅
+
+  Date: February 18, 2026
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
+## 🔍 SESSION 30: Intensive Debug Session (2026-02-18)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
@@ -227,10 +246,11 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | [27_PART25_SESSION_28.md](27_PART25_SESSION_28.md) | ~550 | ✅ Phase 2b Success — Tasks Running! |
 | [28_PART26_SESSION_29.md](28_PART26_SESSION_29.md) | ~750 | 🏆 Multi-Task Architecture BREAKTHROUGH! |
 | [29_PART27_SESSION_30.md](29_PART27_SESSION_30.md) | ~660 | **🔍 Intensive Debug — 10 Hypotheses, 14 Fixes** |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1620 | Complete bug documentation (39 bugs, 152 lessons) |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1130 | Constants, wire formats, verified values |
+| [30_PART28_SESSION_31.md](30_PART28_SESSION_31.md) | ~850 | **🎉 Bidirectional Restored! Milestone 7!** |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1700 | Complete bug documentation (39 bugs, 161 lessons) |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1650 | Constants, wire formats, verified values |
 
-**Total: ~20,000+ lines of detailed protocol analysis (Session docs + reference docs)**
+**Total: ~22,000+ lines of detailed protocol analysis (Session docs + reference docs)**
 
 ---
 
@@ -266,6 +286,61 @@ SimpleX Chat represents a groundbreaking achievement in privacy-preserving commu
 | **28** | **Feb 15** | **✅ Phase 2b Success — 3 Tasks Running!** | **6 lessons** |
 | **29** | **Feb 16** | **🏆 Multi-Task Architecture BREAKTHROUGH!** | **5 lessons** |
 | **30** | **Feb 16-18** | **🔍 Intensive Debug — 10 Hypotheses, 14 Fixes** | **4 lessons** |
+| **31** | **Feb 18** | **🎉 Bidirectional Restored! Milestone 7!** | **9 lessons** |
+
+---
+
+## Session 31 Key Achievements — 🎉 Bidirectional Chat Restored!
+
+### 1. Root Cause Found: txCount==1 Filter
+
+```
+subscribe_all_contacts() Drain-Loop:
+  BEFORE: if (rq_resp[rrp] == 1) { ... }   ← DISCARDS txCount > 1
+  AFTER:  if (rq_resp[rrp] >= 1) { ... }   ← Accepts batched responses
+
+Server batches SUB OK + pending MSG with txCount=2:
+  TX1: OK (53 bytes)
+  TX2: MSG (16178 bytes) ← was silently discarded!
+
+One character change: == → >=
+Three weeks of debugging resolved.
+```
+
+### 2. Six Fixes Applied
+
+```
+1. TCP Keep-Alive (keepIdle=30, keepIntvl=15, keepCnt=4)
+2. SMP PING/PONG (30s interval, connection health)
+3. Reply Queue SUB on main socket (sock 54)
+4. txCount >= 1 acceptance (ROOT CAUSE!)
+5. TX2 MSG Forwarding to App Task via Ring Buffer
+6. Re-Delivery Handling (msg_ns < recv → ACK only)
+```
+
+### 3. Evgeny Guidance Integrated
+
+```
+Key insights from SimpleX protocol creator:
+  - "Subscription can only exist in one socket though"
+  - "if you subscribe from another socket, the first would receive END"
+  - "concurrency is hard."
+  - NEW creates subscribed by default, SUB is noop
+  - TCP Keep-Alive for NAT, not for subscription survival
+```
+
+### 4. Milestone 7: Multi-Task Bidirectional Chat ✅
+
+```
+Complete encrypted messaging in FreeRTOS Multi-Task Architecture:
+  ESP32 → App: ✅ (was working since S29)
+  App → ESP32: ✅ (RESTORED in S31!)
+  Delivery Receipts: ✅
+  Ratchet Persistence: ✅
+  TCP Keep-Alive + PING/PONG: ✅
+  Batch Handling (txCount > 1): ✅
+  Re-Delivery Detection: ✅
+```
 
 ---
 
@@ -818,4 +893,4 @@ This documentation is part of SimpleGo, licensed under AGPL-3.0.
 
 ---
 
-*Last updated: February 7, 2026 - Session 22 (Reply Queue Flow Discovery)*
+*Last updated: February 18, 2026 - Session 31 (🎉 Bidirectional Chat Restored! Milestone 7!)*

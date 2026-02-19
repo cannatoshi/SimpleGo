@@ -4,28 +4,27 @@
 
 **Project:** SimpleGo - Native ESP32 SMP Implementation  
 **Version:** v0.1.18-alpha  
-**Last Updated:** 2026-02-18 (Session 30 — 🔍 Intensive Debug Session)
+**Last Updated:** 2026-02-18 (Session 31 — 🎉 Bidirectional Chat Restored!)
 
 ---
 
-## 🔍 LATEST: Intensive Debug Session (Session 30)
+## 🎉 LATEST: Bidirectional Chat Restored! (Session 31)
 
-On February 16-18, 2026, Session 30 was the most intensive debug session:
+On February 18, 2026, Session 31 resolved the T6 bidirectional receive bug:
 
-- **T5 Keyboard-Send:** ✅ PASSED — Non-blocking poll in smp_app_run()
-- **T6 Bidirectional:** ❌ UNRESOLVED — App→ESP32 messages never arrive
-- **10 Hypotheses:** Systematically excluded
-- **14 Fixes/Diagnostics:** Applied and tested
-- **SMP v6 → v7 Upgrade:** 33 bytes saved per transmission
-- **Expert Question:** Sent to Evgeny Poberezkin
+- **T6 Bidirectional:** ✅ RESOLVED (was ❌ in Session 30)
+- **Root Cause:** txCount==1 filter in Drain-Loop discarded batched MSG
+- **6 Fixes:** TCP Keep-Alive, PING/PONG, Reply Queue SUB, txCount>=1, TX2 Forward, Re-Delivery
+- **Evgeny Guidance:** Subscriptions, keep-alive, session validation integrated
+- **Milestone 7:** Multi-Task Bidirectional Chat ✅
 
-**Lessons Learned:** 152 total (4 new in S30)
+**Lessons Learned:** 161 total (9 new in S31)
 
 ---
 
 ## Documentation Structure
 
-The complete protocol analysis (~25,000+ lines, 520+ sections) is split into 27 parts:
+The complete protocol analysis (~26,000+ lines, 538+ sections) is split into 28 parts:
 
 | Part | File | Lines | Content |
 |------|------|-------|---------|
@@ -56,7 +55,8 @@ The complete protocol analysis (~25,000+ lines, 520+ sections) is split into 27 
 | **25** | [**27_PART25_SESSION_28.md**](27_PART25_SESSION_28.md) | **~550** | **✅ Phase 2b Success — Tasks Running!** |
 | **26** | [**28_PART26_SESSION_29.md**](28_PART26_SESSION_29.md) | **~750** | **🏆 Multi-Task Architecture BREAKTHROUGH!** |
 | **27** | [**29_PART27_SESSION_30.md**](29_PART27_SESSION_30.md) | **~660** | **🔍 Intensive Debug — 10 Hypotheses, 14 Fixes** |
-| **Total** | | **~25,000+** | **520+ Sections** |
+| **28** | [**30_PART28_SESSION_31.md**](30_PART28_SESSION_31.md) | **~850** | **🎉 Bidirectional Chat Restored! Milestone 7!** |
+| **Total** | | **~26,000+** | **538+ Sections** |
 
 ---
 
@@ -65,8 +65,8 @@ The complete protocol analysis (~25,000+ lines, 520+ sections) is split into 27 
 | Document | Lines | Description |
 |----------|-------|-------------|
 | [README.md](README.md) | ~820 | Project overview and navigation |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,620 | All 39 bugs documented, 152 lessons |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,500 | Constants, wire formats, verified values |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,700 | All 39 bugs documented, 161 lessons |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,650 | Constants, wire formats, verified values |
 
 ---
 
@@ -101,12 +101,13 @@ The complete protocol analysis (~25,000+ lines, 520+ sections) is split into 27 
 | **28** | **Feb 15, 2026** | **TASKS** | **✅ Phase 2b Success — 3 Tasks Running!** |
 | **29** | **Feb 16, 2026** | **ARCHITECTURE** | **🏆 Multi-Task BREAKTHROUGH!** |
 | **30** | **Feb 16-18, 2026** | **DEBUG** | **🔍 10 Hypotheses, 14 Fixes, Awaiting Evgeny** |
+| **31** | **Feb 18, 2026** | **RESOLVED** | **🎉 Bidirectional Restored! Milestone 7!** |
 
 ---
 
 ## Key Achievements
 
-### ✅ COMPLETE BIDIRECTIONAL CHAT + PERSISTENCE (Session 26)
+### ✅ COMPLETE MULTI-TASK BIDIRECTIONAL CHAT (Session 31)
 - TLS 1.3 Handshake
 - SMP Protocol (Contact + Reply Queues)
 - X3DH Key Agreement
@@ -124,6 +125,12 @@ The complete protocol analysis (~25,000+ lines, 520+ sections) is split into 27 
 - SUB + KEY Commands
 - HELLO Exchange (both directions)
 - **CON — "CONNECTED"!** 🎉🎉🎉
+- **FreeRTOS Multi-Task Architecture** 🏆
+- **TCP Keep-Alive + SMP PING/PONG** ✅
+- **Batched txCount > 1 Handling** ✅
+- **TX2 MSG Forwarding** ✅
+- **Re-Delivery Detection** ✅
+- **Milestone 7: Multi-Task Bidirectional Chat** 🎉
 
 ### ✅ Session 23: The 7-Step Handshake
 ```
@@ -145,7 +152,7 @@ The complete protocol analysis (~25,000+ lines, 520+ sections) is split into 27 
 
 ## Bug Summary
 
-**Total bugs found and fixed: 31**
+**Total bugs found and fixed: 39**
 
 | Category | Count | Sessions |
 |----------|-------|----------|
@@ -159,14 +166,35 @@ The complete protocol analysis (~25,000+ lines, 520+ sections) is split into 27 
 | Key Management bugs | 1 | S19-20 |
 | HELLO Format bugs | 7 | S21 |
 | E2E Version/KEM/NHK bugs | 5 | S22 |
+| Bidirectional + Receipt bugs | 8 | S25 |
 
-**Lessons Learned: 109** (documented in BUG_TRACKER.md)
+**Lessons Learned: 161** (documented in BUG_TRACKER.md)
 
-**Session 23 & 24: ZERO new bugs — milestones achieved with solid crypto!**
+**Session 31: ZERO new protocol bugs! txCount filter was architecture bug, not protocol.**
 
 ---
 
 ## Protocol Discoveries
+
+### Session 31: SMP Batch Behavior (ROOT CAUSE!)
+```
+Server batches multiple transmissions in single 16384-byte block:
+  txCount = 2
+  ├── TX1: SUB OK response (53 bytes)
+  └── TX2: MSG delivery (16178 bytes)
+
+Parser had: if (txCount == 1) → discarded entire batch
+Fix:        if (txCount >= 1) → one character change
+
+batch = True is hardcoded in Transport.hs since v4.
+Third-party clients MUST handle txCount > 1.
+```
+
+### Session 31: Re-Delivery After Re-Subscribe
+```
+When re-subscribing to a queue, server re-delivers last unACKed MSG.
+Client must detect: msg_ns < ratchet->recv → ACK only, no decrypt.
+```
 
 ### Session 24: A_MSG Format + ChatMessage JSON
 ```
@@ -274,49 +302,47 @@ SimpleX uses NON-STANDARD XSalsa20:
 
 > *"what you did is impressive...first third-party SMP implementation"* - Evgeny
 
+> *"concurrency is hard."* - Evgeny (Session 31, on the txCount bug)
+
 SimpleGo is confirmed as the **FIRST native SMP protocol implementation** outside the official Haskell codebase.
 
 ---
 
-## Next Steps (Session 25)
+## Next Steps (Session 32)
 
-### Phase 1: Code Refactoring
+### Phase 1: User Interface
 ```
-main.c from 2400 lines → ~150 lines
-
-Extract into separate files:
-  - smp_msg_handler.c
-  - smp_agent_handler.c
-  - smp_chat.c
-  - smp_listen.c
+P0: Keyboard input → Chat send (T-Deck)
+P1: Display received messages (LVGL)
 ```
 
-### Phase 2: Bidirectional Bug Fix
+### Phase 2: Robustness
 ```
-Open Bug: App doesn't send to Q_B
-
-Evidence:
-  - ESP32 → App: Works (message displays)
-  - App → ESP32: Blocked (server has zero messages)
-  - Queue IDs verified correct
-
-Hypothesis:
-  Format error in AgentConfirmation or HELLO
-  causes App to not fully activate connection
-
-Analysis needed:
-  - What does App validate after our messages?
-  - What triggers full bidirectional activation?
+P2: Multiple contacts (data structure expansion)
+P3: Reconnection on connection drop
+P4: Peer SSL reconnect (sock 55/56 dies after idle)
 ```
 
-### Phase 3: Full Bidirectional
+### Assessment
 ```
-Third milestone: Receive messages from App
-  - Fix format error
-  - Receive A_MSG on Q_B
-  - Display on T-Deck screen
+"Der Rest ist deutlich einfacher. Engineering, nicht mehr Reverse Engineering."
 ```
 
 ---
 
-*Index updated: 2026-02-13 Session 24 — 🏆 First Chat Message!*
+## 🎯 Milestone Overview
+
+| # | Milestone | Date | Session |
+|---|-----------|------|---------|
+| 0 | 🎉 AgentConfirmation | 2026-01-27 | 8 |
+| 1 | 🎉 CONNECTED | 2026-02-08 | 23 |
+| 2 | 🏆 First A_MSG | 2026-02-11 | 24 |
+| 3 | 📥 App→ESP32 Decrypt | 2026-02-14 | 25 |
+| 4 | 🔄 Bidirectional Chat | 2026-02-14 | 25 |
+| 5 | ✓✓ Delivery Receipts | 2026-02-14 | 25 |
+| 6 | 🗄️ Ratchet Persistence | 2026-02-14 | 26 |
+| **7** | **🎉 Multi-Task Bidirectional** | **2026-02-18** | **31** |
+
+---
+
+*Index updated: 2026-02-18 Session 31 — 🎉 Bidirectional Chat Restored! Milestone 7!*

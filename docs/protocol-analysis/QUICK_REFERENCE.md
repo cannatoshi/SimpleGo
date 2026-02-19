@@ -1495,8 +1495,128 @@ App (Joining Party / Party B):
 
 ---
 
-*Quick Reference v24.0*  
-*Last updated: February 18, 2026 - Session 30*  
-*Status: 🔍 Intensive Debug Session — Awaiting Evgeny Response*  
-*All 6 Milestones Still Intact!*  
-*Next: Session 31 — Implement Evgeny's Solution*
+## Section 29: Session 31 Key Insights (2026-02-18)
+
+### 29.1 SMP Batch Format (Definitive Reference)
+
+```
+Block Structure (16384 bytes total):
+┌──────────────────────────────────────────────────┐
+│ [2B content_length]  ← Big Endian, payload size  │
+│ [1B txCount]         ← Number of transmissions   │
+│ [2B tx1_length]      ← Large-encoded TX1 length  │
+│ [tx1_data]           ← First transmission        │
+│ [2B tx2_length]      ← (if txCount > 1)          │
+│ [tx2_data]           ← Second transmission       │
+│ [... more TXn]       ← (if txCount > 2)          │
+│ [padding '#']        ← Fill to SMP_BLOCK_SIZE    │
+└──────────────────────────────────────────────────┘
+
+batch = True is HARDCODED in Transport.hs since v4.
+Third-party clients MUST handle txCount > 1.
+```
+
+### 29.2 TX2 Forwarding Pattern
+
+```c
+// After parsing TX1 from subscribe response:
+if (txCount > 1) {
+    int tx2_start = 1 + 2 + tx1_len;  // skip txCount + Large + TX1
+    int tx2_len = (block[tx2_start] << 8) | block[tx2_start + 1];
+    uint8_t *tx2_ptr = &block[tx2_start + 2];
+    
+    // Repackage as single-TX block for Ring Buffer:
+    uint8_t *fwd = block;
+    int tx2_total = 1 + 2 + tx2_len;
+    fwd[0] = (tx2_total >> 8) & 0xFF;  // content_length
+    fwd[1] = tx2_total & 0xFF;
+    fwd[2] = 0x01;                      // txCount = 1
+    fwd[3] = (tx2_len >> 8) & 0xFF;    // Large-length
+    fwd[4] = tx2_len & 0xFF;
+    memmove(&fwd[5], tx2_ptr, tx2_len); // memmove! overlap!
+    
+    xRingbufferSend(net_to_app_buf, fwd, tx2_total + 2, ...);
+}
+```
+
+### 29.3 Re-Delivery Detection Pattern
+
+```c
+// In Double Ratchet decrypt, before chain skip:
+if (msg_ns < ratchet->recv) {
+    ESP_LOGW("RATCH", "Re-delivery detected: ns=%d < recv=%d",
+             msg_ns, ratchet->recv);
+    return RE_DELIVERY;  // Caller sends ACK without processing
+}
+```
+
+### 29.4 TCP Keep-Alive + SMP PING/PONG
+
+```
+TCP Keep-Alive (OS level, NAT refresh):
+  keepIdle  = 30s   ← seconds before first probe
+  keepIntvl = 15s   ← seconds between probes
+  keepCnt   = 4     ← failed probes before disconnect
+  
+  Source: Haskell uses identical values (SimpleX Haskell codebase)
+
+SMP PING/PONG (Application level):
+  SimpleX Haskell: PING every 600s (SMP), 60s (NTF)
+  SimpleGo:        PING every 30s (more aggressive, safe)
+  
+  Server does NOT drop subscriptions from missing PING.
+  Only after 6 hours without ANY subscription on the connection.
+```
+
+### 29.5 Subscription Rules (from Evgeny)
+
+```
+1. NEW creates subscribed by default (no SUB needed after NEW)
+2. SUB is a noop if already subscribed (but re-delivers last unACKd MSG)
+3. Subscription exists on ONE socket only
+4. SUB from socket B → socket A gets END
+5. Reconnection → old socket gets END → must validate session
+6. Reply Queue: must re-SUB on main socket after temporary socket closes
+```
+
+### 29.6 Current Architecture (End of Session 31)
+
+```
+Boot → WiFi → TLS → SMP v7 Handshake → Subscribe → Tasks
+
+Network Task (Core 0, PSRAM):
+  - SSL read loop (1s timeout)
+  - TCP Keep-Alive + PING/PONG (30s)
+  - subscribe_all_contacts() with txCount > 1 handling
+  - TX2 MSG forwarding to App Task
+  - Frame → net_to_app_buf Ring Buffer
+
+Main Task (Internal SRAM, 64KB):
+  - Ring Buffer read → Parse → Decrypt
+  - Re-delivery detection (msg_ns < recv)
+  - Keyboard poll (non-blocking)
+  - 42d handshake block
+  - ACK/Subscribe via Ring Buffer → Network Task
+
+UI Task (Core 1, PSRAM):
+  - Empty loop (future LVGL display)
+```
+
+### 29.7 Root Cause Summary
+
+```
+BUG:   if (rq_resp[rrp] == 1)   ← discards txCount > 1
+FIX:   if (rq_resp[rrp] >= 1)   ← accepts batched responses
+
+One character: == → >=
+Three weeks of debugging.
+"Klassiker." — Mausi 👑🐭
+```
+
+---
+
+*Quick Reference v25.0*  
+*Last updated: February 18, 2026 - Session 31*  
+*Status: 🎉 Bidirectional Chat Restored! Milestone 7!*  
+*All 7 Milestones Achieved!*  
+*Next: Session 32 — Keyboard, Display, Multiple Contacts*

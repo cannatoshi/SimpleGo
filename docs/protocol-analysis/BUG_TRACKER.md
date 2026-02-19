@@ -1548,8 +1548,70 @@ v7 SUB Transmission: 118 bytes (33 bytes saved - SessionId removed from wire)
 
 ---
 
-*Bug Tracker v25.0*  
-*Last updated: February 18, 2026 - Session 30*  
+## Session 31 — Root Cause Found! (2026-02-18)
+
+### 🎉 T6 RESOLVED: txCount==1 Filter in Drain-Loop
+
+**Root Cause:** The Drain-Loop in `subscribe_all_contacts()` had `if (rq_resp[rrp] == 1)` which discarded all batched server responses with txCount > 1. The server batched SUB OK + pending MSG with txCount=2, and the MSG in TX2 was silently dropped.
+
+**The Fix:**
+```c
+// BEFORE (broken):
+if (rq_resp[rrp] == 1) {    // Only accept txCount == 1
+
+// AFTER (fixed):
+if (rq_resp[rrp] >= 1) {    // Accept txCount >= 1
+```
+
+**One character change: `==` → `>=`**
+
+### Six Fixes Applied
+
+| # | Fix | File | Description |
+|---|-----|------|-------------|
+| 1 | TCP Keep-Alive | smp_network.c | keepIdle=30, keepIntvl=15, keepCnt=4 |
+| 2 | SMP PING/PONG | smp_tasks.c | 30s interval, connection health |
+| 3 | Reply Queue SUB | smp_contacts.c | Explicit SUB on sock 54 (main socket) |
+| 4 | txCount >= 1 | smp_contacts.c | ROOT CAUSE! Accept batched responses |
+| 5 | TX2 Forwarding | smp_contacts.c | Forward MSG from batch to App Task |
+| 6 | Re-Delivery | smp_ratchet.c | msg_ns < recv → ACK only, no decrypt |
+
+### Evgeny's Response (Key Insights)
+
+> "Subscription can only exist in one socket though."  
+> "if you subscribe from another socket, the first would receive END"  
+> "concurrency is hard."
+
+### SMP Batch Format (Definitive Reference)
+
+```
+[2B content_length]     ← Big Endian
+[1B txCount]            ← Number of transmissions (can be > 1!)
+[2B tx1_length]         ← Large-encoded length of TX1
+[tx1_data]              ← First transmission
+[2B tx2_length]         ← Large-encoded length of TX2 (if txCount > 1)
+[tx2_data]              ← Second transmission
+[padding '#' to 16384]  ← Pad to SMP_BLOCK_SIZE
+```
+
+`batch = True` is hardcoded in Transport.hs since v4. Third-party clients MUST handle txCount > 1.
+
+### New Lessons Learned (Session 31)
+
+153. **PING not required for subscription survival** - Server does NOT drop subscriptions due to missing PING/PONG. Only after 6h without ANY subscription. PING is for connection health and NAT refresh (Session 31)
+154. **TCP Keep-Alive is for NAT, not subscription** - keepIdle/keepIntvl/keepCnt prevents NAT table expiry. Does not affect SMP subscription state (Session 31)
+155. **Reply Queue needs explicit SUB on main socket** - After 42d handshake creates Reply Queue on sock 55, must re-SUB on sock 54 after sock 55 closes (Session 31)
+156. **"Different Server" is a recurring dead end** - Disproven in S24, repeated in S30 and S31. NEVER revisit without concrete new evidence (Session 31)
+157. **txCount > 1 is normal SMP batch behavior** - `batch = True` hardcoded in Transport.hs since v4. Parsers MUST handle txCount > 1, especially SUB OK + pending MSG (Session 31)
+158. **Drain-Loops can discard MSG frames** - A Drain-Loop filtering for expected responses must not silently drop unexpected frames. Forward or buffer, never discard (Session 31)
+159. **Re-delivery is normal after reconnect/re-subscribe** - Server re-delivers last unACKed MSG. Client detects: msg_ns < recv → ACK only, no decrypt (Session 31)
+160. **Hasi reports to Mausi, no independent theories** - Implementation agent executes assigned tasks and reports results. Observations go to strategy agent first (Session 31)
+161. **RAW hex dump before parsing reveals truth** - NT_RAW hex dump is the definitive diagnostic. MSG in RAW → parsing problem. No MSG in RAW → server/network problem (Session 31)
+
+---
+
+*Bug Tracker v26.0*  
+*Last updated: February 18, 2026 - Session 31*  
 *Total bugs documented: 39 (all FIXED)*  
-*152 lessons learned!*  
-*🔍 Session 30: 10 Hypotheses Excluded, Awaiting Evgeny Response*
+*161 lessons learned!*  
+*🎉 Session 31: Bidirectional Chat Restored! Milestone 7!*

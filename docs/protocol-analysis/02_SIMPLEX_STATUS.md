@@ -1,14 +1,42 @@
 ![SimpleGo](../gfx/sg_multi_agent_ft_header.png)
 
-# SimpleGo - Current Status (2026-02-15)
+# SimpleGo - Current Status (2026-02-18)
 
 **Project:** Native SimpleX SMP Client for ESP32  
 **Version:** v0.1.18-alpha  
-**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (520+ sections, 27 parts)
+**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (538+ sections, 28 parts)
 
 ---
 
-## 🔍 LATEST: Intensive Debug Session (2026-02-18 Session 30)
+## 🎉 LATEST: Bidirectional Chat Restored! (2026-02-18 Session 31)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  🎉🎉🎉 BIDIRECTIONAL CHAT RESTORED — ROOT CAUSE FOUND! 🎉🎉🎉
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                                                                         │
+  │   T6: Baseline-Test Bidirectional ✅ RESOLVED (was ❌ in Session 30)   │
+  │                                                                         │
+  │   Root Cause: txCount==1 filter in Drain-Loop discarded batched         │
+  │   server responses. MSG in TX2 was silently dropped.                    │
+  │                                                                         │
+  │   6 Fixes applied, 5 hypotheses tested, 1 Wizard analysis              │
+  │   Evgeny guidance integrated (subscriptions, keep-alive)               │
+  │                                                                         │
+  │   MILESTONE 7: Multi-Task Bidirectional Chat ✅                        │
+  │                                                                         │
+  │   Date: February 18, 2026                                              │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
+---
+
+## 🔍 SESSION 30: Intensive Debug Session (2026-02-18)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
@@ -435,9 +463,9 @@ Bytes 80-95: HEADER_IV (iv2)   ← FOR HEADER!
 | `01_SIMPLEX_PROTOCOL_INDEX.md` | Navigation index |
 | `02_SIMPLEX_STATUS.md` | This file - quick status |
 | `README.md` | Project overview |
-| `BUG_TRACKER.md` | All 39 bugs, 112 lessons |
+| `BUG_TRACKER.md` | All 39 bugs, 161 lessons |
 | `QUICK_REFERENCE.md` | Constants, wire formats |
-| `03-24_PART*.md` | Sessions 1-25 documentation |
+| `03-30_PART*.md` | Sessions 1-31 documentation |
 
 ---
 
@@ -452,18 +480,21 @@ Bytes 80-95: HEADER_IV (iv2)   ← FOR HEADER!
 | 4 | 🔄 Bidirectional Chat | 2026-02-14 | 25 |
 | 5 | ✓✓ Delivery Receipts | 2026-02-14 | 25 |
 | **6** | **🗄️ Ratchet Persistence** | **2026-02-14** | **26** |
+| **7** | **🎉 Multi-Task Bidirectional** | **2026-02-18** | **31** |
 
 ---
 
-## 🎯 Next Steps (Session 31)
+## 🎯 Next Steps (Session 32)
 
-1. **P0:** Wait for Evgeny's response and implement
-2. **P1:** Clean up diagnostic logs (RECV, hex dumps, drain loop to ESP_LOGD)
-3. **P2:** Peer SSL reconnect (sock 55/56 dies after idle with errno=104)
-4. **P3:** UI Task with display output for received messages
-5. **Multiple contacts** — Extend beyond single contact
+1. **P0:** Keyboard input → Chat send (T-Deck, Grundlage in S30 T5)
+2. **P1:** Display: Empfangene Nachrichten anzeigen (LVGL)
+3. **P2:** Multiple contacts (Datenstruktur erweitern)
+4. **P3:** Reconnection bei Verbindungsabbruch (Robustheit)
+5. **P4:** Peer SSL reconnect (sock 55/56 dies after idle, errno=104)
+
+**Assessment:** "Der Rest ist deutlich einfacher. Engineering, nicht mehr Reverse Engineering."
 
 ---
 
-*Status updated: 2026-02-18 Session 30 — 🔍 INTENSIVE DEBUG SESSION*  
-*History: S8 Breakthrough → S23 CONNECTED → S24 First MSG → S25 Bidirectional → S26 Persistence → S27 Architecture → S28 Tasks → S29 Multi-Task → S30 Debug*
+*Status updated: 2026-02-18 Session 31 — 🎉 BIDIRECTIONAL CHAT RESTORED! Milestone 7!*  
+*History: S8 Breakthrough → S23 CONNECTED → S24 First MSG → S25 Bidirectional → S26 Persistence → S27 Architecture → S28 Tasks → S29 Multi-Task → S30 Debug → S31 RESOLVED!*
