@@ -233,7 +233,7 @@ void ui_chat_add_message(const char *text, bool is_outgoing)
     // Required when called from timer callback (ui_poll_timer_cb)
     lv_obj_update_layout(msg_container);
     lv_obj_scroll_to_y(msg_container, LV_COORD_MAX, LV_ANIM_ON);
-    lv_obj_invalidate(msg_container);
+    lv_obj_invalidate(lv_scr_act());
 
     ESP_LOGD(TAG, "%s: \"%s\"", is_outgoing ? "OUT" : "IN", text);
 }
