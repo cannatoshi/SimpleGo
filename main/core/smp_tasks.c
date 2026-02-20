@@ -20,6 +20,9 @@
 #include "sodium.h"        // Phase 3 T3: crypto_box_MACBYTES
 #include "smp_ack.h"       // Phase 3 T4c: smp_send_ack()
 #include "smp_peer.h"      // Phase 3 T4e: peer_send_chat_message()
+#include "ui_chat.h"       // Session 32: ui_chat_get_last_seq()
+#include "ui_manager.h"    // Session 32: UI_SCREEN_CHAT
+#include "smp_handshake.h" // Session 32: handshake_get_last_msg_id()
 #include <string.h>
 #include <sys/socket.h>
 #include "esp_log.h"
@@ -48,6 +51,23 @@ static uint8_t s_session_id[32];  // Phase 3 T4b: session ID for ACK signing
 static uint8_t s_peer_sender_auth_key[44];
 static bool s_has_peer_sender_auth = false;
 static bool s_42d_completed = false;  // Prevent 42d from running more than once
+
+// Session 32: UI Event Queue (protocol -> LVGL thread)
+QueueHandle_t app_to_ui_queue = NULL;
+
+// Session 32: seq <-> msg_id mapping for delivery receipt matching
+#define MAX_MSG_MAPPINGS 16
+
+typedef struct {
+    uint32_t ui_seq;
+    uint64_t msg_id;
+    bool active;
+} msg_mapping_t;
+
+static msg_mapping_t msg_mappings[MAX_MSG_MAPPINGS] = {0};
+
+// Session 33: Active contact for sending (replaces hardcoded contacts[0])
+static int s_active_contact_idx = 0;
 
 // Helper: log both internal and PSRAM heap
 static void log_heap(const char *label)
@@ -305,6 +325,118 @@ static void app_request_subscribe_all(void)
     }
 }
 
+// ============== Session 32: UI Notification Helpers ==============
+
+void smp_notify_ui_message(const char *text, bool is_outgoing, uint32_t msg_seq)
+{
+    if (!app_to_ui_queue || !text) return;
+    ui_event_t evt = {0};
+    evt.type = UI_EVT_MESSAGE;
+    evt.is_outgoing = is_outgoing;
+    evt.msg_seq = msg_seq;
+    evt.status = is_outgoing ? MSG_STATUS_SENDING : MSG_STATUS_DELIVERED;
+    strncpy(evt.text, text, sizeof(evt.text) - 1);
+    xQueueSend(app_to_ui_queue, &evt, 0);
+}
+
+void smp_notify_ui_navigate(uint8_t screen)
+{
+    if (!app_to_ui_queue) return;
+    ui_event_t evt = {0};
+    evt.type = UI_EVT_NAVIGATE;
+    evt.screen = screen;
+    xQueueSend(app_to_ui_queue, &evt, 0);
+}
+
+void smp_notify_ui_contact(const char *name)
+{
+    if (!app_to_ui_queue || !name) return;
+    ui_event_t evt = {0};
+    evt.type = UI_EVT_SET_CONTACT;
+    strncpy(evt.text, name, sizeof(evt.text) - 1);
+    xQueueSend(app_to_ui_queue, &evt, 0);
+}
+
+void smp_notify_ui_delivery_status(uint32_t msg_seq, msg_delivery_status_t status)
+{
+    if (!app_to_ui_queue) return;
+    ui_event_t evt = {0};
+    evt.type = UI_EVT_DELIVERY_STATUS;
+    evt.msg_seq = msg_seq;
+    evt.status = status;
+    xQueueSend(app_to_ui_queue, &evt, 0);
+}
+
+// ============== Session 32: Message ID Mapping for Receipts ==============
+
+void smp_register_msg_mapping(uint32_t ui_seq, uint64_t protocol_msg_id)
+{
+    // Find free slot (oldest gets overwritten if full)
+    int oldest = 0;
+    for (int i = 0; i < MAX_MSG_MAPPINGS; i++) {
+        if (!msg_mappings[i].active) {
+            msg_mappings[i].ui_seq = ui_seq;
+            msg_mappings[i].msg_id = protocol_msg_id;
+            msg_mappings[i].active = true;
+            ESP_LOGI("MAP", "Registered seq=%lu -> msg_id=%llu",
+                     (unsigned long)ui_seq, (unsigned long long)protocol_msg_id);
+            return;
+        }
+        oldest = i;
+    }
+    // Overwrite oldest if full
+    msg_mappings[oldest].ui_seq = ui_seq;
+    msg_mappings[oldest].msg_id = protocol_msg_id;
+    msg_mappings[oldest].active = true;
+    ESP_LOGW("MAP", "Mapping table full, overwrote slot %d: seq=%lu -> msg_id=%llu",
+             oldest, (unsigned long)ui_seq, (unsigned long long)protocol_msg_id);
+}
+
+// Internal: lookup seq by msg_id (for receipt matching, one-shot)
+static uint32_t find_seq_by_msg_id(uint64_t protocol_msg_id)
+{
+    for (int i = 0; i < MAX_MSG_MAPPINGS; i++) {
+        if (msg_mappings[i].active && msg_mappings[i].msg_id == protocol_msg_id) {
+            uint32_t seq = msg_mappings[i].ui_seq;
+            msg_mappings[i].active = false;  // One-shot: free after match
+            return seq;
+        }
+    }
+    return 0;  // Not found
+}
+
+void smp_notify_receipt_received(uint64_t protocol_msg_id)
+{
+    uint32_t seq = find_seq_by_msg_id(protocol_msg_id);
+    if (seq > 0) {
+        ESP_LOGI("RCPT", "vv Receipt matched! msg_id=%llu -> seq=%lu",
+                 (unsigned long long)protocol_msg_id, (unsigned long)seq);
+        smp_notify_ui_delivery_status(seq, MSG_STATUS_DELIVERED);
+    } else {
+        ESP_LOGW("RCPT", "Receipt for unknown msg_id=%llu (no mapping)",
+                 (unsigned long long)protocol_msg_id);
+    }
+}
+
+// ============== Session 33: Active Contact Management ==============
+
+void smp_set_active_contact(int idx)
+{
+    if (idx >= 0 && idx < MAX_CONTACTS && contacts_db.contacts[idx].active) {
+        s_active_contact_idx = idx;
+        ESP_LOGI(TAG, "Active contact set to [%d] %s",
+                 idx, contacts_db.contacts[idx].name);
+    } else {
+        ESP_LOGW(TAG, "Invalid contact index %d (max=%d), keeping [%d]",
+                 idx, MAX_CONTACTS, s_active_contact_idx);
+    }
+}
+
+int smp_get_active_contact(void)
+{
+    return s_active_contact_idx;
+}
+
 // Phase 3 T4: App logic runs on Main Task (64KB Internal SRAM stack)
 // Required because NVS writes crash with PSRAM stack (SPI Flash disables cache)
 void smp_app_run(QueueHandle_t kbd_queue)
@@ -327,8 +459,9 @@ void smp_app_run(QueueHandle_t kbd_queue)
     app_request_subscribe_all();
     // T6-Fix5: Send wildcard ACK to clear any stuck delivery state
     // Per SMP spec: empty msgId resets delivered = Nothing on server
+    // Session 33: Wildcard ACK for active contact
     if (contacts_db.num_contacts > 0) {
-        contact_t *c = &contacts_db.contacts[0];
+        contact_t *c = &contacts_db.contacts[s_active_contact_idx];
         ESP_LOGI(TAG_APP, "APP: Sending wildcard ACK for [%s] to clear delivery state", c->name);
         uint8_t empty_msg_id[1] = {0};
         app_send_ack(c->recipient_id, c->recipient_id_len,
@@ -340,15 +473,32 @@ void smp_app_run(QueueHandle_t kbd_queue)
 
     while (1) {
         // T5: Keyboard send (non-blocking poll)
+        // Session 32: Keyboard send with delivery status
         {
             char kbd_msg[256];
             while (kbd_queue && xQueueReceive(kbd_queue, kbd_msg, 0) == pdTRUE) {
                 ESP_LOGI(TAG_APP, "⌨️ Sending: \"%s\"", kbd_msg);
-                contact_t *msg_contact = &contacts_db.contacts[0];
+
+                // Seq was incremented by ui_chat_next_seq() in on_input_ready
+                uint32_t seq = ui_chat_get_last_seq();
+
+                // Session 33: Send to active contact
+                contact_t *msg_contact = &contacts_db.contacts[s_active_contact_idx];
+                if (!msg_contact->active) {
+                    ESP_LOGE(TAG_APP, "   ❌ Active contact [%d] is not active!", s_active_contact_idx);
+                    smp_notify_ui_delivery_status(seq, MSG_STATUS_FAILED);
+                    continue;  // Skip this message in while loop
+                }
                 if (peer_send_chat_message(msg_contact, kbd_msg)) {
-                    ESP_LOGI(TAG_APP, "   ✅ Keyboard message sent!");
+                    ESP_LOGI(TAG_APP, "   ✅ Message sent! seq=%lu", (unsigned long)seq);
+                    smp_notify_ui_delivery_status(seq, MSG_STATUS_SENT);
+
+                    // Session 32: Register seq->msg_id for receipt matching
+                    uint64_t sent_msg_id = handshake_get_last_msg_id();
+                    smp_register_msg_mapping(seq, sent_msg_id);
                 } else {
-                    ESP_LOGE(TAG_APP, "   ❌ Keyboard message send failed!");
+                    ESP_LOGE(TAG_APP, "   ❌ Send failed! seq=%lu", (unsigned long)seq);
+                    smp_notify_ui_delivery_status(seq, MSG_STATUS_FAILED);
                 }
             }
         }
@@ -457,7 +607,7 @@ void smp_app_run(QueueHandle_t kbd_queue)
 
                 if (e2e_ret == 0 && e2e_plain) {
                     smp_agent_process_message(e2e_plain, e2e_plain_len,
-                           &contacts_db.contacts[0],
+                           &contacts_db.contacts[0],  // 42d: always first contact
                            s_peer_sender_auth_key, &s_has_peer_sender_auth);
                     free(e2e_plain);
                 } else {
@@ -489,7 +639,7 @@ void smp_app_run(QueueHandle_t kbd_queue)
                     // 2. HELLO auf Contact Queue (eigene Peer-Verbindung)
                     ESP_LOGI(TAG_APP, "APP: 42d — Sending HELLO on Contact Queue Q_A...");
                     {
-                        contact_t *hello_contact = &contacts_db.contacts[0];
+                        contact_t *hello_contact = &contacts_db.contacts[0];  // 42d: always first contact
                         if (peer_send_hello(hello_contact)) {
                             ESP_LOGI(TAG_APP, "APP: 42d — HELLO sent!");
                         } else {
@@ -537,7 +687,7 @@ void smp_app_run(QueueHandle_t kbd_queue)
                                 uint8_t dummy_key[44];
                                 bool dummy_auth = false;
                                 smp_agent_process_message(rq_plain, rq_plain_len,
-                                                          &contacts_db.contacts[0],
+                                                          &contacts_db.contacts[0],  // 42d: always first contact
                                                           dummy_key, &dummy_auth);
                                 free(rq_plain);
                             }
@@ -552,13 +702,18 @@ void smp_app_run(QueueHandle_t kbd_queue)
                     ESP_LOGI(TAG_APP, "APP: 42d — Sending first chat message in 3 seconds...");
                     vTaskDelay(pdMS_TO_TICKS(3000));
                     {
-                        contact_t *msg_contact = &contacts_db.contacts[0];
+                        contact_t *msg_contact = &contacts_db.contacts[0];  // 42d: always first contact
                         if (peer_send_chat_message(msg_contact, "Hello from ESP32!")) {
                             ESP_LOGI(TAG_APP, "APP: 42d — Chat message sent!");
                         } else {
                             ESP_LOGE(TAG_APP, "APP: 42d — Chat message failed!");
                         }
                     }
+
+                    // Session 33: Set active to first contact + navigate
+                    s_active_contact_idx = 0;
+                    smp_notify_ui_contact(contacts_db.contacts[0].name);
+                    smp_notify_ui_navigate(UI_SCREEN_CHAT);
 
                     s_has_peer_sender_auth = false;  // Don't re-trigger
 
@@ -678,6 +833,13 @@ int smp_tasks_init(void)
 
     ESP_LOGI(TAG, "  Ring buffers (PSRAM): net->app %dB, app->net %dB",
              NET_TO_APP_BUF_SIZE, APP_TO_NET_BUF_SIZE);
+
+    // Session 32: UI event queue (8 events, non-blocking push)
+    app_to_ui_queue = xQueueCreate(8, sizeof(ui_event_t));
+    if (!app_to_ui_queue) {
+        ESP_LOGW(TAG, "Failed to create UI event queue (non-fatal)");
+    }
+
     log_heap("after_init");
 
     return 0;

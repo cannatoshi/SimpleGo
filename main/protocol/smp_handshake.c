@@ -1175,6 +1175,10 @@ void reset_handshake_state(void) {
     memset(&handshake_state, 0, sizeof(handshake_state));
 }
 
+uint64_t handshake_get_last_msg_id(void) {
+    return handshake_state.msg_id;
+}
+
 // ============== Persistence (Auftrag 50d) ==============
 
 // Compact struct for NVS — only the fields needed after reboot

@@ -197,4 +197,12 @@ bool handshake_save_state(void);
  */
 bool handshake_load_state(void);
 
+/**
+ * Get the msg_id used in the most recent send operation.
+ * Used by delivery status tracking to map UI seq -> protocol msg_id.
+ *
+ * @return Last used msg_id (post-increment value from build_chat_message)
+ */
+uint64_t handshake_get_last_msg_id(void);
+
 #endif // SMP_HANDSHAKE_H

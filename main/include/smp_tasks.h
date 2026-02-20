@@ -66,4 +66,68 @@ void smp_tasks_stop(void);
  */
 void smp_app_run(QueueHandle_t kbd_queue);
 
+/*============================================================================
+ * UI EVENT BRIDGE (Session 32: Demonstration Mode)
+ *==========================================================================*/
+
+/** UI event types for cross-task communication */
+typedef enum {
+    UI_EVT_MESSAGE = 0,     // Chat message (incoming or outgoing status)
+    UI_EVT_NAVIGATE,        // Navigate to screen
+    UI_EVT_SET_CONTACT,     // Set contact name in chat header
+    UI_EVT_DELIVERY_STATUS, // Update delivery status on outgoing message
+} ui_event_type_t;
+
+/** Delivery status for outgoing messages */
+typedef enum {
+    MSG_STATUS_SENDING = 0, // Queued, not yet sent
+    MSG_STATUS_SENT,        // Server accepted
+    MSG_STATUS_DELIVERED,   // Peer received (delivery receipt)
+    MSG_STATUS_FAILED,      // Send failed
+} msg_delivery_status_t;
+
+/** UI event structure (fits in FreeRTOS queue) */
+typedef struct {
+    ui_event_type_t type;
+    bool is_outgoing;                // UI_EVT_MESSAGE: true=ours, false=theirs
+    uint8_t screen;                  // UI_EVT_NAVIGATE: ui_screen_t value
+    msg_delivery_status_t status;    // UI_EVT_DELIVERY_STATUS
+    uint32_t msg_seq;                // Sequence number for status updates
+    char text[256];                  // Message text or contact name
+} ui_event_t;
+
+/** Global queue: protocol tasks -> LVGL timer */
+extern QueueHandle_t app_to_ui_queue;
+
+/** Push functions (safe to call from any task on any core) */
+void smp_notify_ui_message(const char *text, bool is_outgoing, uint32_t msg_seq);
+void smp_notify_ui_navigate(uint8_t screen);
+void smp_notify_ui_contact(const char *name);
+void smp_notify_ui_delivery_status(uint32_t msg_seq, msg_delivery_status_t status);
+
+/**
+ * @brief Register mapping between UI sequence and protocol msg_id
+ * Called after successful send to enable receipt matching
+ */
+void smp_register_msg_mapping(uint32_t ui_seq, uint64_t protocol_msg_id);
+
+/**
+ * @brief Notify UI that a delivery receipt was received
+ * Looks up the seq by msg_id and pushes DELIVERED status
+ */
+void smp_notify_receipt_received(uint64_t protocol_msg_id);
+
+/**
+ * @brief Set which contact is currently active for sending
+ * Called by UI when user selects a contact from the list.
+ * @param idx  Index into contacts_db.contacts[]
+ */
+void smp_set_active_contact(int idx);
+
+/**
+ * @brief Get currently active contact index
+ * @return Index into contacts_db.contacts[], or 0 if none set
+ */
+int smp_get_active_contact(void);
+
 #endif // SMP_TASKS_H

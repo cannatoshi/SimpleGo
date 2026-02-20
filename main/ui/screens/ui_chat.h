@@ -54,6 +54,25 @@ void ui_chat_set_send_callback(ui_chat_send_cb_t cb);
  */
 void ui_chat_set_keyboard_indev(lv_indev_t *kb_indev);
 
+/**
+ * @brief Update delivery status on an outgoing message bubble
+ * @param msg_seq  Message sequence number
+ * @param status   New delivery status (see msg_delivery_status_t)
+ */
+void ui_chat_update_status(uint32_t msg_seq, int status);
+
+/**
+ * @brief Get next message sequence number (for outgoing messages)
+ * @return Monotonically increasing sequence number
+ */
+uint32_t ui_chat_next_seq(void);
+
+/**
+ * @brief Get last assigned sequence number (for status matching)
+ * @return Last sequence number assigned by ui_chat_next_seq()
+ */
+uint32_t ui_chat_get_last_seq(void);
+
 #ifdef __cplusplus
 }
 #endif

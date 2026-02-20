@@ -84,6 +84,7 @@ static bool session_restored = false;
 #include "freertos/queue.h"
 static QueueHandle_t kbd_msg_queue = NULL;   // char[256] messages from kbd task
 
+#if 0  // Session 32: Replaced by LVGL keyboard indev
 static void keyboard_task(void *arg)
 {
     (void)arg;
@@ -122,6 +123,51 @@ static void keyboard_task(void *arg)
         }
 
         vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+#endif
+
+// Session 32: Chat send callback (LVGL thread -> kbd_msg_queue -> smp_app_run)
+#include "ui_chat.h"
+
+static void chat_send_cb(const char *text)
+{
+    if (kbd_msg_queue && text && text[0] != '\0') {
+        char buf[256];
+        strncpy(buf, text, 255);
+        buf[255] = '\0';
+        xQueueSend(kbd_msg_queue, buf, 0);
+        ESP_LOGI("CHAT_CB", "Send queued: \"%s\"", buf);
+    }
+}
+
+// Session 32: LVGL timer polls app_to_ui_queue (runs in LVGL thread context)
+static void ui_poll_timer_cb(lv_timer_t *t)
+{
+    (void)t;
+    extern QueueHandle_t app_to_ui_queue;
+    if (!app_to_ui_queue) return;
+
+    ui_event_t evt;
+    while (xQueueReceive(app_to_ui_queue, &evt, 0) == pdTRUE) {
+        switch (evt.type) {
+            case UI_EVT_MESSAGE:
+                // Auto-navigate to chat on first message
+                if (ui_manager_get_current() != UI_SCREEN_CHAT) {
+                    ui_manager_show_screen(UI_SCREEN_CHAT, LV_SCR_LOAD_ANIM_NONE);
+                }
+                ui_chat_add_message(evt.text, evt.is_outgoing);
+                break;
+            case UI_EVT_NAVIGATE:
+                ui_manager_show_screen((ui_screen_t)evt.screen, LV_SCR_LOAD_ANIM_NONE);
+                break;
+            case UI_EVT_SET_CONTACT:
+                ui_chat_set_contact(evt.text);
+                break;
+            case UI_EVT_DELIVERY_STATUS:
+                ui_chat_update_status(evt.msg_seq, (int)evt.status);
+                break;
+        }
     }
 }
 
@@ -689,14 +735,17 @@ void app_main(void) {
                 ESP_LOGW(TAG, "Touch init failed - continuing without touch");
             }
 
-            // Auftrag 50d: Keyboard init (I2C bus shared with touch)
+            // Session 32: Keyboard via LVGL (replaces raw polling task)
             ESP_LOGI(TAG, "Initializing Keyboard...");
             ret = tdeck_keyboard_init();
             if (ret == ESP_OK) {
-                ESP_LOGI(TAG, "Keyboard input enabled! ⌨️");
-                // Create message queue + background polling task
-                kbd_msg_queue = xQueueCreate(4, 256);  // 4 messages, 256 bytes each
-                xTaskCreate(keyboard_task, "kbd_task", 4096, NULL, 5, NULL);
+                kbd_msg_queue = xQueueCreate(4, 256);
+
+                lv_indev_t *kb_indev = tdeck_keyboard_register_lvgl();
+                if (kb_indev) {
+                    ui_chat_set_keyboard_indev(kb_indev);
+                    ESP_LOGI(TAG, "Keyboard -> LVGL -> Chat linked! ⌨️");
+                }
             } else {
                 ESP_LOGW(TAG, "Keyboard init failed - continuing without keyboard");
             }
@@ -705,6 +754,11 @@ void app_main(void) {
             ui_manager_init();
 
             tdeck_lvgl_start();
+
+            // Session 32: Wire up chat bridge
+            ui_chat_set_send_callback(chat_send_cb);
+            lv_timer_create(ui_poll_timer_cb, 50, NULL);  // 50ms UI poll
+            ESP_LOGI(TAG, "Chat UI bridge active (50ms poll)");
 
             vTaskDelay(pdMS_TO_TICKS(50));
             tdeck_display_backlight(100);

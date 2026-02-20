@@ -19,6 +19,7 @@
 #include "smp_peer.h"
 #include "mbedtls/sha256.h"
 #include "zstd.h"
+#include "smp_tasks.h"  // Session 32: UI notification
 
 static const char *TAG = "SMP_AGENT";
 
@@ -489,12 +490,48 @@ static void extract_chat_text(const uint8_t *body, size_t body_len)
                 ESP_LOGI(TAG, "      |                                              |");
                 ESP_LOGI(TAG, "      |  🏆 BIDIRECTIONAL CHAT ON ESP32! 🏆           |");
                 ESP_LOGI(TAG, "      +----------------------------------------------+");
+                // Session 32: Push to display
+                smp_notify_ui_message(text_start, false, 0);
             }
         }
         free(json);
 
     } else if (inner_tag == 'H') {
         ESP_LOGD(TAG, "HELLO inside ratchet (late)");
+
+    } else if (inner_tag == 'V') {
+        // Session 32: Delivery Receipt ('V' = RCVD)
+        // Format: 'V' + count(1) + [msg_id(8B BE) + hash_len(1) + hash(N)]...
+        int voff = inner_off + 1;
+        if (voff >= (int)body_len) return;
+
+        uint8_t receipt_count = body[voff++];
+        ESP_LOGI(TAG, "");
+        ESP_LOGI(TAG, "      +----------------------------------------------+");
+        ESP_LOGI(TAG, "      |  📬 DELIVERY RECEIPT: %d message(s)            |", receipt_count);
+        ESP_LOGI(TAG, "      +----------------------------------------------+");
+
+        for (uint8_t r = 0; r < receipt_count && voff + 9 < (int)body_len; r++) {
+            // Parse msg_id (8 bytes Big Endian)
+            uint64_t rcpt_msg_id = 0;
+            for (int b = 0; b < 8; b++) {
+                rcpt_msg_id = (rcpt_msg_id << 8) | body[voff + b];
+            }
+            voff += 8;
+
+            // Parse hash
+            uint8_t hash_len = (voff < (int)body_len) ? body[voff++] : 0;
+            ESP_LOGI(TAG, "      Receipt[%d]: msg_id=%llu, hash_len=%d, hash=%02x%02x%02x%02x...",
+                     r, (unsigned long long)rcpt_msg_id, hash_len,
+                     (voff < (int)body_len) ? body[voff] : 0,
+                     (voff+1 < (int)body_len) ? body[voff+1] : 0,
+                     (voff+2 < (int)body_len) ? body[voff+2] : 0,
+                     (voff+3 < (int)body_len) ? body[voff+3] : 0);
+            voff += hash_len;
+
+            // Session 32: Push "vv" to UI
+            smp_notify_receipt_received(rcpt_msg_id);
+        }
     }
 }
 

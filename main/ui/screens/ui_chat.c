@@ -39,6 +39,18 @@ static lv_group_t *input_group = NULL;
 static ui_chat_send_cb_t send_cb = NULL;
 static lv_indev_t *pending_kb_indev = NULL;  // Stored until chat screen is created
 
+// Session 32: Delivery status tracking
+#define MAX_TRACKED_MSGS 16
+
+typedef struct {
+    lv_obj_t *status_label;   // The status label in the bubble
+    uint32_t msg_seq;         // Sequence number
+    bool active;              // Slot in use
+} tracked_msg_t;
+
+static tracked_msg_t tracked_msgs[MAX_TRACKED_MSGS] = {0};
+static uint32_t msg_seq_counter = 0;
+
 // ============== Forward Declarations ==============
 
 static void on_back(lv_event_t *e);
@@ -139,10 +151,14 @@ static void on_input_ready(lv_event_t *e)
 
     ESP_LOGI(TAG, "📤 Send: \"%s\"", text);
 
-    // Show as outgoing bubble immediately
+    // Session 32: Assign sequence BEFORE creating bubble
+    uint32_t seq = ui_chat_next_seq();
+    (void)seq;  // Used internally by add_message for tracking
+
+    // Show outgoing bubble immediately with "..." status
     ui_chat_add_message(text, true);
 
-    // Fire send callback
+    // Fire send callback (smp_app_run will update status)
     if (send_cb) {
         send_cb(text);
     }
@@ -174,13 +190,11 @@ void ui_chat_add_message(const char *text, bool is_outgoing)
     lv_obj_clear_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
 
     if (is_outgoing) {
-        // Our messages: green tint, right-aligned
         lv_obj_set_style_bg_color(bubble, lv_color_hex(0x002211), 0);
         lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
         lv_obj_set_style_border_color(bubble, UI_COLOR_SECONDARY, 0);
         lv_obj_set_style_align(bubble, LV_ALIGN_RIGHT_MID, 0);
     } else {
-        // Their messages: cyan tint, left-aligned
         lv_obj_set_style_bg_color(bubble, lv_color_hex(0x001122), 0);
         lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
         lv_obj_set_style_border_color(bubble, UI_COLOR_PRIMARY, 0);
@@ -195,8 +209,31 @@ void ui_chat_add_message(const char *text, bool is_outgoing)
     lv_obj_set_style_text_color(label, UI_COLOR_TEXT_WHITE, 0);
     lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
 
-    // Auto-scroll to bottom
+    // Session 32: Delivery status indicator for outgoing messages
+    if (is_outgoing) {
+        lv_obj_t *st = lv_label_create(bubble);
+        lv_label_set_text(st, "...");
+        lv_obj_set_style_text_color(st, UI_COLOR_TEXT_DIM, 0);
+        lv_obj_set_style_text_font(st, &lv_font_montserrat_14, 0);
+        lv_obj_align(st, LV_ALIGN_BOTTOM_RIGHT, 0, 2);
+
+        // Track for status updates
+        uint32_t seq = msg_seq_counter;  // Current seq (assigned by caller)
+        for (int i = 0; i < MAX_TRACKED_MSGS; i++) {
+            if (!tracked_msgs[i].active) {
+                tracked_msgs[i].status_label = st;
+                tracked_msgs[i].msg_seq = seq;
+                tracked_msgs[i].active = true;
+                break;
+            }
+        }
+    }
+
+    // Session 32 Fix: Force layout recalc + invalidate + scroll
+    // Required when called from timer callback (ui_poll_timer_cb)
+    lv_obj_update_layout(msg_container);
     lv_obj_scroll_to_y(msg_container, LV_COORD_MAX, LV_ANIM_ON);
+    lv_obj_invalidate(msg_container);
 
     ESP_LOGD(TAG, "%s: \"%s\"", is_outgoing ? "OUT" : "IN", text);
 }
@@ -215,4 +252,44 @@ void ui_chat_set_keyboard_indev(lv_indev_t *kb_indev)
         lv_indev_set_group(kb_indev, input_group);
         ESP_LOGI(TAG, "Keyboard linked to chat input ⌨️");
     }
+}
+
+// ============== Session 32: Delivery Status API ==============
+
+void ui_chat_update_status(uint32_t msg_seq, int status)
+{
+    for (int i = 0; i < MAX_TRACKED_MSGS; i++) {
+        if (tracked_msgs[i].active && tracked_msgs[i].msg_seq == msg_seq) {
+            if (status >= 0 && status <= 3) {
+                // Status text: 0="..." 1="v" 2="vv" 3="x"
+                static const char *st_text[] = { "...", "v", "vv", "x" };
+                lv_label_set_text(tracked_msgs[i].status_label, st_text[status]);
+
+                // Color: dim for sending/sent, green for delivered, red for failed
+                lv_color_t color;
+                switch (status) {
+                    case 2:  color = UI_COLOR_SECONDARY; break;  // vv green
+                    case 3:  color = lv_color_hex(0xFF4444); break;  // x red
+                    default: color = UI_COLOR_TEXT_DIM;   break;  // ... / v
+                }
+                lv_obj_set_style_text_color(tracked_msgs[i].status_label, color, 0);
+            }
+
+            // Free slot on terminal states
+            if (status == 2 || status == 3) {
+                tracked_msgs[i].active = false;
+            }
+            return;
+        }
+    }
+}
+
+uint32_t ui_chat_next_seq(void)
+{
+    return ++msg_seq_counter;
+}
+
+uint32_t ui_chat_get_last_seq(void)
+{
+    return msg_seq_counter;
 }
