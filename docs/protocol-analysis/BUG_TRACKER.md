@@ -1615,3 +1615,29 @@ if (rq_resp[rrp] >= 1) {    // Accept txCount >= 1
 *Total bugs documented: 39 (all FIXED)*  
 *161 lessons learned!*  
 *🎉 Session 31: Bidirectional Chat Restored! Milestone 7!*
+
+---
+
+## Session 32 — "The Demonstration" (2026-02-19/20)
+
+### 🖥️ From Protocol to Messenger — Full UI Integration
+
+**No new protocol bugs.** Session 32 was pure UI/architecture work: Keyboard-to-Chat integration (7 steps), delivery status system, LVGL display fix, multi-contact analysis, navigation stack fix, 128-contact planning.
+
+### New Lessons Learned (Session 32)
+
+162. **FreeRTOS Queue as thread-safe UI bridge** - LVGL functions may only be called from LVGL thread. Queue + Timer pattern (50ms poll) is the clean cross-task UI update solution. Never call lv_obj_create() from protocol task (Session 32)
+163. **LVGL does not auto-invalidate flex containers in timer callbacks** - Must manually call `lv_obj_update_layout()` + `lv_obj_invalidate()` after adding children from timer callback. Without this, new elements invisible until screen switch (Session 32)
+164. **Receipt wire format: 'V' + count(1B) + [msg_id(8B BE) + hash_len(1B) + hash(NB)]** - Reverse-engineered from Ratchet body bytes. count=Word8, msg_id=8B Big Endian, hash typically 32B SHA256. Maps to sent msg_id for delivery status (Session 32)
+165. **Encapsulate msg_id access via function, not extern** - `handshake_get_last_msg_id()` cleaner than `extern uint64_t msg_id_counter`. Prevents accidental modification, explicit dependency (Session 32)
+166. **Receive path already multi-contact capable** - `find_contact_by_recipient_id()` correctly routes to right contact_t. Only send path (7 locations referencing contacts[0]) needs modification (Session 32)
+167. **Navigation Stack instead of prev_screen** - Single prev_screen causes infinite ping-pong in three-level navigation. 8-deep stack with push on navigate, pop on back. Splash never pushed (Session 32)
+168. **PSRAM Ratchet Array eliminates swap latency** - `ratchet_state_t ratchets[128]` uses ~68KB (0.8% of 8MB PSRAM). Zero latency on contact switch vs 5-20ms NVS load per swap. NVS only at boot + after each message (Session 32)
+
+---
+
+*Bug Tracker v27.0*  
+*Last updated: February 20, 2026 - Session 32*  
+*Total bugs documented: 39 (all FIXED)*  
+*168 lessons learned!*  
+*🖥️ Session 32: "The Demonstration" — From Protocol to Messenger*

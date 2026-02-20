@@ -1,14 +1,43 @@
 ![SimpleGo](../gfx/sg_multi_agent_ft_header.png)
 
-# SimpleGo - Current Status (2026-02-18)
+# SimpleGo - Current Status (2026-02-20)
 
 **Project:** Native SimpleX SMP Client for ESP32  
-**Version:** v0.1.18-alpha  
-**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (538+ sections, 28 parts)
+**Version:** v0.1.17-alpha  
+**Archive:** See `01_SIMPLEX_PROTOCOL_INDEX.md` for complete documentation (550+ sections, 29 parts)
 
 ---
 
-## 🎉 LATEST: Bidirectional Chat Restored! (2026-02-18 Session 31)
+## 🖥️ LATEST: "The Demonstration" (2026-02-20 Session 32)
+
+```
+═══════════════════════════════════════════════════════════════════════════════
+
+  🖥️🖥️🖥️ "THE DEMONSTRATION" — FROM PROTOCOL TO MESSENGER 🖥️🖥️🖥️
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                                                                         │
+  │   Before: Bidirectional chat only visible in Serial Monitor            │
+  │   After:  Full messenger with Bubbles, Keyboard,                       │
+  │           Delivery Status, Contact List                                │
+  │                                                                         │
+  │   7 Keyboard-to-Chat Steps completed                                   │
+  │   Delivery Status: ... → ✓ → ✓✓ → ✗                                   │
+  │   LVGL Display Refresh Fix                                              │
+  │   Multi-Contact Analysis (128 Contacts, 68KB PSRAM)                    │
+  │   Navigation Stack Fix                                                  │
+  │   System 2+ hours stable                                               │
+  │                                                                         │
+  │   Date: February 19-20, 2026                                           │
+  │                                                                         │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════════
+```
+
+---
+
+## 🎉 SESSION 31: Bidirectional Chat Restored! (2026-02-18)
 
 ```
 ═══════════════════════════════════════════════════════════════════════════════
@@ -463,9 +492,9 @@ Bytes 80-95: HEADER_IV (iv2)   ← FOR HEADER!
 | `01_SIMPLEX_PROTOCOL_INDEX.md` | Navigation index |
 | `02_SIMPLEX_STATUS.md` | This file - quick status |
 | `README.md` | Project overview |
-| `BUG_TRACKER.md` | All 39 bugs, 161 lessons |
+| `BUG_TRACKER.md` | All 39 bugs, 168 lessons |
 | `QUICK_REFERENCE.md` | Constants, wire formats |
-| `03-30_PART*.md` | Sessions 1-31 documentation |
+| `03-31_PART*.md` | Sessions 1-32 documentation |
 
 ---
 
@@ -481,20 +510,21 @@ Bytes 80-95: HEADER_IV (iv2)   ← FOR HEADER!
 | 5 | ✓✓ Delivery Receipts | 2026-02-14 | 25 |
 | **6** | **🗄️ Ratchet Persistence** | **2026-02-14** | **26** |
 | **7** | **🎉 Multi-Task Bidirectional** | **2026-02-18** | **31** |
+| **8** | **🖥️ Full Messenger UI** | **2026-02-19** | **32** |
 
 ---
 
-## 🎯 Next Steps (Session 32)
+## 🎯 Next Steps (Session 33)
 
-1. **P0:** Keyboard input → Chat send (T-Deck, Grundlage in S30 T5)
-2. **P1:** Display: Empfangene Nachrichten anzeigen (LVGL)
-3. **P2:** Multiple contacts (Datenstruktur erweitern)
-4. **P3:** Reconnection bei Verbindungsabbruch (Robustheit)
-5. **P4:** Peer SSL reconnect (sock 55/56 dies after idle, errno=104)
+1. **P0:** Navigation Stack implementation (ui_manager.c rewrite)
+2. **P1:** Active Contact routing (smp_set_active_contact)
+3. **P2:** Contact selection passes index (ui_contacts.c)
+4. **P3:** Cyberpunk UI redesign integration (from Design Chat)
+5. **P4:** 128-contact PSRAM array implementation (ratchet refactor)
 
-**Assessment:** "Der Rest ist deutlich einfacher. Engineering, nicht mehr Reverse Engineering."
+**Assessment:** "Eine Kontaktliste mit mindestens 100 Usern, sonst brauchen wir gar nicht auf Kickstarter antanzen."
 
 ---
 
-*Status updated: 2026-02-18 Session 31 — 🎉 BIDIRECTIONAL CHAT RESTORED! Milestone 7!*  
-*History: S8 Breakthrough → S23 CONNECTED → S24 First MSG → S25 Bidirectional → S26 Persistence → S27 Architecture → S28 Tasks → S29 Multi-Task → S30 Debug → S31 RESOLVED!*
+*Status updated: 2026-02-20 Session 32 — 🖥️ "THE DEMONSTRATION" — From Protocol to Messenger*  
+*History: S8 Breakthrough → S23 CONNECTED → S24 First MSG → S25 Bidirectional → S26 Persistence → S27 Architecture → S28 Tasks → S29 Multi-Task → S30 Debug → S31 RESOLVED → S32 Messenger UI!*

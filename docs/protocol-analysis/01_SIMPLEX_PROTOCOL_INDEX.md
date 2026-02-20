@@ -4,27 +4,28 @@
 
 **Project:** SimpleGo - Native ESP32 SMP Implementation  
 **Version:** v0.1.18-alpha  
-**Last Updated:** 2026-02-18 (Session 31 — 🎉 Bidirectional Chat Restored!)
+**Last Updated:** 2026-02-20 (Session 32 — 🖥️ "The Demonstration" - From Protocol to Messenger)
 
 ---
 
-## 🎉 LATEST: Bidirectional Chat Restored! (Session 31)
+## 🖥️ LATEST: "The Demonstration" (Session 32)
 
-On February 18, 2026, Session 31 resolved the T6 bidirectional receive bug:
+On February 19-20, 2026, Session 32 transformed SimpleGo from protocol to messenger:
 
-- **T6 Bidirectional:** ✅ RESOLVED (was ❌ in Session 30)
-- **Root Cause:** txCount==1 filter in Drain-Loop discarded batched MSG
-- **6 Fixes:** TCP Keep-Alive, PING/PONG, Reply Queue SUB, txCount>=1, TX2 Forward, Re-Delivery
-- **Evgeny Guidance:** Subscriptions, keep-alive, session validation integrated
-- **Milestone 7:** Multi-Task Bidirectional Chat ✅
+- **Keyboard-to-Chat:** ✅ 7-step integration, hardware keyboard to displayed bubbles
+- **Delivery Status:** ✅ Professional "..." → "✓" → "✓✓" → "✗" system
+- **LVGL Display Fix:** ✅ Invisible bubbles bug resolved
+- **Multi-Contact Analysis:** ✅ 128-contact PSRAM architecture planned (68KB)
+- **Navigation Stack:** ✅ prev_screen → 8-deep stack (bug fixed)
+- **Stability:** 2+ hours without crash
 
-**Lessons Learned:** 161 total (9 new in S31)
+**Lessons Learned:** 168 total (7 new in S32)
 
 ---
 
 ## Documentation Structure
 
-The complete protocol analysis (~26,000+ lines, 538+ sections) is split into 28 parts:
+The complete protocol analysis (~26,500+ lines, 550+ sections) is split into 29 parts:
 
 | Part | File | Lines | Content |
 |------|------|-------|---------|
@@ -56,7 +57,8 @@ The complete protocol analysis (~26,000+ lines, 538+ sections) is split into 28 
 | **26** | [**28_PART26_SESSION_29.md**](28_PART26_SESSION_29.md) | **~750** | **🏆 Multi-Task Architecture BREAKTHROUGH!** |
 | **27** | [**29_PART27_SESSION_30.md**](29_PART27_SESSION_30.md) | **~660** | **🔍 Intensive Debug — 10 Hypotheses, 14 Fixes** |
 | **28** | [**30_PART28_SESSION_31.md**](30_PART28_SESSION_31.md) | **~850** | **🎉 Bidirectional Chat Restored! Milestone 7!** |
-| **Total** | | **~26,000+** | **538+ Sections** |
+| **29** | [**31_PART29_SESSION_32.md**](31_PART29_SESSION_32.md) | **~500** | **🖥️ "The Demonstration" — From Protocol to Messenger** |
+| **Total** | | **~26,500+** | **550+ Sections** |
 
 ---
 
@@ -65,8 +67,8 @@ The complete protocol analysis (~26,000+ lines, 538+ sections) is split into 28 
 | Document | Lines | Description |
 |----------|-------|-------------|
 | [README.md](README.md) | ~820 | Project overview and navigation |
-| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,700 | All 39 bugs documented, 161 lessons |
-| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,650 | Constants, wire formats, verified values |
+| [BUG_TRACKER.md](BUG_TRACKER.md) | ~1,750 | All 39 bugs documented, 168 lessons |
+| [QUICK_REFERENCE.md](QUICK_REFERENCE.md) | ~1,750 | Constants, wire formats, verified values |
 
 ---
 
@@ -102,6 +104,7 @@ The complete protocol analysis (~26,000+ lines, 538+ sections) is split into 28 
 | **29** | **Feb 16, 2026** | **ARCHITECTURE** | **🏆 Multi-Task BREAKTHROUGH!** |
 | **30** | **Feb 16-18, 2026** | **DEBUG** | **🔍 10 Hypotheses, 14 Fixes, Awaiting Evgeny** |
 | **31** | **Feb 18, 2026** | **RESOLVED** | **🎉 Bidirectional Restored! Milestone 7!** |
+| **32** | **Feb 19-20, 2026** | **UI** | **🖥️ "The Demonstration" — Full Messenger UI** |
 
 ---
 
@@ -131,6 +134,11 @@ The complete protocol analysis (~26,000+ lines, 538+ sections) is split into 28 
 - **TX2 MSG Forwarding** ✅
 - **Re-Delivery Detection** ✅
 - **Milestone 7: Multi-Task Bidirectional Chat** 🎉
+- **LVGL Keyboard Integration (T-Deck HW)** 🖥️
+- **Delivery Status: ... → ✓ → ✓✓ → ✗** 🖥️
+- **Receipt Parsing (inner_tag 'V')** 🖥️
+- **UI Event Queue (app_to_ui_queue)** 🖥️
+- **128-Contact PSRAM Architecture** 🖥️
 
 ### ✅ Session 23: The 7-Step Handshake
 ```
@@ -168,13 +176,25 @@ The complete protocol analysis (~26,000+ lines, 538+ sections) is split into 28 
 | E2E Version/KEM/NHK bugs | 5 | S22 |
 | Bidirectional + Receipt bugs | 8 | S25 |
 
-**Lessons Learned: 161** (documented in BUG_TRACKER.md)
+**Lessons Learned: 168** (documented in BUG_TRACKER.md)
 
-**Session 31: ZERO new protocol bugs! txCount filter was architecture bug, not protocol.**
+**Session 32: ZERO new protocol bugs! Pure UI/architecture work.**
 
 ---
 
 ## Protocol Discoveries
+
+### Session 32: Delivery Receipt Wire Format (inner_tag 'V')
+```
+After Double Ratchet body decrypt:
+  'V' + count(1B Word8) + [AMessageReceipt...]
+
+AMessageReceipt:
+  msg_id(8B Big Endian) + hash_len(1B) + hash(NB, typically 32B SHA256)
+
+Mapping: seq → msg_id registered after SEND
+Receipt: msg_id → seq lookup → UI status update to "✓✓"
+```
 
 ### Session 31: SMP Batch Behavior (ROOT CAUSE!)
 ```
@@ -308,24 +328,25 @@ SimpleGo is confirmed as the **FIRST native SMP protocol implementation** outsid
 
 ---
 
-## Next Steps (Session 32)
+## Next Steps (Session 33)
 
-### Phase 1: User Interface
+### Phase 1: Navigation & Multi-Contact
 ```
-P0: Keyboard input → Chat send (T-Deck)
-P1: Display received messages (LVGL)
+P0: Navigation Stack implementation (ui_manager.c rewrite)
+P1: Active Contact routing (smp_set_active_contact)
+P2: Contact selection passes index (ui_contacts.c)
 ```
 
-### Phase 2: Robustness
+### Phase 2: UI & Scale
 ```
-P2: Multiple contacts (data structure expansion)
-P3: Reconnection on connection drop
-P4: Peer SSL reconnect (sock 55/56 dies after idle)
+P3: Cyberpunk UI redesign integration (from Design Chat)
+P4: 128-contact PSRAM array implementation (ratchet refactor)
 ```
 
 ### Assessment
 ```
-"Der Rest ist deutlich einfacher. Engineering, nicht mehr Reverse Engineering."
+"Eine Kontaktliste mit mindestens 100 Usern, sonst brauchen
+ wir gar nicht auf Kickstarter antanzen." — Cannatoshi
 ```
 
 ---
@@ -341,8 +362,9 @@ P4: Peer SSL reconnect (sock 55/56 dies after idle)
 | 4 | 🔄 Bidirectional Chat | 2026-02-14 | 25 |
 | 5 | ✓✓ Delivery Receipts | 2026-02-14 | 25 |
 | 6 | 🗄️ Ratchet Persistence | 2026-02-14 | 26 |
-| **7** | **🎉 Multi-Task Bidirectional** | **2026-02-18** | **31** |
+| 7 | 🎉 Multi-Task Bidirectional | 2026-02-18 | 31 |
+| **8** | **🖥️ Full Messenger UI** | **2026-02-19** | **32** |
 
 ---
 
-*Index updated: 2026-02-18 Session 31 — 🎉 Bidirectional Chat Restored! Milestone 7!*
+*Index updated: 2026-02-20 Session 32 — 🖥️ "The Demonstration" — From Protocol to Messenger!*

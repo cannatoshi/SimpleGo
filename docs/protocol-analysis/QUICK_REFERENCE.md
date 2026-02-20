@@ -1620,3 +1620,131 @@ Three weeks of debugging.
 *Status: 🎉 Bidirectional Chat Restored! Milestone 7!*  
 *All 7 Milestones Achieved!*  
 *Next: Session 32 — Keyboard, Display, Multiple Contacts*
+
+---
+
+## Section 30: Session 32 — UI Integration (2026-02-19/20)
+
+### 30.1 Keyboard-to-Chat Architecture
+
+```
+T-Deck HW → LVGL kbd_indev → Textarea → Enter
+                                          |
+                                    on_input_ready()
+                                     |          |
+                         show bubble |          | send_cb()
+                                     v          v
+                             ui_chat_add    kbd_msg_queue
+                             _message()     (FreeRTOS Q, 4 items, 256B)
+                             (outgoing)          |
+                                                 v
+                                          smp_app_run() → peer_send_chat_message()
+```
+
+### 30.2 UI Event Queue Pattern
+
+```c
+// app_to_ui_queue: 8 events, polled by LVGL Timer (50ms)
+typedef enum {
+    UI_EVT_MESSAGE,          // Display received text
+    UI_EVT_NAVIGATE,         // Switch to screen
+    UI_EVT_SET_CONTACT,      // Set contact name in header
+    UI_EVT_DELIVERY_STATUS   // Update checkmarks
+} ui_event_type_t;
+
+// Push from Protocol Task (any core):
+smp_notify_ui_message(text, is_outgoing, seq);
+smp_notify_ui_navigate(SCREEN_CHAT);
+smp_notify_ui_contact(name);
+smp_notify_ui_delivery_status(seq, STATUS_DELIVERED);
+
+// Poll in LVGL Timer (Core 1 only!):
+ui_poll_timer_cb() → xQueueReceive() → ui_chat_add_message() etc.
+```
+
+### 30.3 Delivery Status System
+
+```
+Status Flow:
+  "..." (SENDING)  → dim color, shown immediately when user presses Enter
+  "✓"  (SENT)      → dim color, after server ACK (OK response)
+  "✓✓" (DELIVERED)  → green,    after receipt from peer (inner_tag 'V')
+  "✗"  (FAILED)     → red,      on send error
+
+Implementation:
+  16-slot tracking table: seq → lv_obj_t* status_label
+  ui_chat_next_seq() → monotonically increasing sequence number
+  ui_chat_update_status(seq, new_status) → updates label text + color
+
+Mapping for Receipts:
+  smp_register_msg_mapping(seq, msg_id) → after SEND
+  smp_notify_receipt_received(msg_id) → lookup seq, update to "✓✓"
+```
+
+### 30.4 LVGL Timer Callback Invalidation Fix
+
+```c
+// BUG: Bubbles added from timer callback are invisible
+// FIX: Force layout recalculation after adding children
+lv_obj_t *bubble = lv_obj_create(msg_container);
+// ... set bubble properties ...
+lv_obj_update_layout(msg_container);    // ← REQUIRED in timer callbacks
+lv_obj_invalidate(msg_container);        // ← REQUIRED in timer callbacks
+```
+
+### 30.5 Multi-Contact: Active Contact Pattern
+
+```c
+// New API:
+void smp_set_active_contact(int idx);
+int  smp_get_active_contact(void);
+
+// Internal:
+static int s_active_contact_idx = 0;
+
+// UI Flow:
+// User taps contact in list → smp_set_active_contact(idx)
+//                            → ui_chat_set_contact(name)
+//                            → ui_manager_show_screen(CHAT)
+
+// Send path uses: contacts_db.contacts[smp_get_active_contact()]
+// Receive path already works: find_contact_by_recipient_id()
+```
+
+### 30.6 Navigation Stack Pattern
+
+```c
+#define NAV_STACK_DEPTH 8
+static ui_screen_t nav_stack[NAV_STACK_DEPTH];
+static int nav_stack_top = -1;
+
+// show_screen(): push current, then navigate
+// go_back(): pop from stack (NO push!), navigate
+// Rules: Splash never pushed, no duplicates, overflow → shift left
+```
+
+### 30.7 128-Contact PSRAM Architecture
+
+```
+ratchet_state_t ratchets[128];   // In PSRAM
+128 × ~530 Bytes = ~68KB         // 0.8% of 8MB PSRAM
+
+Boot:  NVS → PSRAM (load all ratchets)
+Recv:  find_contact_by_recipient_id() → ratchets[idx] (zero latency!)
+Send:  ratchets[active_idx] → encrypt → NVS save (5-20ms, async)
+Switch: Just change active_idx. No load/save needed.
+
+Performance:
+  NVS Load (530B):          1-3ms    (boot only)
+  NVS Save (530B):          5-20ms   (after each message)
+  Contact Lookup (128x):    <0.1ms
+  LVGL List 128 entries:    50ms     (one-time)
+```
+
+---
+
+*Quick Reference v26.0*  
+*Last updated: February 20, 2026 - Session 32*  
+*Status: 🖥️ "The Demonstration" — Full Messenger UI!*  
+*All 8 Milestones Achieved!*  
+*Next: Session 33 — Navigation Stack, Multi-Contact, Cyberpunk UI*
