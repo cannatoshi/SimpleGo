@@ -14,7 +14,7 @@
 // ============== Constants ==============
 
 #define SMP_BLOCK_SIZE      16384
-#define MAX_CONTACTS        10
+#define MAX_CONTACTS        128   // Session 33: Multi-contact (35KB in PSRAM)
 #define NVS_NAMESPACE       "simplego"
 #define SPKI_KEY_SIZE       44  // 12 header + 32 key
 
@@ -47,7 +47,7 @@ typedef struct {
 
 typedef struct {
     uint8_t num_contacts;
-    contact_t contacts[MAX_CONTACTS];
+    contact_t *contacts;          // Session 33: PSRAM-allocated array
 } contacts_db_t;
 
 // ============== Peer Queue Structure ==============

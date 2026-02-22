@@ -724,6 +724,11 @@ void app_main(void) {
         ESP_LOGE(TAG, "Handshake multi-init failed!");
         return;
     }
+    // Session 33: Allocate contacts array in PSRAM
+    if (!contacts_init_psram()) {
+        ESP_LOGE(TAG, "Contacts PSRAM init failed!");
+        return;
+    }
 
     // Display + LVGL Init
     ESP_LOGI(TAG, "Initializing Display...");

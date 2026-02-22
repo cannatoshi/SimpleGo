@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_heap_caps.h"
 #include "nvs_flash.h"
 #include "sodium.h"
 #include "smp_queue.h"
@@ -21,65 +22,187 @@ extern RingbufHandle_t net_to_app_buf;
 
 static const char *TAG = "SMP_CONT";
 
+// ============== Session 33: PSRAM Init ==============
+
+bool contacts_init_psram(void) {
+    if (contacts_db.contacts) {
+        ESP_LOGW(TAG, "Contacts array already allocated");
+        return true;
+    }
+
+    contacts_db.contacts = (contact_t *)heap_caps_calloc(
+        MAX_CONTACTS, sizeof(contact_t), MALLOC_CAP_SPIRAM);
+
+    if (!contacts_db.contacts) {
+        ESP_LOGE(TAG, "Failed to allocate contacts array in PSRAM! (%zu bytes)",
+                 MAX_CONTACTS * sizeof(contact_t));
+        return false;
+    }
+
+    contacts_db.num_contacts = 0;
+    ESP_LOGI(TAG, "Contacts array allocated: %d slots, %zu bytes in PSRAM",
+             MAX_CONTACTS, MAX_CONTACTS * sizeof(contact_t));
+    return true;
+}
+
 // ============== NVS Functions ==============
 
 bool load_contacts_from_nvs(void) {
+    if (!contacts_db.contacts) {
+        ESP_LOGE(TAG, "NVS Load: contacts array not allocated!");
+        return false;
+    }
+
+    // Session 33: Try per-contact keys first ("cnt_00" to "cnt_7f")
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
-        ESP_LOGI(TAG, "NVS: No saved contacts found");
-        memset(&contacts_db, 0, sizeof(contacts_db));
+        ESP_LOGI(TAG, "NVS: namespace not found, fresh start");
+        memset(contacts_db.contacts, 0, MAX_CONTACTS * sizeof(contact_t));
+        contacts_db.num_contacts = 0;
         return false;
     }
-    
-    size_t required_size = sizeof(contacts_db_t);
-    err = nvs_get_blob(handle, "contacts", &contacts_db, &required_size);
-    nvs_close(handle);
-    
-    if (err == ESP_OK && contacts_db.num_contacts > 0) {
-        ESP_LOGI(TAG, "NVS: Loaded %d contact(s)!", contacts_db.num_contacts);
-        for (int i = 0; i < MAX_CONTACTS; i++) {
-            if (contacts_db.contacts[i].active) {
-                ESP_LOGI(TAG, "      [%d] %s (rcvId: %02x%02x%02x%02x...)", 
-                         i, contacts_db.contacts[i].name,
-                         contacts_db.contacts[i].recipient_id[0],
-                         contacts_db.contacts[i].recipient_id[1],
-                         contacts_db.contacts[i].recipient_id[2],
-                         contacts_db.contacts[i].recipient_id[3]);
-            }
+
+    // Reset
+    memset(contacts_db.contacts, 0, MAX_CONTACTS * sizeof(contact_t));
+    contacts_db.num_contacts = 0;
+
+    // Try loading per-contact keys
+    bool found_any = false;
+    for (int i = 0; i < MAX_CONTACTS; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "cnt_%02x", i);
+
+        size_t required_size = sizeof(contact_t);
+        err = nvs_get_blob(handle, key, &contacts_db.contacts[i], &required_size);
+        if (err == ESP_OK && required_size == sizeof(contact_t) &&
+            contacts_db.contacts[i].active) {
+            contacts_db.num_contacts++;
+            found_any = true;
+            ESP_LOGI(TAG, "NVS: Loaded [%d] %s (rcvId: %02x%02x%02x%02x...)",
+                     i, contacts_db.contacts[i].name,
+                     contacts_db.contacts[i].recipient_id[0],
+                     contacts_db.contacts[i].recipient_id[1],
+                     contacts_db.contacts[i].recipient_id[2],
+                     contacts_db.contacts[i].recipient_id[3]);
         }
+    }
+
+    // Fallback: Try legacy blob format for backward compatibility
+    if (!found_any) {
+        size_t legacy_size = sizeof(uint8_t) + (10 * sizeof(contact_t));  // Old MAX=10
+        uint8_t *legacy_buf = heap_caps_malloc(legacy_size, MALLOC_CAP_SPIRAM);
+        if (legacy_buf) {
+            size_t loaded_size = legacy_size;
+            err = nvs_get_blob(handle, "contacts", legacy_buf, &loaded_size);
+            if (err == ESP_OK && loaded_size == legacy_size) {
+                uint8_t old_count = legacy_buf[0];
+                contact_t *old_contacts = (contact_t *)(legacy_buf + 1);
+                if (old_count > 0 && old_count <= 10) {
+                    ESP_LOGI(TAG, "NVS: Migrating %d contacts from legacy blob", old_count);
+                    for (int i = 0; i < old_count && i < 10; i++) {
+                        memcpy(&contacts_db.contacts[i], &old_contacts[i], sizeof(contact_t));
+                        if (contacts_db.contacts[i].active) {
+                            contacts_db.num_contacts++;
+                        }
+                    }
+                    found_any = true;
+                    // Save in new format immediately
+                    nvs_close(handle);
+                    heap_caps_free(legacy_buf);
+                    save_contacts_to_nvs();  // Writes per-contact keys
+                    ESP_LOGI(TAG, "NVS: Migration complete! %d contacts in new format",
+                             contacts_db.num_contacts);
+                    return true;
+                }
+            }
+            heap_caps_free(legacy_buf);
+        }
+    }
+
+    nvs_close(handle);
+
+    if (found_any) {
+        ESP_LOGI(TAG, "NVS: Loaded %d contact(s)!", contacts_db.num_contacts);
         return true;
     }
-    
+
     ESP_LOGI(TAG, "NVS: No saved contacts found");
-    memset(&contacts_db, 0, sizeof(contacts_db));
     return false;
 }
 
 bool save_contacts_to_nvs(void) {
+    if (!contacts_db.contacts) {
+        ESP_LOGE(TAG, "NVS Save: contacts array not allocated!");
+        return false;
+    }
+
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NVS: Failed to open for writing");
         return false;
     }
-    
-    err = nvs_set_blob(handle, "contacts", &contacts_db, sizeof(contacts_db_t));
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "NVS: Failed to save contacts");
-        nvs_close(handle);
-        return false;
+
+    // Session 33: Save each active contact individually
+    int saved = 0;
+    for (int i = 0; i < MAX_CONTACTS; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "cnt_%02x", i);
+
+        if (contacts_db.contacts[i].active) {
+            err = nvs_set_blob(handle, key, &contacts_db.contacts[i], sizeof(contact_t));
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "NVS: Failed to save '%s': %s", key, esp_err_to_name(err));
+            } else {
+                saved++;
+            }
+        } else {
+            // Erase key if contact was removed
+            nvs_erase_key(handle, key);  // Ignore error (key may not exist)
+        }
     }
-    
+
     err = nvs_commit(handle);
     nvs_close(handle);
-    
+
     if (err == ESP_OK) {
-        ESP_LOGI(TAG, "NVS: Contacts saved!");
+        ESP_LOGI(TAG, "NVS: %d contacts saved (per-contact keys)", saved);
         return true;
     }
-    
+
     ESP_LOGE(TAG, "NVS: Commit failed");
+    return false;
+}
+
+// Session 33: Save a single contact (faster than saving all)
+bool save_contact_single(int idx) {
+    if (!contacts_db.contacts || idx < 0 || idx >= MAX_CONTACTS) {
+        return false;
+    }
+
+    char key[16];
+    snprintf(key, sizeof(key), "cnt_%02x", idx);
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) return false;
+
+    if (contacts_db.contacts[idx].active) {
+        err = nvs_set_blob(handle, key, &contacts_db.contacts[idx], sizeof(contact_t));
+    } else {
+        nvs_erase_key(handle, key);
+        err = ESP_OK;
+    }
+
+    esp_err_t commit_err = nvs_commit(handle);
+    nvs_close(handle);
+
+    if (err == ESP_OK && commit_err == ESP_OK) {
+        ESP_LOGI(TAG, "NVS: Contact [%d] '%s' saved (%zu bytes)",
+                 idx, contacts_db.contacts[idx].name, sizeof(contact_t));
+        return true;
+    }
     return false;
 }
 
@@ -87,12 +210,23 @@ void clear_all_contacts(void) {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
     if (err == ESP_OK) {
+        // Session 33: Erase per-contact keys
+        for (int i = 0; i < MAX_CONTACTS; i++) {
+            char key[16];
+            snprintf(key, sizeof(key), "cnt_%02x", i);
+            nvs_erase_key(handle, key);
+        }
+        // Also erase legacy blob key
         nvs_erase_key(handle, "contacts");
         nvs_commit(handle);
         nvs_close(handle);
-        memset(&contacts_db, 0, sizeof(contacts_db));
-        ESP_LOGI(TAG, "NVS: All contacts cleared!");
     }
+
+    if (contacts_db.contacts) {
+        memset(contacts_db.contacts, 0, MAX_CONTACTS * sizeof(contact_t));
+    }
+    contacts_db.num_contacts = 0;
+    ESP_LOGI(TAG, "NVS: All contacts cleared!");
 }
 
 // ============== Contact Lookup ==============

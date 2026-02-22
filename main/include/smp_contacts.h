@@ -15,6 +15,12 @@ bool load_contacts_from_nvs(void);
 bool save_contacts_to_nvs(void);
 void clear_all_contacts(void);
 
+// Session 33: PSRAM allocation (call before any contact operations)
+bool contacts_init_psram(void);
+
+// Session 33: Save single contact (faster for runtime updates)
+bool save_contact_single(int idx);
+
 // Contact lookup
 int find_contact_by_recipient_id(const uint8_t *recipient_id, uint8_t len);
 
