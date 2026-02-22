@@ -23,6 +23,7 @@
 #define RATCHET_TAG_LEN         16
 #define RATCHET_HEADER_LEN      88
 #define X448_PUBLIC_KEY_LEN     56
+#define MAX_RATCHETS  128   // Session 33: Multi-contact support (68KB in PSRAM)
 
 // ============== Ratchet State ==============
 
@@ -69,6 +70,28 @@ typedef enum {
     RATCHET_MODE_ADVANCE,    // New DH key from peer → full DH ratchet step (recv + send)
     RATCHET_MODE_SAME        // Same DH key → chain step only, no DH, no new keypair
 } ratchet_decrypt_mode_t;
+
+// ============== Session 33: Multi-Contact Init ==============
+
+/**
+ * Allocate ratchet array in PSRAM and set active index.
+ * Must be called once at startup, before any ratchet operations.
+ * @return true on success
+ */
+bool ratchet_multi_init(void);
+
+/**
+ * Set active ratchet index. All subsequent encrypt/decrypt/save
+ * operations work on this contact's ratchet state.
+ * @param idx  Contact index (0 to MAX_RATCHETS-1)
+ * @return true if valid index
+ */
+bool ratchet_set_active(uint8_t idx);
+
+/**
+ * Get current active ratchet index.
+ */
+uint8_t ratchet_get_active(void);
 
 // ============== X3DH Key Agreement ==============
 
@@ -195,19 +218,19 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
 /**
  * Save ratchet state to NVS for the given contact index.
  * Uses smp_storage_save_blob_sync() for Write-Before-Send safety.
- * NVS key: "rat_XX" (max 15 chars, XX = contact index 00-31)
+ * NVS key: "rat_XX" (XX = contact index 00-7F, hex)
  *
- * @param contact_idx  Contact index (0-31)
+ * @param contact_idx  Contact index (0-127)
  * @return true on success
  */
 bool ratchet_save_state(uint8_t contact_idx);
 
 /**
- * Load ratchet state from NVS for the given contact index.
+ * Load ratchet state from NVS into the PSRAM array slot.
  * Validates size and initialized flag before accepting.
  * On failure, ratchet stays uninitialized (normal handshake flow).
  *
- * @param contact_idx  Contact index (0-31)
+ * @param contact_idx  Contact index (0-127)
  * @return true on success (ratchet state restored)
  */
 bool ratchet_load_state(uint8_t contact_idx);

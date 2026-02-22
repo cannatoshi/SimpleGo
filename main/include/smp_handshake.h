@@ -178,6 +178,10 @@ bool is_hello_received(void);
 bool is_connected(void);
 void reset_handshake_state(void);
 
+// Session 33: Multi-contact handshake support
+bool handshake_multi_init(void);
+void handshake_set_active(uint8_t idx);
+
 // ============== Persistence (Auftrag 50d) ==============
 
 /**

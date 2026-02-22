@@ -30,8 +30,10 @@
 
 static const char *TAG = "SMP_HAND";
 
-// Connection state for handshake
-static struct {
+// Session 33: Per-contact handshake state
+#define MAX_HANDSHAKE_STATES 128
+
+typedef struct {
     bool confirmation_received;
     bool hello_sent;
     bool hello_received;
@@ -39,7 +41,37 @@ static struct {
     uint64_t msg_id;           // Sequential message ID
     uint8_t prev_msg_hash[32]; // Hash of previous message
     ratchet_state_t *ratchet;  // Pointer to ratchet state
-} handshake_state = {0};
+} handshake_entry_t;
+
+static handshake_entry_t *handshake_array = NULL;
+static uint8_t active_handshake_idx = 0;
+
+// Convenience macro -- existing code works unchanged
+#define handshake_state (handshake_array[active_handshake_idx])
+
+bool handshake_multi_init(void) {
+    if (handshake_array) return true;
+
+    handshake_array = (handshake_entry_t *)heap_caps_calloc(
+        MAX_HANDSHAKE_STATES, sizeof(handshake_entry_t), MALLOC_CAP_SPIRAM);
+
+    if (!handshake_array) {
+        ESP_LOGE(TAG, "Failed to allocate handshake array in PSRAM!");
+        return false;
+    }
+
+    active_handshake_idx = 0;
+    ESP_LOGI(TAG, "Handshake array allocated: %d slots, %zu bytes in PSRAM",
+             MAX_HANDSHAKE_STATES,
+             MAX_HANDSHAKE_STATES * sizeof(handshake_entry_t));
+    return true;
+}
+
+void handshake_set_active(uint8_t idx) {
+    if (idx < MAX_HANDSHAKE_STATES && handshake_array) {
+        active_handshake_idx = idx;
+    }
+}
 
 // ============== HELLO Message Building ==============
 
@@ -1189,48 +1221,56 @@ typedef struct {
 } handshake_persist_t;
 
 bool handshake_save_state(void) {
+    if (!handshake_array) return false;
+
     handshake_persist_t data;
     data.msg_id = handshake_state.msg_id;
     memcpy(data.prev_msg_hash, handshake_state.prev_msg_hash, 32);
     data.valid = 1;
 
-    esp_err_t ret = smp_storage_save_blob_sync("hand_00", &data, sizeof(data));
+    char key[16];
+    snprintf(key, sizeof(key), "hand_%02x", active_handshake_idx);
+
+    esp_err_t ret = smp_storage_save_blob_sync(key, &data, sizeof(data));
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "❌ handshake_save_state FAILED: %s", esp_err_to_name(ret));
+        ESP_LOGE(TAG, "handshake_save_state('%s') FAILED: %s", key, esp_err_to_name(ret));
         return false;
     }
 
-    ESP_LOGI(TAG, "💾 Handshake state saved: msg_id=%llu, hash=%02x%02x%02x%02x...",
-             (unsigned long long)data.msg_id,
-             data.prev_msg_hash[0], data.prev_msg_hash[1],
-             data.prev_msg_hash[2], data.prev_msg_hash[3]);
+    ESP_LOGI(TAG, "Handshake [%d] saved: msg_id=%llu",
+             active_handshake_idx, (unsigned long long)data.msg_id);
     return true;
 }
 
 bool handshake_load_state(void) {
-    if (!smp_storage_exists("hand_00")) {
-        ESP_LOGI(TAG, "handshake_load_state: 'hand_00' not found");
-        return false;
+    if (!handshake_array) return false;
+
+    char key[16];
+    snprintf(key, sizeof(key), "hand_%02x", active_handshake_idx);
+
+    if (!smp_storage_exists(key)) {
+        // Session 33: Fallback to legacy key "hand_00" for backward compat
+        if (active_handshake_idx == 0 && smp_storage_exists("hand_00")) {
+            snprintf(key, sizeof(key), "hand_00");
+            ESP_LOGI(TAG, "handshake_load_state: using legacy key 'hand_00'");
+        } else {
+            ESP_LOGI(TAG, "handshake_load_state: '%s' not found", key);
+            return false;
+        }
     }
 
     handshake_persist_t data;
     size_t loaded_len = 0;
-    esp_err_t ret = smp_storage_load_blob("hand_00", &data, sizeof(data), &loaded_len);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "❌ handshake_load_state FAILED: %s", esp_err_to_name(ret));
-        return false;
-    }
-    if (loaded_len != sizeof(data) || !data.valid) {
-        ESP_LOGW(TAG, "❌ handshake_load_state: invalid (len=%zu, valid=%d)", loaded_len, data.valid);
+    esp_err_t ret = smp_storage_load_blob(key, &data, sizeof(data), &loaded_len);
+    if (ret != ESP_OK || loaded_len != sizeof(data) || !data.valid) {
+        ESP_LOGW(TAG, "handshake_load_state: invalid data from '%s'", key);
         return false;
     }
 
     handshake_state.msg_id = data.msg_id;
     memcpy(handshake_state.prev_msg_hash, data.prev_msg_hash, 32);
 
-    ESP_LOGI(TAG, "📂 Handshake state restored: msg_id=%llu, hash=%02x%02x%02x%02x...",
-             (unsigned long long)data.msg_id,
-             data.prev_msg_hash[0], data.prev_msg_hash[1],
-             data.prev_msg_hash[2], data.prev_msg_hash[3]);
+    ESP_LOGI(TAG, "Handshake [%d] restored: msg_id=%llu",
+             active_handshake_idx, (unsigned long long)data.msg_id);
     return true;
 }

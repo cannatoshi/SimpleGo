@@ -20,6 +20,7 @@
 #include <string.h>
 #include "esp_log.h"
 #include "esp_random.h"
+#include "esp_heap_caps.h"
 #include "mbedtls/gcm.h"
 #include "mbedtls/hkdf.h"
 #include "mbedtls/sha512.h"
@@ -36,7 +37,12 @@ static const char *TAG = "SMP_RATCH";
 
 // ============== Ratchet State ==============
 
-static ratchet_state_t ratchet_state = {0};
+// Session 33: PSRAM array for 128 contacts (68KB, 0.8% of 8MB)
+static ratchet_state_t *ratchet_array = NULL;   // Allocated in PSRAM
+static uint8_t active_ratchet_idx = 0;
+
+// Convenience macro -- all existing code works through this
+#define ratchet_state (ratchet_array[active_ratchet_idx])
 
 // Saved X3DH keys (before ratchet_init_sender modifies them)
 static uint8_t saved_x3dh_hk[32] = {0};
@@ -98,6 +104,49 @@ static int aes_gcm_decrypt(const uint8_t *key,
 cleanup:
     mbedtls_gcm_free(&gcm);
     return ret;
+}
+
+// ============== Session 33: Multi-Contact Init ==============
+
+bool ratchet_multi_init(void) {
+    if (ratchet_array) {
+        ESP_LOGW(TAG, "Ratchet array already initialized");
+        return true;
+    }
+
+    ratchet_array = (ratchet_state_t *)heap_caps_calloc(
+        MAX_RATCHETS, sizeof(ratchet_state_t), MALLOC_CAP_SPIRAM);
+
+    if (!ratchet_array) {
+        ESP_LOGE(TAG, "Failed to allocate ratchet array in PSRAM! (%zu bytes)",
+                 MAX_RATCHETS * sizeof(ratchet_state_t));
+        return false;
+    }
+
+    active_ratchet_idx = 0;
+    ESP_LOGI(TAG, "Ratchet array allocated: %d slots, %zu bytes in PSRAM",
+             MAX_RATCHETS, MAX_RATCHETS * sizeof(ratchet_state_t));
+    return true;
+}
+
+bool ratchet_set_active(uint8_t idx) {
+    if (!ratchet_array) {
+        ESP_LOGE(TAG, "ratchet_set_active: array not initialized!");
+        return false;
+    }
+    if (idx >= MAX_RATCHETS) {
+        ESP_LOGE(TAG, "ratchet_set_active: index %d out of range (max %d)",
+                 idx, MAX_RATCHETS - 1);
+        return false;
+    }
+    active_ratchet_idx = idx;
+    ESP_LOGI(TAG, "Active ratchet set to [%d] (initialized=%d)",
+             idx, ratchet_array[idx].initialized);
+    return true;
+}
+
+uint8_t ratchet_get_active(void) {
+    return active_ratchet_idx;
 }
 
 // ============== Key Derivation ==============
@@ -254,8 +303,8 @@ bool ratchet_init_sender(const uint8_t *peer_dh_public, const x448_keypair_t *ou
     ratchet_state.prev_chain_len = 0;
     ratchet_state.initialized = true;
 
-    // Auftrag 50b R2: Persist initial ratchet state after X3DH
-    ratchet_save_state(0);
+    // Session 33: Persist to active contact slot (Evgeny's Rule: persist BEFORE send)
+    ratchet_save_state(active_ratchet_idx);
 
     ESP_LOGI(TAG, "✅ Ratchet initialized");
     return true;
@@ -450,8 +499,8 @@ int ratchet_encrypt(const uint8_t *plaintext, size_t pt_len,
     free(padded_payload);
     free(encrypted_payload);
 
-    // Auftrag 50b R3: Evgeny's Rule — persist BEFORE caller sends over network
-    ratchet_save_state(0);
+    // Session 33: Evgeny's Rule -- persist BEFORE caller sends over network
+    ratchet_save_state(active_ratchet_idx);
 
     ESP_LOGI(TAG, "✅ Encrypted %zu bytes (padded to %zu) -> %zu bytes", pt_len, padded_msg_len, *out_len);
     return 0;
@@ -987,8 +1036,8 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
                  ratchet_state.chain_key_recv[6], ratchet_state.chain_key_recv[7]);
     }
 
-    // Auftrag 50b R4/R5: Persist ratchet state after successful decrypt
-    ratchet_save_state(0);
+    // Session 33: Persist after successful decrypt
+    ratchet_save_state(active_ratchet_idx);
 
     ESP_LOGI(TAG, "");
     ESP_LOGI(TAG, "╔═══════════════════════════════════════════════════════╗");
@@ -1001,41 +1050,51 @@ int ratchet_decrypt_body(ratchet_decrypt_mode_t mode,
 // ============== Persistence (Auftrag 50b) ==============
 
 bool ratchet_save_state(uint8_t contact_idx) {
-    if (contact_idx > 31) {
+    if (contact_idx >= MAX_RATCHETS) {
         ESP_LOGE(TAG, "ratchet_save_state: invalid contact_idx %d", contact_idx);
         return false;
     }
-    if (!ratchet_state.initialized) {
-        ESP_LOGW(TAG, "ratchet_save_state: state not initialized, skipping");
+    if (!ratchet_array) {
+        ESP_LOGE(TAG, "ratchet_save_state: array not initialized!");
+        return false;
+    }
+    if (!ratchet_array[contact_idx].initialized) {
+        ESP_LOGW(TAG, "ratchet_save_state: slot [%d] not initialized, skipping", contact_idx);
         return false;
     }
 
     char key[16];
-    snprintf(key, sizeof(key), "rat_%02u", contact_idx);
+    snprintf(key, sizeof(key), "rat_%02x", contact_idx);
 
-    esp_err_t ret = smp_storage_save_blob_sync(key, &ratchet_state, sizeof(ratchet_state_t));
+    esp_err_t ret = smp_storage_save_blob_sync(key, &ratchet_array[contact_idx],
+                                                 sizeof(ratchet_state_t));
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "❌ ratchet_save_state('%s') FAILED: %s", key, esp_err_to_name(ret));
+        ESP_LOGE(TAG, "ratchet_save_state('%s') FAILED: %s", key, esp_err_to_name(ret));
         return false;
     }
 
-    ESP_LOGI(TAG, "💾 Ratchet state saved: '%s' (%zu bytes) | send=%u recv=%u",
-             key, sizeof(ratchet_state_t),
-             ratchet_state.msg_num_send, ratchet_state.msg_num_recv);
+    ESP_LOGI(TAG, "Ratchet [%d] saved: '%s' (%zu bytes) | send=%u recv=%u",
+             contact_idx, key, sizeof(ratchet_state_t),
+             ratchet_array[contact_idx].msg_num_send,
+             ratchet_array[contact_idx].msg_num_recv);
     return true;
 }
 
 bool ratchet_load_state(uint8_t contact_idx) {
-    if (contact_idx > 31) {
+    if (contact_idx >= MAX_RATCHETS) {
         ESP_LOGE(TAG, "ratchet_load_state: invalid contact_idx %d", contact_idx);
+        return false;
+    }
+    if (!ratchet_array) {
+        ESP_LOGE(TAG, "ratchet_load_state: array not initialized!");
         return false;
     }
 
     char key[16];
-    snprintf(key, sizeof(key), "rat_%02u", contact_idx);
+    snprintf(key, sizeof(key), "rat_%02x", contact_idx);
 
     if (!smp_storage_exists(key)) {
-        ESP_LOGI(TAG, "ratchet_load_state: '%s' not found — fresh start", key);
+        ESP_LOGI(TAG, "ratchet_load_state: '%s' not found -- fresh start", key);
         return false;
     }
 
@@ -1043,42 +1102,46 @@ bool ratchet_load_state(uint8_t contact_idx) {
     ratchet_state_t loaded;
     esp_err_t ret = smp_storage_load_blob(key, &loaded, sizeof(ratchet_state_t), &loaded_len);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "❌ ratchet_load_state('%s') FAILED: %s", key, esp_err_to_name(ret));
+        ESP_LOGE(TAG, "ratchet_load_state('%s') FAILED: %s", key, esp_err_to_name(ret));
         return false;
     }
 
-    // Validate loaded data
     if (loaded_len != sizeof(ratchet_state_t)) {
-        ESP_LOGE(TAG, "❌ ratchet_load_state: size mismatch! got %zu, expected %zu",
+        ESP_LOGE(TAG, "ratchet_load_state: size mismatch! got %zu, expected %zu",
                  loaded_len, sizeof(ratchet_state_t));
         return false;
     }
     if (!loaded.initialized) {
-        ESP_LOGW(TAG, "❌ ratchet_load_state: loaded state has initialized=false!");
+        ESP_LOGW(TAG, "ratchet_load_state: loaded state has initialized=false!");
         return false;
     }
 
-    // Accept loaded state
-    memcpy(&ratchet_state, &loaded, sizeof(ratchet_state_t));
+    // Load into the correct PSRAM slot
+    memcpy(&ratchet_array[contact_idx], &loaded, sizeof(ratchet_state_t));
 
-    ESP_LOGI(TAG, "📂 Ratchet state restored: '%s' (%zu bytes) | send=%u recv=%u",
-             key, loaded_len,
-             ratchet_state.msg_num_send, ratchet_state.msg_num_recv);
-    printf("   root_key:  "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.root_key[i]); printf("...\n");
-    printf("   hk_send:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_send[i]); printf("...\n");
-    printf("   hk_recv:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.header_key_recv[i]); printf("...\n");
-    printf("   ck_send:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_send[i]); printf("...\n");
-    printf("   ck_recv:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.chain_key_recv[i]); printf("...\n");
-    printf("   dh_self:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.dh_self.public_key[i]); printf("...\n");
-    printf("   dh_peer:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_state.dh_peer[i]); printf("...\n");
+    ESP_LOGI(TAG, "Ratchet [%d] restored: '%s' (%zu bytes) | send=%u recv=%u",
+             contact_idx, key, loaded_len,
+             ratchet_array[contact_idx].msg_num_send,
+             ratchet_array[contact_idx].msg_num_recv);
+    printf("   root_key:  "); for(int i=0; i<8; i++) printf("%02x", ratchet_array[contact_idx].root_key[i]); printf("...\n");
+    printf("   hk_send:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_array[contact_idx].header_key_send[i]); printf("...\n");
+    printf("   hk_recv:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_array[contact_idx].header_key_recv[i]); printf("...\n");
+    printf("   ck_send:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_array[contact_idx].chain_key_send[i]); printf("...\n");
+    printf("   ck_recv:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_array[contact_idx].chain_key_recv[i]); printf("...\n");
+    printf("   dh_self:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_array[contact_idx].dh_self.public_key[i]); printf("...\n");
+    printf("   dh_peer:   "); for(int i=0; i<8; i++) printf("%02x", ratchet_array[contact_idx].dh_peer[i]); printf("...\n");
 
     return true;
 }
 
 // ============== Getters ==============
 
-ratchet_state_t *ratchet_get_state(void) { return &ratchet_state; }
-bool ratchet_is_initialized(void) { return ratchet_state.initialized; }
+ratchet_state_t *ratchet_get_state(void) {
+    return ratchet_array ? &ratchet_array[active_ratchet_idx] : NULL;
+}
+bool ratchet_is_initialized(void) {
+    return ratchet_array && ratchet_array[active_ratchet_idx].initialized;
+}
 
 const uint8_t *ratchet_get_saved_hk(void) { return saved_x3dh_valid ? saved_x3dh_hk : NULL; }
 const uint8_t *ratchet_get_saved_nhk(void) { return saved_x3dh_valid ? saved_x3dh_nhk : NULL; }

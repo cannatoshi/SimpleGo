@@ -715,6 +715,16 @@ void app_main(void) {
     smp_storage_print_info();
     smp_storage_self_test();
 
+    // Session 33: Allocate multi-contact arrays in PSRAM
+    if (!ratchet_multi_init()) {
+        ESP_LOGE(TAG, "Ratchet multi-init failed!");
+        return;
+    }
+    if (!handshake_multi_init()) {
+        ESP_LOGE(TAG, "Handshake multi-init failed!");
+        return;
+    }
+
     // Display + LVGL Init
     ESP_LOGI(TAG, "Initializing Display...");
     ret = tdeck_display_init();
